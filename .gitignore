@@ -1,0 +1,4 @@
+node_modules/
+tests/_*.mjs
+.claude/
+__pycache__/

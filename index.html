@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#17191b">
+  <link rel="icon" href="data:,">
+  <title>Human Generator Studio</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><svg viewBox="0 0 24 32" aria-hidden="true"><circle cx="12" cy="4" r="3"/><path d="M8 9h8l3 9-2.2.7-2.4-5.3V21l-1 10h-2.6l-.8-8-.8 8H7.6l-1-10v-7.6l-2.4 5.3L2 18l3-9h3Z"/></svg><span>Human Generator <strong>Studio</strong></span></div>
+      <div class="topbar-group views"><label class="toolbar-label" for="viewSelect">View</label><select id="viewSelect" aria-label="Camera view"><option value="body">Perspective</option><option value="front">Front</option><option value="side">Side</option><option value="rear">Rear</option><option value="face">Face close-up</option><option value="crowd">Crowd</option></select></div>
+      <div class="topbar-group tools"><button class="icon-button" id="frontButton" title="Front view" aria-label="Front view">◎</button><button class="icon-button" id="bodyButton" title="Full body" aria-label="Full body">⛶</button><button class="icon-button" id="resetButton" title="Reset character" aria-label="Reset character">↺</button></div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-group preset"><label class="toolbar-label" for="presetSelect">Preset</label><select id="presetSelect" aria-label="Load preset"><option value="">Select saved preset</option></select><button id="saveButton" class="top-action">Save</button><button id="deletePresetButton" class="icon-button" title="Delete selected preset" aria-label="Delete selected preset" disabled>🗑</button></div>
+      <button id="newButton" class="top-action">New character</button>
+      <button id="screenshotButton" class="top-action"><span class="button-icon">⇩</span> Screenshot</button>
+      <button id="exportButton" class="top-action">Export GLB</button>
+      <button id="crowdButton" class="top-action"><span class="button-icon">♟</span> Crowd test</button>
+    </header>
+    <div class="workspace">
+      <nav class="nav-rail" aria-label="Editor sections" id="sectionNav"></nav>
+      <main class="viewport" aria-label="3D character viewport">
+        <canvas id="stage" aria-label="Interactive 3D character"></canvas>
+        <div class="viewport-meta"><span id="viewLabel">Perspective</span><span id="characterMeta">Procedural citizen</span></div>
+        <div class="viewport-controls"><button id="zoomIn" aria-label="Zoom in" title="Zoom in">＋</button><button id="zoomOut" aria-label="Zoom out" title="Zoom out">−</button><button id="fitButton" aria-label="Fit full body" title="Fit full body">⌗</button></div>
+        <div class="viewport-hint">Drag to orbit · Shift + drag to pan · Scroll to zoom</div>
+        <div id="errorPanel" class="error-panel" hidden><h2>3D preview unavailable</h2><p id="errorText"></p><button id="retryButton">Retry</button></div>
+      </main>
+      <aside class="inspector"><div class="inspector-header"><h1 id="sectionTitle">Character</h1><span id="sectionSubtitle">Create a citizen</span></div><div id="inspectorBody" class="inspector-body"></div></aside>
+    </div>
+    <footer class="statusbar"><div class="ready"><i></i><span id="readyLabel">Initializing Three.js</span></div><div class="status-item">FPS <b id="fps">—</b></div><div class="status-item">Frame <b id="frameTime">—</b></div><div class="status-item">Vertices <b id="vertices">—</b></div><div class="status-item">Triangles <b id="triangles">—</b></div><div class="status-item">Draw calls <b id="drawCalls">—</b></div><div class="status-item">Visible <b id="visible">—</b></div><div class="status-item long">Skeletons <b id="skeletons">—</b></div><div class="status-item long">Facial rigs <b id="faces">—</b></div><div class="status-item lod">LOD <b id="lodCounts">—</b></div></footer>
+  </div>
+  <script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
+  <script type="module" src="./src/main.mjs"></script>
+</body>
+</html>
