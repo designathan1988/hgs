@@ -26,8 +26,8 @@ const sections = [
   { id: 'exportar', name: 'Exportar', icon: 'export' },
 ];
 const hints = {
-  default: 'Roda: zoom · botão do meio: girar · Shift + botão do meio: mover',
-  esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão do meio: girar',
+  default: 'Roda: zoom · botão do meio: mover · Alt + botão do meio: girar',
+  esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · Alt + botão do meio: girar',
   brush: 'Pinte sobre o couro cabeludo: o traço cria mechas penteadas na direção do movimento',
   pull: 'Arraste do couro cabeludo para criar uma mecha · arraste um ponto da mecha para movê-la',
   select: 'Clique para selecionar · Shift soma · Ctrl alterna',

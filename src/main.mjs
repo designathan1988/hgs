@@ -9,13 +9,13 @@ let drag = null;
 const sculptHit = event => renderer?.sculpt.hit(sculptNdc(event, canvas), renderer.viewCamera);
 const held = new Set();
 window.addEventListener('keyup', event => held.delete(event.key.toLowerCase()));
-// Navigation: the wheel zooms, the middle button (wheel pressed) orbits around
-// the character and Shift + middle button pans. While editing hair or
+// Navigation (as in 3ds Max): the wheel zooms, the middle button (wheel
+// pressed) pans and Alt + middle button orbits around the character. While editing hair or
 // sculpting, the left button belongs to the tool and never moves the camera;
 // elsewhere a left drag also orbits.
 canvas.addEventListener('pointerdown', event => {
   canvas.setPointerCapture(event.pointerId);
-  if (event.button === 1) { event.preventDefault(); drag = { x: event.clientX, y: event.clientY, pan: event.shiftKey }; return; }
+  if (event.button === 1) { event.preventDefault(); drag = { x: event.clientX, y: event.clientY, pan: !event.altKey }; return; }
   if (event.button !== 0) { drag = null; return; }
   if (ui.locking) {
     const editor = renderer.lockEditor, ndc = sculptNdc(event, canvas);
@@ -60,7 +60,10 @@ const release = () => {
 canvas.addEventListener('pointerup', release);
 canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('pointerleave', () => { if (renderer && !drag) renderer.sculpt.cursor.visible = false; });
+// Alt belongs to orbiting: it must not open the browser's menu bar.
+window.addEventListener('keyup', event => { if (event.key === 'Alt') event.preventDefault(); });
 window.addEventListener('keydown', event => {
+  if (event.key === 'Alt') event.preventDefault();
   const typing = event.target.matches?.('input[type=text], input[type=number], input:not([type]), textarea, select');
   if (!typing) held.add(event.key.toLowerCase());
   if (typing) return;
