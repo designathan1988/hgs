@@ -1,6 +1,6 @@
 import {
   AmbientLight, AnimationMixer, Color, DirectionalLight, GridHelper, Group, Mesh,
-  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, Scene, Vector3, WebGLRenderer,
+  MeshBasicMaterial, MeshStandardMaterial, SphereGeometry, PerspectiveCamera, PlaneGeometry, Raycaster, Scene, Vector3, WebGLRenderer,
 } from 'three';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
@@ -101,6 +101,16 @@ export class Camera {
     return [right, new Vector3().crossVectors(right, forward), forward];
   }
   zoom(delta) { this.distance = clamp(this.distance * Math.exp(delta * 0.001), 0.35, 90); }
+  /**
+   * Zoom towards a point (the surface under the cursor, Blender's "Zoom to
+   * Mouse Position"): the view scales about it, so it stays under the cursor.
+   */
+  zoomAt(delta, point) {
+    const before = this.distance;
+    this.zoom(delta);
+    const s = this.distance / before;
+    this.target.sub(point).multiplyScalar(s).add(point);
+  }
   pan(dx, dy) {
     const factor = this.distance * 0.0013;
     this.target.x -= Math.cos(this.yaw) * dx * factor;
@@ -147,6 +157,9 @@ export class Renderer {
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
     this.lockEditor = new LockEditor(this); this.locksMode = false;
     this.pivotRay = new Raycaster();
+    // Marks the point the camera turns around while orbiting.
+    this.pivotMark = new Mesh(new SphereGeometry(1, 12, 8), new MeshBasicMaterial({ color: 0xff8a3d, depthTest: false, transparent: true, opacity: 0.9 }));
+    this.pivotMark.renderOrder = 20; this.pivotMark.visible = false; this.scene.add(this.pivotMark);
   }
   async setCharacter(person) {
     const token = ++this.token;
@@ -303,11 +316,22 @@ export class Renderer {
   }
   /** The point of the character (body, clothes, hair) under the cursor, or null. */
   pivotAt(ndc) {
-    const objects = [this.current?.group, this.lockEditor.group].filter(Boolean);
+    const objects = [this.current?.group, this.lockEditor.group].filter(group => group?.parent);
     if (!objects.length) return null;
     this.pivotRay.setFromCamera(ndc, this.viewCamera);
-    const hit = this.pivotRay.intersectObjects(objects, true).find(h => h.object.visible && h.object.isMesh && !h.object.isInstancedMesh);
+    const hit = this.pivotRay.intersectObjects(objects, true).find(h => h.object.visible && h.object.isMesh && !h.object.isInstancedMesh && h.object !== this.lockEditor.hoverMark);
     return hit ? hit.point.clone() : null;
+  }
+  /** The point under the cursor, or on the cursor's ray at the view centre's depth over empty space. */
+  pointUnder(ndc) {
+    const hit = this.pivotAt(ndc);
+    if (hit) return hit;
+    const ray = this.pivotRay.ray, depth = this.camera.target.clone().sub(ray.origin).dot(ray.direction);
+    return ray.origin.clone().addScaledVector(ray.direction, Math.max(0.05, depth));
+  }
+  showPivot(point) {
+    this.pivotMark.visible = Boolean(point);
+    if (point) { this.pivotMark.position.copy(point); this.pivotMark.scale.setScalar(Math.max(0.003, this.camera.distance * 0.006)); }
   }
   render(time) {
     if (this.lastTime == null) this.lastTime = time;
