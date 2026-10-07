@@ -1,5 +1,5 @@
 import {
-  BufferGeometry, DoubleSide, Float32BufferAttribute, Group, InstancedMesh, Matrix4, Mesh,
+  BufferGeometry, DoubleSide, Float32BufferAttribute, Group, InstancedMesh, Line, LineBasicMaterial, Matrix4, Mesh,
   MeshBasicMaterial, Plane, QuadraticBezierCurve3, Quaternion, Raycaster, SphereGeometry, Vector3,
 } from 'three';
 import {
@@ -60,7 +60,10 @@ export class LockEditor {
     this.underlay.renderOrder = 2;
     this.hoverMark = new Mesh(this.handleGeometry, new MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.95 }));
     this.hoverMark.renderOrder = 11; this.hoverMark.visible = false;
-    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark);
+    // The head's centre line over the scalp: roots near it snap onto it.
+    this.midline = new Line(this.midlineGeometry(), new LineBasicMaterial({ color: 0x46d39a, transparent: true, opacity: 0.95 }));
+    this.midline.renderOrder = 4;
+    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark, this.midline);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers();
   }
   end() {
@@ -125,6 +128,26 @@ export class LockEditor {
     geometry.setIndex(index);
     return geometry;
   }
+  /** Points of the scalp on the body's mid-plane (x = 0), from the front hairline over the crown to the nape. */
+  midlineGeometry() {
+    const C = this.state.frame.C, pos = [];
+    for (let k = 0; k <= 160; k++) {
+      const a = -0.3 + k / 160 * (Math.PI + 0.9), d = new Vector3(0, Math.sin(a), Math.cos(a));
+      const hit = this.midlineHit(C.clone().addScaledVector(d, 0.4), d.clone().negate());
+      if (hit?.root) pos.push(hit.point.x, hit.point.y + d.y * 0.0015, hit.point.z + d.z * 0.0015);
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(pos, 3));
+    return geometry;
+  }
+  /** Scalp hit of a ray (from outside the head towards it). */
+  midlineHit(origin, direction) {
+    this.raycaster.set(origin, direction);
+    const [hit] = this.raycaster.intersectObject(this.probe(), false);
+    if (!hit) return null;
+    const baseIds = this.human.body.geometry.userData.baseIds;
+    return { root: rootFromHit(this.state, [hit.face.a, hit.face.b, hit.face.c].map(v => baseIds[v]), hit.point), point: hit.point.clone() };
+  }
   updateUnderlay() {
     if (!this.underlay) return;
     this.underlay.geometry.dispose();
@@ -165,6 +188,7 @@ export class LockEditor {
     this.handles.count = h; this.pinMarks.count = p;
     this.handles.instanceMatrix.needsUpdate = true; this.pinMarks.instanceMatrix.needsUpdate = true;
     this.scalpOverlay.visible = this.settings.tool === 'pull' && this.settings.showScalp;
+    this.midline.visible = ['brush', 'pull', 'move'].includes(this.settings.tool);
   }
   /** Per frame: only rebuild what an edit changed (nothing runs on its own). */
   step() {
@@ -191,8 +215,18 @@ export class LockEditor {
     if (!hit) return null;
     const baseIds = this.human.body.geometry.userData.baseIds;
     const root = rootFromHit(this.state, [hit.face.a, hit.face.b, hit.face.c].map(v => baseIds[v]), hit.point);
+    // Near the centre line the root snaps onto it (like a mirror's merge distance),
+    // so mirrored hair meets in a closed parting.
+    const C = this.state.frame.C, snap = 0.012 * this.state.frame.R / 0.11;
+    if (root && Math.abs(hit.point.x) < snap) {
+      const d = new Vector3(0, hit.point.y - C.y, hit.point.z - C.z).normalize();
+      const mid = this.midlineHit(C.clone().addScaledVector(d, 0.4), d.clone().negate());
+      if (mid?.root) return { root: mid.root, point: mid.point, distance: hit.distance, midline: true };
+    }
     return { root, point: hit.point.clone(), distance: hit.distance };
   }
+  /** A root on the centre line: mirroring gives a second lock from the same root, to the other side. */
+  onMidline(lock) { return Math.abs(lock.rootP.x) < 0.001; }
   /**
    * The chain point nearest the cursor on screen (within ~20 px): on the
    * selected locks first (their points are drawn on top), else on the lock
@@ -318,7 +352,7 @@ export class LockEditor {
     this.selected.add(n);
     const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), lock.rootP.clone().addScaledVector(lock.rootN, 0.01));
     // Mirror: the same lock on the other side of the head (the body is symmetric in x).
-    const twinRoot = this.settings.mirror && Math.abs(lock.rootP.x) > 0.004 ? this.mirrorRoot(lock) : null;
+    const twinRoot = !this.settings.mirror ? null : this.onMidline(lock) ? lock.root : this.mirrorRoot(lock);
     let twin = null;
     if (twinRoot) {
       twin = makeLock(this.state, twinRoot, null, { width: lock.width, volume: lock.volume, taper: lock.taper });
@@ -345,15 +379,16 @@ export class LockEditor {
     for (const pin of lock.pins.values()) pin.sub(lock.rootP).applyQuaternion(turn).add(p);
     lock.root = { v: [...root.v], w: [...root.w] }; lock.rootP = p; lock.rootN = n;
   }
-  /** Root mirrored across the body's mid-plane (x = 0), found on the scalp by a ray. */
+  /**
+   * Root mirrored across the body's mid-plane (x = 0): the scalp point met by
+   * a ray from the head centre towards the mirrored root, so a twin is
+   * always found, wherever the lock is.
+   */
   mirrorRoot(lock) {
-    const p = lock.rootP.clone(), n = lock.rootN.clone();
-    p.x = -p.x; n.x = -n.x;
-    this.raycaster.set(p.clone().addScaledVector(n, 0.05), n.clone().negate());
-    const [hit] = this.raycaster.intersectObject(this.probe(), false);
-    if (!hit || hit.point.distanceTo(p) > 0.02) return null;
-    const baseIds = this.human.body.geometry.userData.baseIds;
-    return rootFromHit(this.state, [hit.face.a, hit.face.b, hit.face.c].map(v => baseIds[v]), hit.point);
+    const C = this.state.frame.C, p = lock.rootP.clone();
+    p.x = -p.x;
+    const d = p.sub(C).normalize();
+    return this.midlineHit(C.clone().addScaledVector(d, 0.4), d.negate())?.root ?? null;
   }
   /** Lay a sprouting lock along a curve that leaves the root along its normal and ends at the cursor. */
   shapeSprout(lock, target) {
@@ -426,11 +461,19 @@ export class LockEditor {
         if (!hit?.root) continue;
         const step = hit.point.clone().sub(drag.last);
         if (step.length() < this.settings.brushSpacing) continue;
-        const lock = combLock(this.state, hit.root, step, this.settings.brushLength, params);
+        // On the centre line with mirroring, the two locks from that root are
+        // combed to either side (away from the parting, down and back), as the
+        // ready-made styles are; elsewhere along the stroke.
+        let comb = step, twinComb = new Vector3(-step.x, step.y, step.z);
+        if (hit.midline && this.settings.mirror) {
+          const C = this.state.frame.C, front = Math.max(0, (hit.point.z - C.z) / hit.point.distanceTo(C));
+          comb = new Vector3(1, -0.6, -0.25 - 0.95 * front); twinComb = new Vector3(-1, -0.6, -0.25 - 0.95 * front);
+        }
+        const lock = combLock(this.state, hit.root, comb, this.settings.brushLength, params);
         this.locks.push(lock); this.selected.add(this.locks.length - 1); drag.created.add(lock);
-        const twinRoot = this.settings.mirror && Math.abs(lock.rootP.x) > 0.004 ? this.mirrorRoot(lock) : null;
+        const twinRoot = !this.settings.mirror ? null : this.onMidline(lock) ? lock.root : this.mirrorRoot(lock);
         if (twinRoot) {
-          const twin = combLock(this.state, twinRoot, new Vector3(-step.x, step.y, step.z), this.settings.brushLength, params);
+          const twin = combLock(this.state, twinRoot, twinComb, this.settings.brushLength, params);
           this.locks.push(twin); this.selected.add(this.locks.length - 1); drag.created.add(twin);
         }
         drag.last.copy(hit.point); drag.made++;
