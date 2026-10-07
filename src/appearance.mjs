@@ -685,6 +685,9 @@ export async function dressHuman(context, spec) {
     if (hair.style === 'locks') {
       // Mesh locks styled in the Mechas editor: solid smooth locks, merged and skinned to the head.
       const state = prepareLocks(context, spec.hairLocks);
+      // Free locks hang by gravity on this body and its clothes (deterministic:
+      // on the body they were made on, they come out as they were saved).
+      state.sim.apply();
       if (state.locks.length) {
         const color = spec.hairColor ?? 0x30231e;
         const mesh = locksMesh(context, state, color);

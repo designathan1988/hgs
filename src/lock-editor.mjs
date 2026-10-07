@@ -3,7 +3,7 @@ import {
   MeshBasicMaterial, Plane, QuadraticBezierCurve3, Raycaster, SphereGeometry, Vector3,
 } from 'three';
 import {
-  LOCK_POINTS as N, arcLengthAt, bendLock, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface,
+  LOCK_POINTS as N, arcLengthAt, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface,
   locksScalpColors, locksUnderlayGeometry, makeLock, normalizeLocks, prepareLocks, resamplePolyline, rootFromHit,
   serializeLocks, setLockLength, underlayMaterial, updateGeometry, combLock,
 } from './locks.mjs';
@@ -20,15 +20,16 @@ const storage = {
 
 /**
  * Interactive mesh-lock editor on the rest pose: pull locks out of the scalp,
- * select and shape them, cut, pin, simulate gravity and set the settled
- * result as the hairstyle's rest shape. Every lock is its own mesh while
- * editing (for picking); the game build merges them.
+ * select and shape them, cut, pin, and set a shape against gravity. Gravity is
+ * an operator applied after each edit (LockShaper), never a running
+ * simulation: when nothing is being edited nothing changes. Every lock is its
+ * own mesh while editing (for picking); the game build merges them.
  */
 export class LockEditor {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, running: true, gravity: true, pinOnRelease: false, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
+    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, pinOnRelease: false, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.onChange = () => {};
@@ -40,8 +41,8 @@ export class LockEditor {
     this.end();
     this.human = human; this.context = human.context; this.color = color;
     this.state = prepareLocks(this.context, data);
-    this.applySimSettings();
-    this.rest();
+    // Free locks hang on this body and its clothes, as in the finished character.
+    this.state.sim.apply({ force: this.settings.gravity });
     this.selected.clear();
     for (const name of ['Hair', 'ScalpUnderlay']) { const mesh = human.group.getObjectByName(name); if (mesh) mesh.visible = false; }
     const scene = this.renderer.scene;
@@ -61,7 +62,6 @@ export class LockEditor {
     this.hoverMark.renderOrder = 11; this.hoverMark.visible = false;
     this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers();
-    this.accumulator = 0;
   }
   end() {
     if (!this.state) return null;
@@ -75,11 +75,14 @@ export class LockEditor {
   }
   serialize() { return this.state ? serializeLocks(this.state) : null; }
   setColor(color) { this.color = color; this.materials?.normal.color.set(color); this.materials?.selected.color.set(color); this.updateUnderlay(); }
-  applySimSettings() {
-    const sim = this.state?.sim;
-    if (!sim) return;
-    sim.gravity = this.settings.gravity ? 9.81 : 0;
-    sim.wake();
+  /**
+   * Hang the locks by gravity (all, or only `only` while a drag is under way,
+   * the others staying put). Deterministic: unchanged locks come out identical.
+   */
+  relax(only = null) {
+    if (!this.state) return;
+    this.state.sim.apply({ only, force: this.settings.gravity });
+    this.dirty = true;
   }
 
   // ----------------------------------------------------------- history
@@ -92,11 +95,10 @@ export class LockEditor {
   restore(json, keepSelection = false) {
     const data = JSON.parse(json);
     const selection = [...this.selected];
+    // A loaded or restored hairstyle: free locks hang by gravity from their
+    // saved shapes (the same result as when it was saved), set shapes as saved.
     this.state = prepareLocks(this.context, data);
-    this.applySimSettings();
-    // A loaded or restored hairstyle is shown exactly as saved: it stays at
-    // rest until something is edited (any edit wakes the simulation).
-    this.rest();
+    this.state.sim.apply({ force: this.settings.gravity });
     this.selected = new Set(keepSelection ? selection.filter(i => i < this.locks.length) : []);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange();
   }
@@ -162,33 +164,12 @@ export class LockEditor {
     this.handles.instanceMatrix.needsUpdate = true; this.pinMarks.instanceMatrix.needsUpdate = true;
     this.scalpOverlay.visible = this.settings.tool === 'pull' && this.settings.showScalp;
   }
-  /** Per frame: fixed 1/60 s steps (at most two), then refresh what moved. */
-  step(dt) {
-    if (!this.state) return;
-    const sim = this.state.sim;
-    let stepped = false;
-    if (this.settings.running) {
-      this.accumulator = Math.min(this.accumulator + (Number.isFinite(dt) ? dt : 1 / 60), 2 / 60);
-      while (this.accumulator >= 1 / 60) { if (sim.step(1 / 60)) stepped = true; this.accumulator -= 1 / 60; }
-    }
-    if (stepped || this.dirty) {
-      this.dirty = false;
-      this.syncMeshes(); this.updateHelpers();
-      const status = this.status();
-      if (status !== this.lastStatus) { this.lastStatus = status; this.onChange(); }
-    }
+  /** Per frame: only rebuild what an edit changed (nothing runs on its own). */
+  step() {
+    if (!this.state || !this.dirty) return;
+    this.dirty = false;
+    this.syncMeshes(); this.updateHelpers();
   }
-  status() {
-    if (!this.settings.running) return 'paused';
-    return this.state?.sim.sleeping ? 'settled' : 'simulating';
-  }
-  /** Put every lock to sleep where it is (exactly the stored shape). */
-  rest() {
-    const sim = this.state.sim;
-    for (const lock of this.state.locks) lock.calm = 12;
-    sim.sleeping = true;
-  }
-  touch() { if (this.settings.running) this.state.sim.wake(); this.dirty = true; }
 
   // ----------------------------------------------------------- picking
   probe() {
@@ -307,7 +288,7 @@ export class LockEditor {
       if (existing !== undefined) lock.pins.delete(existing);
       else lock.pins.set(i, new Vector3().fromArray(lock.x, i * 3));
       if (!this.selected.has(lockHit.index)) this.choose(lockHit.index, { shift: true });
-      this.touch(); this.updateHelpers(); this.onChange();
+      this.relax(); this.step(); this.onChange();
       return true;
     }
     return false;
@@ -366,9 +347,10 @@ export class LockEditor {
     curve.getPoints(63).forEach((p, i) => dense.set(p.toArray(), i * 3));
     length = clamp(curve.getLength(), 0.02, lockLimits.length[1]);
     const points = resamplePolyline(dense, length);
-    lock.x.set(points); lock.rest.set(points); lock.old.set(points);
+    lock.x.set(points); lock.rest.set(points);
     lock.seg = length / (N - 1);
     lock.hold = Float32Array.from(points);
+    this.dirty = true;
   }
   grab(hit, camera, { shift = false, ctrl = false } = {}) {
     this.checkpoint();
@@ -379,7 +361,7 @@ export class LockEditor {
     const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), at);
     lock.grab = { index, point: at.clone() };
     this.drag = { tool: 'grab', lock, plane, offset: at.clone().sub(hit.point) };
-    this.touch();
+    this.relax(new Set([lock]));
     return true;
   }
   cutAt(hit) {
@@ -387,8 +369,8 @@ export class LockEditor {
     if (this.drag.cut.has(lock)) return;
     this.drag.cut.add(lock);
     setLockLength(lock, Math.max(lockLimits.length[0], arcLengthAt(lock, hit.point)));
-    this.state.sim.pose(lock);
-    this.touch(); this.onChange();
+    this.relax(this.drag.cut);
+    this.onChange();
   }
   pointerMove(ndc, camera) {
     const drag = this.drag;
@@ -401,11 +383,10 @@ export class LockEditor {
         this.shapeSprout(drag.lock, point);
         if (drag.twin) this.shapeSprout(drag.twin, new Vector3(-point.x, point.y, point.z));
       } else {
+        // The pulled point follows the cursor; the rest of the lock hangs from it.
         drag.lock.grab.point.copy(point.add(drag.offset));
-        // Paused: the lock is shaped directly (no dynamics); running: physics follows.
-        if (!this.settings.running) this.state.sim.pose(drag.lock);
+        this.relax(new Set([drag.lock]));
       }
-      this.touch();
       return;
     }
     if (drag.tool === 'brush') {
@@ -415,19 +396,24 @@ export class LockEditor {
       // still plants locks all along it.
       const from = drag.lastNdc ?? { x: ndc.x, y: ndc.y }, n = Math.max(1, Math.ceil(Math.hypot(ndc.x - from.x, ndc.y - from.y) / 0.004));
       const params = { width: this.settings.width, volume: this.settings.volume, taper: this.settings.taper };
+      drag.created ??= new Set();
       for (let k = 1; k <= n; k++) {
         const hit = this.pickScalp({ x: from.x + (ndc.x - from.x) * k / n, y: from.y + (ndc.y - from.y) * k / n }, camera);
         if (!hit?.root) continue;
         const step = hit.point.clone().sub(drag.last);
         if (step.length() < this.settings.brushSpacing) continue;
         const lock = combLock(this.state, hit.root, step, this.settings.brushLength, params);
-        this.locks.push(lock); this.selected.add(this.locks.length - 1);
+        this.locks.push(lock); this.selected.add(this.locks.length - 1); drag.created.add(lock);
         const twinRoot = this.settings.mirror && Math.abs(lock.rootP.x) > 0.004 ? this.mirrorRoot(lock) : null;
-        if (twinRoot) { this.locks.push(combLock(this.state, twinRoot, new Vector3(-step.x, step.y, step.z), this.settings.brushLength, params)); this.selected.add(this.locks.length - 1); }
+        if (twinRoot) {
+          const twin = combLock(this.state, twinRoot, new Vector3(-step.x, step.y, step.z), this.settings.brushLength, params);
+          this.locks.push(twin); this.selected.add(this.locks.length - 1); drag.created.add(twin);
+        }
         drag.last.copy(hit.point); drag.made++;
       }
       drag.lastNdc = { x: ndc.x, y: ndc.y };
-      this.touch(); this.syncMeshes(); this.updateHelpers();
+      if (drag.created.size) this.relax(drag.created);
+      this.step();
       return;
     }
     if (drag.tool === 'grow') {
@@ -436,8 +422,8 @@ export class LockEditor {
       if (!point) return;
       const length = drag.length + point.sub(drag.start).dot(drag.direction) * 1.5;
       setLockLength(drag.lock, length);
-      this.state.sim.pose(drag.lock);
-      this.touch(); this.onChange();
+      this.relax(new Set([drag.lock]));
+      this.onChange();
       return;
     }
     if (drag.tool === 'cut') {
@@ -458,21 +444,20 @@ export class LockEditor {
     if (!drag || !this.state) return;
     const lock = drag.lock;
     if (drag.tool === 'sprout') {
-      for (const l of [lock, drag.twin].filter(Boolean)) {
-        l.hold = null;
-        l.rest.set(l.x); l.old.set(l.x);
-        if (!this.settings.running) this.state.sim.pose(l);
-      }
+      // The drawn curve is the lock's design; gravity hangs it from there.
+      for (const l of [lock, drag.twin].filter(Boolean)) { l.hold = null; l.rest.set(l.x); }
     }
     if (drag.tool === 'grab') {
+      // The pulled shape becomes the lock's design; let go, it hangs from the
+      // root (or from the pulled point when pinned there).
       const { index } = lock.grab;
-      if (!this.settings.running) this.state.sim.pose(lock);
       if (pin || this.settings.pinOnRelease) lock.pins.set(index, new Vector3().fromArray(lock.x, index * 3));
+      lock.rest.set(lock.x);
       lock.grab = null;
-      // Paused: what was shaped by hand is now the lock's shape.
-      if (!this.settings.running) lock.rest.set(lock.x);
     }
-    this.touch(); this.updateUnderlay(); this.updateHelpers(); this.onChange();
+    // Locks laid after the edited ones (higher layers) settle on them again.
+    this.relax();
+    this.step(); this.updateUnderlay(); this.onChange();
   }
 
   // ------------------------------------------------------- operations
@@ -484,23 +469,16 @@ export class LockEditor {
     if (!list.length) return;
     if (record) this.checkpoint();
     for (const lock of list) fn(lock);
-    if (!this.settings.running) for (const lock of list) this.state.sim.pose(lock);
-    this.touch(); this.syncMeshes(); this.updateHelpers(); this.onChange();
+    this.relax();
+    this.step(); this.onChange();
   }
   setParam(key, value, record = false) { this.edit(lock => { lock[key] = clamp(value, ...lockLimits[key]); }, { record }); }
   scaleParam(key, factor) { this.edit(lock => { lock[key] = clamp(lock[key] * factor, ...lockLimits[key]); }); }
   setLength(value, record = false) { this.edit(lock => setLockLength(lock, value), { record }); }
   scaleLength(factor) { this.edit(lock => setLockLength(lock, lockLength(lock) * factor)); }
-  /** Bend from the shape the selection had when the slider was grabbed. */
-  beginBend() { this.checkpoint(); this.bendBase = new Map(this.targets().map(lock => [lock, { x: Float32Array.from(lock.x), rest: Float32Array.from(lock.rest) }])); }
-  bend(amount) {
-    if (!this.bendBase) this.beginBend();
-    this.edit(lock => { const base = this.bendBase.get(lock); if (base) bendLock(lock, base, amount, this.state.frame); }, { record: false });
-  }
-  endBend() { this.bendBase = null; }
-  /** The settled result becomes the styled rest shape (held against gravity). */
-  setRest() { this.edit(lock => { lock.rest.set(lock.x); lock.styled = true; lock.old.set(lock.x); }, { all: !this.selected.size }); }
-  /** Back to a free lock: only the root area keeps its shape, the rest falls. */
+  /** The current shape becomes the styled shape (held against gravity). */
+  setRest() { this.edit(lock => { lock.rest.set(lock.x); lock.styled = true; }, { all: !this.selected.size }); }
+  /** Back to a free lock: gravity hangs it again from its shape. */
   releaseRest() { this.edit(lock => { lock.styled = false; }); }
   unpin() { this.edit(lock => lock.pins.clear()); }
   pinTip() { this.edit(lock => lock.pins.set(N - 1, new Vector3().fromArray(lock.x, (N - 1) * 3))); }
@@ -510,20 +488,17 @@ export class LockEditor {
     const gone = new Set([...this.selected].map(n => this.locks[n]));
     this.state.locks = this.locks.filter(lock => !gone.has(lock));
     this.selected.clear();
-    this.touch(); this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange();
+    // Locks that lay on the deleted ones fall onto what is left.
+    this.relax();
+    this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange();
   }
-  clearAll() { this.checkpoint(); this.state.locks = []; this.selected.clear(); this.touch(); this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange(); }
+  clearAll() { this.checkpoint(); this.state.locks = []; this.selected.clear(); this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange(); }
   selectAll() { this.selected = new Set(this.locks.map((_, i) => i)); this.syncMeshes(); this.updateHelpers(); this.onChange(); }
   clearSelection() { this.selected.clear(); this.syncMeshes(); this.updateHelpers(); this.onChange(); }
-  setRunning(on) { this.settings.running = on; if (on) this.state?.sim.wake(); this.dirty = true; this.onChange(); }
-  setGravity(on) { this.settings.gravity = on; this.applySimSettings(); this.dirty = true; this.onChange(); }
-  /** Simulate until everything is at rest (bounded), then show it. */
-  settleNow() {
-    if (!this.state) return 0;
-    const steps = this.state.sim.settle(1200);
-    this.syncMeshes(); this.updateHelpers(); this.onChange();
-    return steps;
-  }
+  /** Gravity strength (0: the locks keep their drawn shapes). */
+  setGravity(force) { this.settings.gravity = clamp(force, 0, 1); this.relax(); this.step(); this.onChange(); }
+  /** Hang every free lock again (gives the same hair when nothing changed). */
+  applyGravity() { if (!this.state) return; this.checkpoint(); this.relax(); this.step(); this.updateUnderlay(); this.onChange(); }
 
   // ------------------------------------------------------ save / load
   static slots() { return storage.keys().filter(k => k.startsWith(SLOT_PREFIX)).map(k => k.slice(SLOT_PREFIX.length)).sort((a, b) => a.localeCompare(b)); }
@@ -548,7 +523,7 @@ export class LockEditor {
     const locks = this.locks, sel = this.targets();
     return {
       count: locks.length, selected: this.selected.size, pins: locks.reduce((n, l) => n + l.pins.size, 0),
-      styled: locks.filter(l => l.styled).length, first: sel[0] ?? null, status: this.status(),
+      styled: locks.filter(l => l.styled).length, first: sel[0] ?? null,
     };
   }
 }

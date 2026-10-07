@@ -25,7 +25,7 @@ function pull(state, direction, flow, length) {
   const curve = new QuadraticBezierCurve3(lock.rootP, control, end), dense = new Float32Array(64 * 3);
   curve.getPoints(63).forEach((p, i) => dense.set(p.toArray(), i * 3));
   const points = resamplePolyline(dense, curve.getLength());
-  lock.x.set(points); lock.rest.set(points); lock.old.set(points); lock.seg = curve.getLength() / (N - 1);
+  lock.x.set(points); lock.rest.set(points); lock.seg = curve.getLength() / (N - 1);
   state.locks.push(lock);
   return lock;
 }
@@ -40,59 +40,97 @@ function hairstyle() {
   }
   return state;
 }
-const settle = (state, max = 1500) => { let steps = 0; while (!state.sim.sleeping && steps < max) { state.sim.step(); steps++; } return steps; };
+const hang = state => state.sim.apply();
 const maxStretch = state => {
   let worst = 0;
   for (const l of state.locks) for (let i = 1; i < N; i++) worst = Math.max(worst, Math.abs(Math.hypot(l.x[i * 3] - l.x[i * 3 - 3], l.x[i * 3 + 1] - l.x[i * 3 - 2], l.x[i * 3 + 2] - l.x[i * 3 - 1]) / l.seg - 1));
   return worst;
 };
-
-test('gravity settles a hairstyle onto the head: no stretching, nothing inside the body, at rest in bounded time', () => {
-  const state = hairstyle();
-  assert.ok(state.locks.length >= 20, `${state.locks.length} locks pulled`);
-  const steps = settle(state);
-  assert.ok(state.sim.sleeping, `asleep after ${steps} steps`);
-  assert.ok(steps < 900, `settled in ${steps} steps (< 15 s)`);
-  assert.ok(maxStretch(state) < 1e-3, `segment length error ${(maxStretch(state) * 100).toFixed(3)}%`);
+const snapshot = state => state.locks.map(l => Float32Array.from(l.x));
+const largestMove = (state, before) => {
+  let worst = 0;
+  state.locks.forEach((l, k) => { for (let i = 0; i < N * 3; i++) worst = Math.max(worst, Math.abs(l.x[i] - before[k][i])); });
+  return worst;
+};
+const assertOutside = state => {
   const hit = {};
   for (const l of state.locks) for (let i = 2; i < N; i++) {
     if (!state.collider.head.closest(l.x[i * 3], l.x[i * 3 + 1], l.x[i * 3 + 2], 0.05, hit)) continue;
     assert.ok(hit.distance > 0, `lock point ${i} is outside the body (${hit.distance.toFixed(4)} m)`);
   }
-  // Roots stay where they were pulled from.
+};
+
+test('gravity hangs a hairstyle in one pass: exact lengths, nothing inside the body, roots kept', () => {
+  const state = hairstyle();
+  assert.ok(state.locks.length >= 20, `${state.locks.length} locks pulled`);
+  const tipsBefore = state.locks.map(l => l.x[(N - 1) * 3 + 1]);
+  hang(state);
+  assert.ok(maxStretch(state) < 1e-3, `segment length error ${(maxStretch(state) * 100).toFixed(3)}%`);
+  assertOutside(state);
   for (const l of state.locks) assert.ok(new Vector3().fromArray(l.x, 0).distanceTo(l.rootP) < 1e-6);
+  // Gravity acted: the tips came down.
+  const lower = state.locks.filter((l, k) => l.x[(N - 1) * 3 + 1] < tipsBefore[k] - 0.01).length;
+  assert.ok(lower >= state.locks.length * 0.6, `${lower} of ${state.locks.length} tips came down`);
 });
 
-test('curled locks also come to rest (no endless trembling)', () => {
-  const state = hairstyle();
-  settle(state);
-  state.locks.forEach((l, k) => { if (k % 3 === 0) { l.curl = 0.85; l.turns = 5; } });
-  state.sim.wake();
-  const steps = settle(state);
-  assert.ok(state.sim.sleeping, `curled hairstyle asleep after ${steps} steps`);
-  assert.ok(maxStretch(state) < 1e-3);
+test('applying gravity again changes nothing, with curls too (nothing left to move)', () => {
+  for (const curl of [0, 0.85]) {
+    const state = hairstyle();
+    state.locks.forEach((l, k) => { if (curl && k % 3 === 0) { l.curl = curl; l.turns = 5; } });
+    hang(state);
+    const once = snapshot(state);
+    hang(state); hang(state);
+    assert.equal(largestMove(state, once), 0, `curl ${curl}: a second application moved the hair`);
+    assert.ok(maxStretch(state) < 1e-3);
+    assertOutside(state);
+  }
 });
 
-test('the settled shape set as rest holds against gravity and springs back after a pull', () => {
+test('an edit changes only the edited lock and the locks laid over it', () => {
   const state = hairstyle();
-  settle(state);
+  hang(state);
+  // The lock laid last (highest root) supports nothing: widening it moves no other lock.
+  const top = state.locks.reduce((a, b) => (b.rootP.y > a.rootP.y ? b : a));
+  const before = snapshot(state);
+  top.width *= 1.4;
+  hang(state);
+  state.locks.forEach((l, k) => { if (l !== top) for (let i = 0; i < N * 3; i++) assert.equal(l.x[i], before[k][i], 'another lock moved'); });
+});
+
+test('a lock with a set shape keeps it; a pin holds a point in the air', () => {
+  const state = hairstyle();
+  hang(state);
   for (const l of state.locks) { l.rest.set(l.x); l.styled = true; }
-  const snapshot = state.locks.map(l => Float32Array.from(l.x));
-  state.sim.wake(); settle(state);
-  let drift = 0;
-  state.locks.forEach((l, k) => { for (let i = 0; i < N * 3; i++) drift = Math.max(drift, Math.abs(l.x[i] - snapshot[k][i])); });
-  assert.ok(drift < 0.002, `styled hairstyle drifted ${(drift * 1000).toFixed(2)} mm`);
+  const shaped = snapshot(state);
+  state.sim.apply({ force: 1 });
+  assert.equal(largestMove(state, shaped), 0, 'styled locks moved');
+  // A free lock pinned out in the air: the pinned point stays, the rest hangs from it.
   const lock = state.locks[3];
-  for (let i = 2; i < N; i++) lock.x[i * 3] += 0.04 * i / N;
-  state.sim.wake(); settle(state);
-  let back = 0;
-  for (let i = 0; i < N * 3; i++) back = Math.max(back, Math.abs(lock.x[i] - snapshot[3][i]));
-  assert.ok(back < 0.003, `returned within ${(back * 1000).toFixed(2)} mm`);
+  lock.styled = false;
+  // Drawn straight out from the root (exact segment lengths), pinned at point 9.
+  const out = new Vector3(0, 0.15, 1).normalize();
+  for (let i = 1; i < N; i++) lock.rest.set(lock.rootP.clone().addScaledVector(out, lock.seg * i).toArray(), i * 3);
+  const pin = new Vector3().fromArray(lock.rest, 27);
+  lock.pins.set(9, pin);
+  hang(state);
+  assert.ok(new Vector3().fromArray(lock.x, 27).distanceTo(pin) < 0.004, 'pinned point held');
+  assert.ok(lock.x[(N - 1) * 3 + 1] < pin.y - 0.05, 'the part past the pin hangs down');
+  assert.ok(maxStretch({ locks: [lock] }) < 1e-3);
+});
+
+test('without gravity the locks keep their drawn shape (only kept out of the body)', () => {
+  const state = hairstyle();
+  const drawn = snapshot(state);
+  state.sim.apply({ force: 0 });
+  assertOutside(state);
+  let changed = 0;
+  state.locks.forEach((l, k) => { for (let i = 0; i < N; i++) changed = Math.max(changed, Math.hypot(l.x[i * 3] - drawn[k][i * 3], l.x[i * 3 + 1] - drawn[k][i * 3 + 1], l.x[i * 3 + 2] - drawn[k][i * 3 + 2])); });
+  assert.ok(changed < 0.03, `drawn shapes moved at most ${(changed * 1000).toFixed(1)} mm`);
 });
 
 test('cut and lengthen keep the root, the segment count and exact lengths', () => {
   const state = hairstyle();
-  settle(state);
+  hang(state);
   const lock = state.locks[0], root = new Vector3().fromArray(lock.x, 0);
   setLockLength(lock, 0.12);
   assert.ok(Math.abs(lockLength(lock) - 0.12) < 1e-6);
@@ -104,8 +142,8 @@ test('cut and lengthen keep the root, the segment count and exact lengths', () =
 
 test('save and load preserve geometry, roots and settings', () => {
   const state = hairstyle();
-  settle(state);
-  Object.assign(state.locks[1], { width: 0.041, volume: 0.55, taper: 0.4, curl: 0.6, turns: 6, twist: 1.2, stiffness: 0.7, styled: true });
+  hang(state);
+  Object.assign(state.locks[1], { width: 0.041, volume: 0.55, taper: 0.4, curl: 0.6, turns: 6, twist: 1.2, stiffness: 0.7, bend: -0.4, styled: true });
   state.locks[2].pins.set(10, new Vector3().fromArray(state.locks[2].x, 30));
   const saved = JSON.parse(JSON.stringify(serializeLocks(state)));
   const loaded = prepareLocks(human.context, normalizeLocks(saved));
@@ -114,7 +152,7 @@ test('save and load preserve geometry, roots and settings', () => {
     const o = state.locks[k];
     assert.deepEqual(l.root.v, o.root.v);
     for (let i = 0; i < N * 3; i++) assert.ok(Math.abs(l.x[i] - o.x[i]) < 2e-5, 'pose kept');
-    for (const key of ['width', 'volume', 'taper', 'curl', 'turns', 'twist', 'stiffness']) assert.ok(Math.abs(l[key] - o[key]) < 1e-3, key);
+    for (const key of ['width', 'volume', 'taper', 'curl', 'turns', 'twist', 'stiffness', 'bend']) assert.ok(Math.abs(l[key] - o[key]) < 1e-3, key);
     assert.equal(l.styled, o.styled);
     assert.equal(l.pins.size, o.pins.size);
   });
@@ -124,14 +162,14 @@ test('save and load preserve geometry, roots and settings', () => {
     const o = saved.locks[k];
     assert.deepEqual(l.r, o.r);
     for (const key of ['p', 'q']) l[key].forEach((v, i) => assert.ok(Math.abs(v - o[key][i]) < 3e-5, key));
-    for (const key of ['w', 'vo', 'ta', 'cu', 'tu', 'tw', 'st', 'sy']) assert.equal(l[key], o[key], key);
+    for (const key of ['w', 'vo', 'ta', 'cu', 'tu', 'tw', 'st', 'be', 'sy']) assert.equal(l[key], o[key], key);
     assert.deepEqual(l.pins.map(p => p[0]), o.pins.map(p => p[0]));
   });
 });
 
 test('lock meshes are closed, smooth tubes whose faces point outwards', () => {
   const state = hairstyle();
-  settle(state);
+  hang(state);
   state.locks[0].curl = 0.8; state.locks[1].twist = 3;
   for (const lock of state.locks.slice(0, 6)) {
     const s = lockSurface(lock, state);

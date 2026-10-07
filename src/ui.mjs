@@ -287,7 +287,7 @@ export class StudioUI {
   }
   lockPanelState() {
     const editor = this.renderer.lockEditor;
-    return `${[...editor.selected].sort((a, b) => a - b).join(',')}|${editor.locks.length}|${editor.settings.running}|${editor.settings.tool}|${editor.revision ?? 0}`;
+    return `${[...editor.selected].sort((a, b) => a - b).join(',')}|${editor.locks.length}|${editor.settings.tool}|${editor.revision ?? 0}`;
   }
   locksChanged() {
     const editor = this.renderer?.lockEditor;
@@ -299,8 +299,7 @@ export class StudioUI {
     const node = document.getElementById('lockStatus'), editor = this.renderer?.lockEditor;
     if (!node || !editor?.active) return;
     const s = editor.summary();
-    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''} · ${{ simulating: 'simulando', settled: 'em repouso', paused: 'pausado' }[s.status]}`;
-    node.dataset.state = s.status;
+    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''}${s.styled ? ` · ${s.styled} com forma fixa` : ''}`;
     const undo = document.getElementById('lockUndo'), redo = document.getElementById('lockRedo');
     if (undo) undo.disabled = !editor.undoStack.length;
     if (redo) redo.disabled = !editor.redoStack.length;
@@ -366,7 +365,7 @@ export class StudioUI {
       this.slide(shape, { label: 'Largura', value: lock.width, min: 0.006, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setParam('width', v) });
       this.slide(shape, { label: 'Volume', value: lock.volume, min: 0.12, max: 1, onStart: record, onInput: v => editor.setParam('volume', v), title: 'Espessura em relação à largura' });
       this.slide(shape, { label: 'Afunilar', value: lock.taper, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('taper', v), title: 'Quanto a mecha afina até a ponta' });
-      this.slide(shape, { label: 'Curvar', value: 0, min: -1, max: 1, onStart: () => editor.beginBend(), onInput: v => editor.bend(v), onEnd: (input, number) => { editor.endBend(); input.value = 0; number.value = '0.00'; } });
+      this.slide(shape, { label: 'Curvar', value: lock.bend, min: -1, max: 1, onStart: record, onInput: v => editor.setParam('bend', v), title: 'Pontas para dentro (+) ou para fora (−)' });
       this.slide(shape, { label: 'Enrolar', value: lock.curl, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('curl', v) });
       this.slide(shape, { label: 'Voltas', value: lock.turns, min: 0.5, max: 14, step: 0.1, onStart: record, onInput: v => editor.setParam('turns', v) });
       this.slide(shape, { label: 'Torcer', value: lock.twist * 180 / Math.PI, min: -540, max: 540, step: 1, unit: '°', onStart: record, onInput: v => editor.setParam('twist', v * Math.PI / 180) });
@@ -383,15 +382,14 @@ export class StudioUI {
       this.slide(fresh, { label: 'Afunilar', value: settings.taper, min: 0, max: 1, onInput: v => { settings.taper = v; } });
       fresh.append(h('button', { type: 'button', class: 'button wide', onclick: () => editor.selectAll() }, 'Selecionar todas as mechas'));
     }
-    // Physics.
+    // Gravity: an operation applied after each edit; nothing runs by itself.
     const physics = this.group('Gravidade');
     physics.append(h('p', { class: 'status-line', id: 'lockStatus' }));
+    this.slide(physics, { label: 'Força da gravidade', value: settings.gravity, min: 0, max: 1, onStart: record, onInput: v => editor.setGravity(v), title: '0: as mechas mantêm o formato desenhado' });
     physics.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', id: 'lockRun', onclick: () => { editor.setRunning(!settings.running); this.render(); }, title: 'Espaço' }, icon(settings.running ? 'pause' : 'resume', 16), settings.running ? 'Pausar' : 'Continuar'),
-      h('button', { type: 'button', class: 'button', onclick: () => { editor.settleNow(); this.updateLockStatus(); }, title: 'Simula até tudo parar' }, icon('settle', 16), 'Assentar'),
+      h('button', { type: 'button', class: 'button', id: 'lockGravity', onclick: () => editor.applyGravity(), title: 'Assenta as mechas soltas pela gravidade' }, icon('settle', 16), 'Aplicar gravidade'),
       h('button', { type: 'button', class: 'button primary', id: 'lockSetRest', onclick: () => editor.setRest(), title: 'O formato atual vira a forma do penteado e resiste à gravidade' }, icon('lock', 16), 'Fixar forma'),
       h('button', { type: 'button', class: 'button', onclick: () => editor.releaseRest(), title: 'As mechas voltam a cair com a gravidade' }, icon('unlock', 16), 'Soltar forma')));
-    this.toggle(physics, 'Gravidade ligada', settings.gravity, on => editor.setGravity(on));
     // Files.
     const files = this.group('Arquivo', { open: false });
     const nameInput = h('input', { type: 'text', id: 'lockSlotName', value: this.lockSlot ?? 'Meu penteado', maxlength: 40, 'aria-label': 'Nome do penteado' });

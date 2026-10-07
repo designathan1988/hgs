@@ -72,7 +72,6 @@ window.addEventListener('keydown', event => {
     if (key === 'delete') { event.preventDefault(); editor.deleteSelected(); return; }
     if (!command && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
     if (!command && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
-    if (key === ' ' && !event.target.matches?.('button')) { event.preventDefault(); editor.setRunning(!editor.settings.running); ui.render(); return; }
   }
   if (ui.sculpting && command) {
     if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoSculpt(); }
