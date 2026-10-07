@@ -10,7 +10,6 @@ import { eyePalette } from './state.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
-import { prepareGroom, groomMesh } from './groom.mjs';
 import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial } from './locks.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 
@@ -536,48 +535,6 @@ async function addSurfaceEyes(context, eyeColor = 0, irisColor) {
   }
 }
 
-/** Scalp colour under a custom groom, following its hairline with a soft edge. */
-function groomScalp(context, state, hairColor) {
-  const original = context.body.geometry;
-  const pos = original.getAttribute('position'), normals = original.getAttribute('normal');
-  const joints = original.getAttribute('skinIndex'), weights = original.getAttribute('skinWeight');
-  const baseIds = original.userData.baseIds;
-  // Painted-hairline underlay in a shade close to the hair colour.
-  const hair = new Color(hairColor).multiplyScalar(0.6);
-  const out = { pos: [], normal: [], joints: [], weights: [], color: [], index: [] };
-  // Only under the roots: roots are sampled on faces wholly inside the
-  // hairline, so the first row starts about one face (field ~0.03) in. The
-  // underlay fades in from there; painted ahead of the roots it showed as a
-  // bare band on the forehead.
-  const alphaAt = v => { const t = Math.min(1, Math.max(0, (state.field[baseIds[v]] - 0.02) / 0.06)); return t * t * (3 - 2 * t); };
-  for (let quad = 0; quad < original.index.count; quad += 6) {
-    const first = original.index.array[quad];
-    const alpha = [0, 1, 2, 3].map(k => alphaAt(first + k));
-    if (Math.max(...alpha) <= 0) continue;
-    const at = out.pos.length / 3;
-    for (let k = 0; k < 4; k++) {
-      const v = first + k;
-      out.pos.push(pos.getX(v) + normals.getX(v) * 0.0012, pos.getY(v) + normals.getY(v) * 0.0012, pos.getZ(v) + normals.getZ(v) * 0.0012);
-      out.normal.push(normals.getX(v), normals.getY(v), normals.getZ(v));
-      out.color.push(hair.r, hair.g, hair.b, alpha[k]);
-      for (let j = 0; j < 4; j++) { out.joints.push(joints.getComponent(v, j)); out.weights.push(weights.getComponent(v, j)); }
-    }
-    out.index.push(at, at + 1, at + 2, at, at + 2, at + 3);
-  }
-  if (!out.index.length) return;
-  const geometry = new BufferGeometry();
-  geometry.setAttribute('position', new Float32BufferAttribute(out.pos, 3));
-  geometry.setAttribute('normal', new Float32BufferAttribute(out.normal, 3));
-  geometry.setAttribute('skinIndex', new Uint16BufferAttribute(out.joints, 4));
-  geometry.setAttribute('skinWeight', new Float32BufferAttribute(out.weights, 4));
-  geometry.setAttribute('color', new Float32BufferAttribute(out.color, 4));
-  geometry.setIndex(out.index);
-  const scalp = new SkinnedMesh(geometry, new MeshStandardMaterial({ vertexColors: true, transparent: true, depthWrite: false, roughness: 0.95, side: DoubleSide }));
-  scalp.name = 'ScalpUnderlay';
-  context.group.add(scalp);
-  scalp.bind(context.body.skeleton, context.body.bindMatrix);
-}
-
 async function addScalpUnderlay(context, hairColor) {
   if (context.lod === 'low') return;
   const original = context.body.geometry;
@@ -741,14 +698,6 @@ export async function dressHuman(context, spec) {
           scalp.bind(context.body.skeleton, context.body.bindMatrix);
         }
       }
-    } else if (hair.style === 'groom') {
-      // A custom groom: guide strands styled in the Groom editor, built as hair cards.
-      const state = prepareGroom(context, spec.hairGroom);
-      context.groomState = state;
-      const mesh = groomMesh(context, state, spec.hairColor ?? 0x30231e);
-      context.group.add(mesh);
-      mesh.bind(context.body.skeleton, context.body.bindMatrix);
-      if (context.lod !== 'low') groomScalp(context, state, spec.hairColor ?? 0x30231e);
     } else if (shellStyles[hair.style]) {
       context.shellStyle = hair.style;
       const shape = shellStyles[hair.style];

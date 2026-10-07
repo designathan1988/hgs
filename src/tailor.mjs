@@ -20,7 +20,7 @@ import { drapeCloth } from './cloth.mjs';
  * is fully covered is removed, so an outfit is one draw call with no overdraw.
  */
 export const garmentTypes = ['tshirt', 'longsleeve', 'tank', 'hoodie', 'pants', 'shorts', 'skirt', 'dress', 'socks', 'gloves', 'paint'];
-export const garmentLabels = { tshirt: 'T-shirt', longsleeve: 'Long sleeve', tank: 'Tank top', hoodie: 'Sweater', pants: 'Trousers', shorts: 'Shorts', skirt: 'Skirt', dress: 'Dress', socks: 'Socks', gloves: 'Gloves', paint: 'Painted (blank)' };
+export const garmentLabels = { tshirt: 'Camiseta', longsleeve: 'Manga longa', tank: 'Regata', hoodie: 'Moletom', pants: 'Calça', shorts: 'Bermuda', skirt: 'Saia', dress: 'Vestido', socks: 'Meias', gloves: 'Luvas', paint: 'Livre (pintada)' };
 export const garmentPatterns = ['solid', 'stripes', 'pinstripe', 'checks', 'gradient'];
 const defaults = {
   tshirt: { sleeve: 0.3, length: 0.85, neckline: 0.25, fit: 0.3, color: '#3c5a78' },

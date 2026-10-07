@@ -5,10 +5,10 @@ import {
 import {
   LOCK_POINTS as N, arcLengthAt, bendLock, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface,
   locksScalpColors, locksUnderlayGeometry, makeLock, normalizeLocks, prepareLocks, resamplePolyline, rootFromHit,
-  serializeLocks, setLockLength, underlayMaterial, updateGeometry,
+  serializeLocks, setLockLength, underlayMaterial, updateGeometry, combLock,
 } from './locks.mjs';
 
-export const lockTools = ['pull', 'select', 'grow', 'cut', 'pin'];
+export const lockTools = ['brush', 'pull', 'select', 'grow', 'cut', 'pin'];
 const SLOT_PREFIX = 'hgs.locks.';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const storage = {
@@ -28,7 +28,7 @@ export class LockEditor {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { tool: 'pull', running: true, gravity: true, pinOnRelease: false, showScalp: true, mirror: false, width: 0.05, volume: 0.3, taper: 0.85 };
+    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, running: true, gravity: true, pinOnRelease: false, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.onChange = () => {};
@@ -57,7 +57,9 @@ export class LockEditor {
     this.scalpOverlay.renderOrder = 3;
     this.underlay = new Mesh(new BufferGeometry(), underlayMaterial());
     this.underlay.renderOrder = 2;
-    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay);
+    this.hoverMark = new Mesh(this.handleGeometry, new MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.95 }));
+    this.hoverMark.renderOrder = 11; this.hoverMark.visible = false;
+    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers();
     this.accumulator = 0;
   }
@@ -146,12 +148,12 @@ export class LockEditor {
     let h = 0, p = 0;
     this.locks.forEach((lock, n) => {
       if (this.selected.has(n)) for (let i = 2; i < N && h < 400; i++) {
-        const s = 0.0028 * k;
+        const s = 0.0042 * k;
         m.makeScale(s, s, s).setPosition(lock.x[i * 3], lock.x[i * 3 + 1], lock.x[i * 3 + 2]);
         this.handles.setMatrixAt(h++, m);
       }
       for (const [i] of lock.pins) if (p < 400) {
-        const s = 0.0048 * k;
+        const s = 0.0062 * k;
         m.makeScale(s, s, s).setPosition(lock.x[i * 3], lock.x[i * 3 + 1], lock.x[i * 3 + 2]);
         this.pinMarks.setMatrixAt(p++, m);
       }
@@ -208,6 +210,39 @@ export class LockEditor {
     const root = rootFromHit(this.state, [hit.face.a, hit.face.b, hit.face.c].map(v => baseIds[v]), hit.point);
     return { root, point: hit.point.clone(), distance: hit.distance };
   }
+  /**
+   * The chain point nearest the cursor on screen (within ~20 px): on the
+   * selected locks first (their points are drawn on top), else on the lock
+   * under the cursor. Points need not be hit exactly.
+   */
+  pickPoint(ndc, camera) {
+    const limit = 0.05, p = new Vector3();
+    let best = null, bestD = limit * limit;
+    const scan = n => {
+      const lock = this.locks[n];
+      for (let i = 2; i < N; i++) {
+        p.fromArray(lock.x, i * 3).project(camera);
+        if (p.z > 1) continue;
+        const d = ((p.x - ndc.x) * camera.aspect) ** 2 + (p.y - ndc.y) ** 2;
+        if (d < bestD) { bestD = d; best = { index: n, pointIndex: i, point: new Vector3().fromArray(lock.x, i * 3) }; }
+      }
+    };
+    for (const n of this.selected) if (this.locks[n]) scan(n);
+    if (best) return best;
+    const hit = this.pickLock(ndc, camera);
+    if (!hit) return null;
+    return { index: hit.index, pointIndex: this.nearestIndex(this.locks[hit.index], hit.point), point: hit.point, distance: hit.distance };
+  }
+  /** Highlight the point the current tool would take. */
+  hover(ndc, camera) {
+    if (!this.state || this.drag) return;
+    const tool = this.settings.tool, mark = this.hoverMark;
+    const pick = ['pull', 'pin', 'grow'].includes(tool) ? this.pickPoint(ndc, camera) : null;
+    mark.visible = Boolean(pick);
+    if (!pick) return;
+    const lock = this.locks[pick.index], i = tool === 'grow' ? N - 1 : pick.pointIndex, size = 0.0068 * this.state.frame.R / 0.11;
+    mark.position.fromArray(lock.x, i * 3); mark.scale.setScalar(size);
+  }
   nearestIndex(lock, point) {
     let best = Infinity, index = N - 1;
     for (let i = 2; i < N; i++) {
@@ -228,10 +263,19 @@ export class LockEditor {
       this.choose(lockHit.index, { shift, ctrl });
       return true;
     }
+    if (tool === 'brush') {
+      const scalpHit = this.pickScalp(ndc, camera);
+      if (!scalpHit?.root) return false;
+      this.checkpoint();
+      if (!shift) this.selected.clear();
+      this.drag = { tool, last: scalpHit.point.clone(), lastNdc: { x: ndc.x, y: ndc.y }, made: 0 };
+      return true;
+    }
     if (tool === 'pull') {
       const scalpHit = this.pickScalp(ndc, camera);
-      // A lock in front of the scalp is grabbed; bare scalp sprouts a new lock.
-      if (lockHit && (!scalpHit || lockHit.distance <= scalpHit.distance + 0.002)) return this.grab(lockHit, camera, { shift, ctrl });
+      const point = this.pickPoint(ndc, camera);
+      // A lock point near the cursor is grabbed; bare scalp sprouts a new lock.
+      if (point && (!scalpHit || point.distance === undefined || point.distance <= scalpHit.distance + 0.002)) return this.grab(point, camera, { shift, ctrl });
       if (scalpHit?.root) return this.sprout(scalpHit, camera, { shift });
       return false;
     }
@@ -255,9 +299,10 @@ export class LockEditor {
       return true;
     }
     if (tool === 'pin') {
-      if (!lockHit) return false;
+      const pick = this.pickPoint(ndc, camera);
+      if (!pick) return false;
       this.checkpoint();
-      const lock = this.locks[lockHit.index], i = this.nearestIndex(lock, lockHit.point);
+      const lockHit = pick, lock = this.locks[pick.index], i = pick.pointIndex;
       const existing = [i - 1, i, i + 1].find(j => lock.pins.has(j));
       if (existing !== undefined) lock.pins.delete(existing);
       else lock.pins.set(i, new Vector3().fromArray(lock.x, i * 3));
@@ -327,9 +372,10 @@ export class LockEditor {
   }
   grab(hit, camera, { shift = false, ctrl = false } = {}) {
     this.checkpoint();
-    const lock = this.locks[hit.index], index = this.nearestIndex(lock, hit.point);
+    const lock = this.locks[hit.index], index = hit.pointIndex ?? this.nearestIndex(lock, hit.point);
     if (!this.selected.has(hit.index) || shift || ctrl) this.choose(hit.index, { shift: shift || this.selected.has(hit.index), ctrl: false });
     const at = new Vector3().fromArray(lock.x, index * 3);
+    this.hoverMark.visible = false;
     const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), at);
     lock.grab = { index, point: at.clone() };
     this.drag = { tool: 'grab', lock, plane, offset: at.clone().sub(hit.point) };
@@ -360,6 +406,28 @@ export class LockEditor {
         if (!this.settings.running) this.state.sim.pose(drag.lock);
       }
       this.touch();
+      return;
+    }
+    if (drag.tool === 'brush') {
+      // Every few centimetres along the stroke a lock is combed from the
+      // scalp in the stroke's direction (and mirrored when asked).
+      // The stroke is followed on screen in small steps, so a fast move
+      // still plants locks all along it.
+      const from = drag.lastNdc ?? { x: ndc.x, y: ndc.y }, n = Math.max(1, Math.ceil(Math.hypot(ndc.x - from.x, ndc.y - from.y) / 0.004));
+      const params = { width: this.settings.width, volume: this.settings.volume, taper: this.settings.taper };
+      for (let k = 1; k <= n; k++) {
+        const hit = this.pickScalp({ x: from.x + (ndc.x - from.x) * k / n, y: from.y + (ndc.y - from.y) * k / n }, camera);
+        if (!hit?.root) continue;
+        const step = hit.point.clone().sub(drag.last);
+        if (step.length() < this.settings.brushSpacing) continue;
+        const lock = combLock(this.state, hit.root, step, this.settings.brushLength, params);
+        this.locks.push(lock); this.selected.add(this.locks.length - 1);
+        const twinRoot = this.settings.mirror && Math.abs(lock.rootP.x) > 0.004 ? this.mirrorRoot(lock) : null;
+        if (twinRoot) { this.locks.push(combLock(this.state, twinRoot, new Vector3(-step.x, step.y, step.z), this.settings.brushLength, params)); this.selected.add(this.locks.length - 1); }
+        drag.last.copy(hit.point); drag.made++;
+      }
+      drag.lastNdc = { x: ndc.x, y: ndc.y };
+      this.touch(); this.syncMeshes(); this.updateHelpers();
       return;
     }
     if (drag.tool === 'grow') {

@@ -7,52 +7,48 @@ const ui = new StudioUI();
 let renderer;
 let drag = null;
 const sculptHit = event => renderer?.sculpt.hit(sculptNdc(event, canvas), renderer.viewCamera);
-const groomPoint = event => {
-  const rect = canvas.getBoundingClientRect();
-  return { ndc: sculptNdc(event, canvas), pixel: { x: event.clientX - rect.left, y: event.clientY - rect.top, clone() { return { ...this }; } } };
-};
 const held = new Set();
 window.addEventListener('keyup', event => held.delete(event.key.toLowerCase()));
+// Navigation: the wheel zooms, the middle button (wheel pressed) orbits around
+// the character and Shift + middle button pans. While editing hair or
+// sculpting, the left button belongs to the tool and never moves the camera;
+// elsewhere a left drag also orbits.
 canvas.addEventListener('pointerdown', event => {
   canvas.setPointerCapture(event.pointerId);
-  // In Mechas, a left press on a lock or the scalp uses the current tool
-  // (Shift-drag off the hair still pans).
-  if (ui.locking && event.button === 0 && !event.altKey) {
+  if (event.button === 1) { event.preventDefault(); drag = { x: event.clientX, y: event.clientY, pan: event.shiftKey }; return; }
+  if (event.button !== 0) { drag = null; return; }
+  if (ui.locking) {
     const editor = renderer.lockEditor, ndc = sculptNdc(event, canvas);
-    const panning = event.shiftKey && editor.settings.tool === 'pull' && !editor.pickLock(ndc, renderer.viewCamera);
-    if (!panning && editor.pointerDown(ndc, renderer.viewCamera, { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey })) { drag = { locks: true }; return; }
+    drag = editor.pointerDown(ndc, renderer.viewCamera, { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey }) ? { locks: true } : null;
+    return;
   }
-  // In Groom, a left press on hair or a handle uses the current tool.
-  if (ui.grooming && event.button === 0 && !event.altKey) {
-    const { ndc, pixel } = groomPoint(event);
-    if (renderer.groom.pointerDown(ndc, pixel, renderer.viewCamera, { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey })) { drag = { groom: true }; return; }
-  }
-  // In Sculpt, a left drag that starts on the model is a brush stroke.
-  if (ui.sculpting && event.button === 0 && !event.shiftKey && !event.altKey) {
+  if (ui.sculpting) {
     const hit = sculptHit(event);
+    drag = null;
     if (hit) {
       const settings = renderer.sculpt.settings, invert = settings.invert;
       if (event.ctrlKey || event.metaKey) settings.invert = !invert;
       renderer.sculpt.begin(hit, sculptNdc(event, canvas), renderer.viewCamera);
       drag = { sculpt: true, restoreInvert: invert };
-      return;
     }
+    return;
   }
-  drag = { x: event.clientX, y: event.clientY, pan: event.shiftKey || event.button === 1 || event.button === 2 };
+  drag = { x: event.clientX, y: event.clientY, pan: false };
 });
+canvas.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
+canvas.addEventListener('auxclick', event => event.preventDefault());
 canvas.addEventListener('pointermove', event => {
   if (!renderer) return;
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
+  if (ui.locking && !drag) renderer.lockEditor.hover(sculptNdc(event, canvas), renderer.viewCamera);
   if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
-  if (ui.grooming && (drag?.groom || !drag)) { const { ndc, pixel } = groomPoint(event); renderer.groom.pointerMove(ndc, pixel, renderer.viewCamera); if (drag?.groom) return; }
   if (!drag) return;
   const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
   if (drag.pan) renderer.camera.pan(dx, dy); else renderer.camera.orbit(dx, dy);
   drag.x = event.clientX; drag.y = event.clientY;
 });
 const release = () => {
-  if (drag?.groom) renderer.groom.pointerUp({ pin: held.has('p') });
   if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p') });
   if (drag?.sculpt) {
     const target = renderer.sculpt.end();
@@ -65,25 +61,23 @@ canvas.addEventListener('pointerup', release);
 canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('pointerleave', () => { if (renderer && !drag) renderer.sculpt.cursor.visible = false; });
 window.addEventListener('keydown', event => {
-  if (!event.target.matches?.('input, textarea, select')) held.add(event.key.toLowerCase());
-  if (ui.locking && !event.target.matches?.('input[type=text], input:not([type]), textarea, select')) {
-    const key = event.key.toLowerCase(), editor = renderer.lockEditor;
-    if ((event.ctrlKey || event.metaKey) && key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo(); return; }
-    if ((event.ctrlKey || event.metaKey) && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); editor.redo(); return; }
+  const typing = event.target.matches?.('input[type=text], input[type=number], input:not([type]), textarea, select');
+  if (!typing) held.add(event.key.toLowerCase());
+  if (typing) return;
+  const key = event.key.toLowerCase(), command = event.ctrlKey || event.metaKey;
+  if (ui.locking) {
+    const editor = renderer.lockEditor;
+    if (command && key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo(); return; }
+    if (command && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); editor.redo(); return; }
     if (key === 'delete') { event.preventDefault(); editor.deleteSelected(); return; }
-    if (!event.ctrlKey && !event.metaKey && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
-    if (!event.ctrlKey && !event.metaKey && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
-    if (key === ' ' && !event.target.matches?.('button, input')) { event.preventDefault(); editor.setRunning(!editor.settings.running); ui.render(); return; }
+    if (!command && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
+    if (!command && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
+    if (key === ' ' && !event.target.matches?.('button')) { event.preventDefault(); editor.setRunning(!editor.settings.running); ui.render(); return; }
   }
-  if (ui.grooming && (event.ctrlKey || event.metaKey)) {
-    const key = event.key.toLowerCase();
-    if (key === 'z' && !event.shiftKey) { event.preventDefault(); renderer.groom.undo(); return; }
-    if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); renderer.groom.redo(); return; }
+  if (ui.sculpting && command) {
+    if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoSculpt(); }
+    else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); ui.redoSculpt(); }
   }
-  if (!ui.sculpting || !(event.ctrlKey || event.metaKey) || event.target.matches('input[type=text], textarea')) return;
-  const key = event.key.toLowerCase();
-  if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoSculpt(); }
-  else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); ui.redoSculpt(); }
 });
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 canvas.addEventListener('wheel', event => { event.preventDefault(); renderer?.camera.zoom(event.deltaY); }, { passive: false });
@@ -101,8 +95,7 @@ try {
       if (stats) {
         frames++; aggregate += delta;
         if (now - bucketStart >= 450) {
-          const fps = Math.round(frames * 1000 / aggregate);
-          ui.updateStats({ fps, frameTime: `${(aggregate / frames).toFixed(1)} ms`, vertices: stats.vertices.toLocaleString(), triangles: stats.triangles.toLocaleString(), drawCalls: stats.draws, visible: stats.visible, skeletons: stats.skeletons, faces: stats.faces, lod: stats.lod });
+          ui.updateStats({ ...stats, fps: Math.round(frames * 1000 / aggregate), frameTime: aggregate / frames });
           frames = 0; aggregate = 0; bucketStart = now;
         }
       }

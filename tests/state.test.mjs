@@ -6,18 +6,20 @@ test('the same seed produces the same complete person', () => {
   const first = randomCharacter(1447);
   assert.deepEqual(first, randomCharacter(1447));
   assert.notDeepEqual(first, randomCharacter(1448));
-  for (const key of ['age', 'height', 'build', 'skin', 'hairStyle', 'hairColor', 'eyeColor', 'outfit', 'expression']) {
+  for (const key of ['age', 'height', 'build', 'skin', 'hairPreset', 'hairColor', 'eyeColor', 'outfit', 'expression']) {
     assert.ok(key in first, `${key} is generated`);
   }
 });
 
 test('imported presets are bounded and retain a usable character', () => {
-  const imported = parsePreset(JSON.stringify({ name: 'Ada', height: 9, age: -10, skin: 999, hairStyle: 'bad', outfit: 3 }));
+  const imported = parsePreset(JSON.stringify({ name: 'Ada', height: 9, age: -10, skin: 999, hairPreset: 'bad', outfit: 3 }));
   assert.equal(imported.name, 'Ada');
   assert.equal(imported.height, 1.98);
   assert.equal(imported.age, 18);
   assert.equal(imported.skin, 7);
-  assert.equal(imported.hairStyle, defaultCharacter.hairStyle);
+  assert.equal(imported.hairPreset, defaultCharacter.hairPreset);
+  // Presets saved with the old CC0 hair index get the nearest mesh-lock style.
+  assert.equal(parsePreset(JSON.stringify({ hairStyle: 10 })).hairPreset, 'cacheado');
   assert.equal(imported.outfit, 3);
   assert.deepEqual(parsePreset(serializePreset(normalizeCharacter(imported))), imported);
 });

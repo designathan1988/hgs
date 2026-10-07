@@ -7,15 +7,17 @@ import { LoopOnce, LoopRepeat } from 'three';
 import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
 import { oneShotClips } from './motion.mjs';
 import { SculptSession } from './sculpt.mjs';
-import { GroomEditor } from './groom-editor.mjs';
 import { LockEditor } from './lock-editor.mjs';
-import { hairTextures } from './appearance.mjs';
-import { ageHeightReference, randomCharacter, hairStyles, hairPalette, topPalette, bottomPalette } from './state.mjs';
+import { hairPresetData } from './hair-presets.mjs';
+import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPalette } from './state.mjs';
 
 const femaleOutfits = ['female_casualsuit01', 'female_casualsuit02', 'female_elegantsuit01', 'female_sportsuit01'];
 const maleOutfits = ['male_casualsuit01', 'male_casualsuit02', 'male_elegantsuit01', 'male_worksuit01'];
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
 const hex = value => parseInt(value.slice(1), 16);
+
+/** The locks a character's hair is built from: its edited locks, else its ready-made style. */
+export const hairLocksOf = person => person.locks ?? hairPresetData(person.hairPreset);
 
 export function studioSpec(person, { undressed = false } = {}) {
   const features = {
@@ -48,9 +50,9 @@ export function studioSpec(person, { undressed = false } = {}) {
     eyebrows: { angle: person.browAngle ?? 0, shape: ['natural', 'straight', 'arched', 'angled'][person.browShape ?? 0],
       arch: person.browArch ?? 0, thickness: person.browThickness ?? 1, width: person.browWidth ?? 1,
       height: person.browHeight ?? 0, density: person.browDensity ?? 1 },
-    hair: { style: (hairStyles[person.hairStyle] ?? hairStyles[5])[1],
-      length: clamp(0.55 + person.hairLength * (person.hairStyle === 2 ? 0.7 : 1), 0.4, 1.6), volume: person.hairVolume ?? 0.1,
-      texture: hairTextures[person.hairTexture ?? 0] ?? 'straight', curl: person.hairCurl ?? 0.5 },
+    // Hair is mesh locks: the edited locks, else the chosen ready-made style.
+    hair: { style: hairLocksOf(person)?.locks.length ? 'locks' : 'none' },
+    hairLocks: hairLocksOf(person),
     hairColor: hex(colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1]),
     browColor: colors.brows ? hex(colors.brows) : undefined,
     lashes: { length: person.lashLength ?? 1, curl: person.lashCurl ?? 0.5, density: person.lashDensity ?? 1, color: colors.lashes ? hex(colors.lashes) : undefined },
@@ -58,8 +60,6 @@ export function studioSpec(person, { undressed = false } = {}) {
       bottomColor: hex(colors.bottom ?? bottomPalette[person.bottomColor] ?? bottomPalette[0]) },
     shoes: undressed ? 'none' : 'shoes01',
     sculpt: person.sculpt,
-    hairGroom: person.groom,
-    hairLocks: person.locks,
     animationSpeed: person.animationSpeed,
     pose: person.pose,
     faceWeights: faceWeights(person.expression, person.expressionIntensity ?? 0.5, person.faceShapes),
@@ -125,7 +125,6 @@ export class Renderer {
     this.crowdPrototypes = []; this.crowdVersion = 0;
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
-    this.groom = new GroomEditor(this); this.groomMode = false;
     this.lockEditor = new LockEditor(this); this.locksMode = false;
   }
   async setCharacter(person) {
@@ -149,7 +148,6 @@ export class Renderer {
       // Crowd variants depend only on the seed, so other edits keep the crowd.
       if (crowdSeed !== person.seed || this.crowdBuiltFor !== this.requestedCrowd) this.setCrowdCount(this.requestedCrowd);
       if (this.sculptMode) this.freezeForSculpt();
-      if (this.groomMode) this.beginGroom();
       if (this.locksMode) this.beginLocks();
       return true;
     } catch (error) { this.onError(error.message); console.error(error); return false; }
@@ -191,30 +189,8 @@ export class Renderer {
     applyFaceWeights(this.current.faceMeshes, {});
     this.sculpt.prepare(this.current, { pins: this.person?.sculpt?.pins?.[this.current.group.getObjectByName('Hair')?.userData.style] });
   }
-  get frozen() { return this.sculptMode || this.groomMode || this.locksMode; }
-  /** Groom editing: rest pose, live guide physics, cards regenerated as you work. */
-  setGroomMode(on) {
-    this.groomMode = on;
-    if (on) this.beginGroom();
-    else {
-      const data = this.groom.end();
-      if (this.person) this.setPresentation(this.person);
-      return data;
-    }
-    return null;
-  }
-  beginGroom() {
-    if (!this.current) return;
-    this.mixer?.stopAllAction(); this.action = null;
-    this.current.body.skeleton.pose();
-    applyFaceWeights(this.current.faceMeshes, {});
-    const keep = this.groom.active ? this.groom.end() : null;
-    this.groom.begin(this.current, keep ?? this.person?.groom ?? null, this.hairColor ?? 0x30231e);
-    // Grooming happens around the head: frame it unless the user already zoomed in.
-    const height = this.current.metrics.height;
-    if (this.camera.distance > 1.2) { this.camera.yaw = 0.5; this.camera.pitch = 0.1; this.camera.distance = 0.85; this.camera.target.set(0, height * 0.9, 0); }
-  }
-  /** Mesh-lock editing (Mechas): rest pose, live lock physics, meshes rebuilt as you work. */
+  get frozen() { return this.sculptMode || this.locksMode; }
+  /** Hair editing: rest pose, live lock physics, meshes rebuilt as you work. */
   setLocksMode(on) {
     this.locksMode = on;
     if (on) { this.beginLocks(); return null; }
@@ -228,7 +204,7 @@ export class Renderer {
     this.current.body.skeleton.pose();
     applyFaceWeights(this.current.faceMeshes, {});
     const keep = this.lockEditor.active ? this.lockEditor.end() : null;
-    this.lockEditor.begin(this.current, keep ?? this.person?.locks ?? null, this.hairColor ?? 0x30231e);
+    this.lockEditor.begin(this.current, keep ?? (this.person ? hairLocksOf(this.person) : null), this.hairColor ?? 0x30231e);
     const height = this.current.metrics.height;
     if (this.camera.distance > 1.2) { this.camera.yaw = 0.55; this.camera.pitch = 0.12; this.camera.distance = 1.05; this.camera.target.set(0, height * 0.88, 0); }
   }
@@ -312,7 +288,6 @@ export class Renderer {
     this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (!this.frozen) this.mixer?.update(dt);
-    if (this.groomMode && this.groom.active) this.groom.step(dt || 1 / 60);
     if (this.locksMode && this.lockEditor.active) this.lockEditor.step(dt || 1 / 60);
     // Clips animate blinks and the jaw; keep the chosen expression underneath.
     for (const mesh of this.frozen ? [] : this.current?.faceMeshes ?? []) {

@@ -2,7 +2,7 @@ import {
   BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, Float32BufferAttribute, MeshStandardMaterial, RepeatWrapping,
   SkinnedMesh, Triangle, Uint16BufferAttribute, Uint32BufferAttribute, Vector2, Vector3,
 } from 'three';
-import { defaultHairline, hairCollider, hairWeights, headFrame, scalpField, vertexNormals } from './groom.mjs';
+import { defaultHairline, hairCollider, hairWeights, headFrame, scalpField, vertexNormals } from './scalp.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -40,7 +40,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const round = (v, digits = 1e5) => Math.round(v * digits) / digits;
 
-export const lockDefaults = Object.freeze({ width: 0.05, volume: 0.3, taper: 0.85, curl: 0, turns: 4, twist: 0, stiffness: 0.35 });
+export const lockDefaults = Object.freeze({ width: 0.05, volume: 0.18, taper: 0.85, curl: 0, turns: 4, twist: 0, stiffness: 0.35 });
 export const lockLimits = Object.freeze({
   width: [0.006, 0.09], volume: [0.12, 1], taper: [0, 1], curl: [0, 1], turns: [0.5, 14], twist: [-TAU * 1.5, TAU * 1.5], stiffness: [0, 1],
   length: [0.015, 1.1],
@@ -284,7 +284,7 @@ export class LockSim {
     this.fixed = new Uint8Array(N); this.target = new Float32Array(N * 3);
     this.before = new Float32Array(N * 3); this.contact = new Uint8Array(N);
   }
-  wake() { this.sleeping = false; this.calm = 0; this.awake = 0; for (const lock of this.state.locks) lock.calm = 0; }
+  wake() { this.sleeping = false; this.calm = 0; this.awake = 0; for (const lock of this.state.locks) { lock.calm = 0; lock.awakeSteps = 0; } }
   /** Global (towards the styled shape) and local (segment direction) shape strengths at point i. */
   shape(lock, i) {
     const u = i / (N - 1), st = lock.stiffness;
@@ -376,14 +376,23 @@ export class LockSim {
       // A point resting between two surfaces (skin under a shirt) can flip
       // between two valid contacts every step: no net motion over two steps
       // counts as still as well, and the lock is frozen in one of them.
-      const still = m < 2.5e-4 || (m2 < 2.5e-4 && m < 0.004);
+      // The stillness threshold rises after ~4 s awake (PhysX-style wake
+      // counter), so any small limit cycle (a tip rocking on a collar)
+      // still comes to rest in bounded time.
+      lock.awakeSteps = lock.grab || lock.hold ? 0 : (lock.awakeSteps ?? 0) + 1;
+      const eps = 2.5e-4 * Math.min(8, 1 + Math.max(0, lock.awakeSteps - 240) / 90);
+      const still = m < eps || (m2 < eps && m < 0.004);
       // Lock sleeping (Macklin et al. 2014, eq. 14, per lock so lengths stay
       // exact): a lock that has moved less than 15 mm/s for 12 steps in a row
       // is frozen where it is, which removes positional drift (creep).
       const held = lock.grab || lock.hold;
       // Once asleep a lock stays put until held, edited (wake) or pushed by another lock.
       const asleep = (lock.calm ?? 0) >= 12;
-      lock.calm = !held && !(lock.pushed > 2.5e-4) && (asleep || still) ? (lock.calm ?? 0) + 1 : 0;
+      // A real push from a moving neighbour (over 2 mm, a lock landing on it)
+      // wakes a resting lock, which otherwise acts as a fixed support; an awake lock
+      // counts as still by its own motion (two locks in contact pushing each
+      // other a fraction of a millimetre would otherwise never rest).
+      lock.calm = !held && (asleep ? !(lock.pushed > 2e-3) : still) ? (lock.calm ?? 0) + 1 : 0;
       lock.pushed = 0;
       if (lock.calm >= 12) { lock.x.set(lock.prev); lock.old.set(lock.prev); m = 0; frozen++; }
       moved = Math.max(moved, m);
@@ -458,51 +467,69 @@ export class LockSim {
     if (!collider || i < 2) return false;
     return collider.resolve(lock.x, i * 3, Math.min(0.028, collisionRadius(lock, i)));
   }
-  /** Lock-lock contact: points of different locks closer than their thicknesses are pushed apart (with their previous positions, so no velocity is added). */
+  /**
+   * Lock-lock contact over each lock's real footprint, not just its centre
+   * line: a lock is a flat band (half-width a, half-thickness b). Where the
+   * footprints of two locks overlap sideways (measured in the plane tangent to
+   * the head), the upper lock must lie at least b_upper + b_lower further out
+   * than the lower one. Hair from higher on the head lies over hair from lower
+   * down, so only the upper lock moves, and only outwards: it never presses
+   * the one below into the skin, the order cannot flip, and resting locks do
+   * not slide sideways. Contacts are position-only and inelastic.
+   */
   separate(locks) {
-    const cell = 0.02, grid = new Map(), items = [];
+    if (locks.length < 2) return;
+    const C = this.state.frame.C, items = [];
+    let reach = 0.01;
     locks.forEach((lock, n) => {
       if (lock.hold) return;
-      for (let i = 3; i < N; i++) items.push([n, i, collisionRadius(lock, i) * 0.85]);
+      const L = lockLength(lock);
+      for (let i = 2; i < N; i++) {
+        const a = 0.5 * lock.width * profile(lock, i / (N - 1) * L, L), b = collisionRadius(lock, i) - 0.0012;
+        items.push([n, i, a, b]);
+        if (a > reach) reach = a;
+      }
     });
-    if (locks.length < 2) return;
+    const cell = reach * 1.5, grid = new Map();
     const key = (x, y, z) => `${Math.floor(x / cell)},${Math.floor(y / cell)},${Math.floor(z / cell)}`;
     for (const item of items) {
       const x = locks[item[0]].x, o = item[1] * 3, k = key(x[o], x[o + 1], x[o + 2]);
       if (!grid.has(k)) grid.set(k, []);
       grid.get(k).push(item);
     }
-    for (const [n, i, r] of items) {
-      const a = locks[n], o = i * 3, cx = Math.floor(a.x[o] / cell), cy = Math.floor(a.x[o + 1] / cell), cz = Math.floor(a.x[o + 2] / cell);
+    for (const [n, i, ai, bi] of items) {
+      const A = locks[n], o = i * 3, cx = Math.floor(A.x[o] / cell), cy = Math.floor(A.x[o + 1] / cell), cz = Math.floor(A.x[o + 2] / cell);
       for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
-        for (const [m, j, s] of grid.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
+        for (const [m, j, aj, bj] of grid.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
           if (m <= n) continue;
-          const b = locks[m], q = j * 3;
-          // Two styled locks keep the arrangement they were set in (their
-          // contact was resolved when the shape was set); pushing again would
-          // move a styled hairstyle away from its rest shape.
-          if (a.styled && b.styled) continue;
-          const ex = b.x[q] - a.x[o], ey = b.x[q + 1] - a.x[o + 1], ez = b.x[q + 2] - a.x[o + 2], d = Math.hypot(ex, ey, ez), want = r + s;
-          if (d >= want || d < 1e-7) continue;
-          // Layered contact: hair from higher on the head lies over hair from
-          // lower down, so only the upper lock's point moves, and only
-          // outwards from the head centre. A lock never presses the one below
-          // into the skin, the order cannot flip from step to step, and no
-          // sideways push makes resting locks slide around the head.
-          const upperIsA = layer(this.state, a) >= layer(this.state, b);
-          const lock = upperIsA ? a : b, other = upperIsA ? b : a, at = upperIsA ? o : q, index = upperIsA ? i : j;
-          if (lock.pins.has(index) || lock.grab?.index === index) continue;
-          const C = this.state.frame.C;
-          let ux = lock.x[at] - C.x, uy = lock.x[at + 1] - C.y, uz = lock.x[at + 2] - C.z;
-          const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
-          const push = (want - d) * 0.5;
+          const B = locks[m], q = j * 3;
+          // Two styled locks keep the arrangement they were set in.
+          if (A.styled && B.styled && !this.separateStyled) continue;
+          // The lock that is further from its own root where they meet lies on
+          // top (it is passing over the other's root region, where that one
+          // still hugs the scalp); at equal distances, hair from higher on the
+          // head lies over hair from lower down.
+          const si = i * A.seg, sj = j * B.seg;
+          const upperIsA = si > sj + 0.006 ? true : sj > si + 0.006 ? false : layer(this.state, A) >= layer(this.state, B);
+          const up = upperIsA ? A : B, low = upperIsA ? B : A, uo = upperIsA ? o : q, lo = upperIsA ? q : o, index = upperIsA ? i : j;
+          if (up.pins.has(index) || up.grab?.index === index) continue;
+          let nx = low.x[lo] - C.x, ny = low.x[lo + 1] - C.y, nz = low.x[lo + 2] - C.z;
+          const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+          const ex = up.x[uo] - low.x[lo], ey = up.x[uo + 1] - low.x[lo + 1], ez = up.x[uo + 2] - low.x[lo + 2];
+          const radial = ex * nx + ey * ny + ez * nz;
+          const tangential = Math.hypot(ex - nx * radial, ey - ny * radial, ez - nz * radial), span = ai + aj;
+          if (tangential >= 0.75 * span) continue;
+          const need = bi + bj + 0.001;
+          if (radial >= need || radial < -2 * need) continue;
+          // Full push where the bands lie on each other, fading out at their edges.
+          const push = Math.min(0.004, (need - radial) * 0.5) * (1 - smooth(0.45, 0.75, tangential / span));
+          if (push <= 1e-7) continue;
           // A resting lock is woken only by a lock that is itself moving.
-          if ((other.calm ?? 0) < 12) lock.pushed = Math.max(lock.pushed ?? 0, push);
-          // Inelastic: inward velocity is removed; the push itself is position-only.
-          const vn = (lock.x[at] - lock.old[at]) * ux + (lock.x[at + 1] - lock.old[at + 1]) * uy + (lock.x[at + 2] - lock.old[at + 2]) * uz;
-          if (vn < 0) { lock.old[at] += ux * vn; lock.old[at + 1] += uy * vn; lock.old[at + 2] += uz * vn; }
-          lock.x[at] += ux * push; lock.x[at + 1] += uy * push; lock.x[at + 2] += uz * push;
-          lock.old[at] += ux * push; lock.old[at + 1] += uy * push; lock.old[at + 2] += uz * push;
+          if (((upperIsA ? B : A).calm ?? 0) < 12) up.pushed = Math.max(up.pushed ?? 0, push);
+          const vn = (up.x[uo] - up.old[uo]) * nx + (up.x[uo + 1] - up.old[uo + 1]) * ny + (up.x[uo + 2] - up.old[uo + 2]) * nz;
+          if (vn < 0) { up.old[uo] += nx * vn; up.old[uo + 1] += ny * vn; up.old[uo + 2] += nz * vn; }
+          up.x[uo] += nx * push; up.x[uo + 1] += ny * push; up.x[uo + 2] += nz * push;
+          up.old[uo] += nx * push; up.old[uo + 1] += ny * push; up.old[uo + 2] += nz * push;
         }
       }
     }
@@ -571,7 +598,15 @@ function reach(lock, i, point) {
 const curlIn = u => smooth(0.12, 0.3, u);
 /** Curled locks gather into narrower, rounder ringlets. */
 function curlWidth(lock) { return lock.width * (1 - 0.5 * lock.curl); }
-function sectionVolume(lock, u) { return lock.volume + (1 - lock.volume) * 0.7 * lock.curl * curlIn(u); }
+/**
+ * Thickness / width along the lock: flatter near the root, where locks lie
+ * stacked on the scalp (so their overlaps leave no steps), fuller below; curls
+ * round it further.
+ */
+function sectionVolume(lock, u) {
+  const flat = lock.volume * (0.45 + 0.55 * smooth(0.04, 0.42, u));
+  return flat + (1 - flat) * 0.7 * lock.curl * curlIn(u);
+}
 
 /** Radius profile along a lock (0 at the tip): slight root narrowing, taper to a soft point, rounded tip. */
 const TAPER = 0.93;
@@ -581,7 +616,8 @@ function profile(lock, s, length) {
   const taper = 1 - lock.taper * TAPER * Math.pow(u, 1.25);
   const cap = tipCap(lock, length), d = length - s;
   const tip = d >= cap ? 1 : Math.sqrt(Math.max(0, 1 - (1 - d / cap) ** 2));
-  const root = 0.78 + 0.22 * smooth(-0.002, Math.min(0.03, length * 0.25), s);
+  // A lock emerges thin from the scalp and reaches full width a few centimetres on.
+  const root = 0.5 + 0.5 * smooth(-0.002, Math.min(0.04, length * 0.3), s);
   return taper * tip * root;
 }
 /**
@@ -617,7 +653,7 @@ function facings(lock, state) {
   return out;
 }
 
-const SIDES = 16;
+const SIDES = 12;
 /**
  * Closed smooth tube for one lock: typed arrays (position, normal, uv,
  * colour, index). `vertex(x, y, z)` is called per vertex for extras (skin
@@ -858,7 +894,7 @@ export function locksMesh(context, state, color) {
   const weightsFor = hairWeights(context.data, context.skeleton);
   const joints = [], weights = [], point = new Vector3();
   const parts = state.locks.map(lock => lockSurface(lock, state, {
-    detail: context.lod === 'low' ? 0.45 : context.lod === 'medium' ? 0.7 : 1, sides: context.lod === 'low' ? 8 : context.lod === 'medium' ? 11 : SIDES,
+    detail: context.lod === 'low' ? 0.45 : context.lod === 'medium' ? 0.65 : 0.85, sides: context.lod === 'low' ? 8 : context.lod === 'medium' ? 10 : SIDES,
     vertex: (x, y, z) => { const [j, w] = weightsFor(point.set(x, y, z)); joints.push(...j); weights.push(...w); },
   }));
   const geometry = geometryFrom(parts, { skinIndex: new Uint16BufferAttribute(joints, 4), skinWeight: new Float32BufferAttribute(weights, 4) });
@@ -868,16 +904,20 @@ export function locksMesh(context, state, color) {
   return mesh;
 }
 
-/** Scalp tint under the roots (soft disc around each root), so gaps between locks read as hair, not skin. */
+/**
+ * Scalp tint under the roots, so gaps between locks read as hair, not skin:
+ * near the roots and only inside the hairline (it fades in above it and
+ * never reaches the forehead, brows or face).
+ */
 export function locksScalpColors(state) {
-  const { positions, frame } = state, roots = state.locks.map(l => l.rootP);
+  const { positions, frame, field } = state, roots = state.locks.map(l => l.rootP);
   const alpha = new Float32Array(positions.length / 3);
   if (!roots.length || !state.scalp) return alpha;
   for (let v = 0; v < alpha.length; v++) {
-    if (!frame.used[v] || frame.headWeight[v] < 0.3) continue;
+    if (!frame.used[v] || frame.headWeight[v] < 0.3 || !(field[v] > 0)) continue;
     let best = Infinity;
     for (const r of roots) best = Math.min(best, (positions[v * 3] - r.x) ** 2 + (positions[v * 3 + 1] - r.y) ** 2 + (positions[v * 3 + 2] - r.z) ** 2);
-    alpha[v] = 1 - smooth(0.03, 0.055, Math.sqrt(best));
+    alpha[v] = (1 - smooth(0.035, 0.06, Math.sqrt(best))) * smooth(0, 0.06, field[v]);
   }
   return alpha;
 }
@@ -889,7 +929,7 @@ export function locksScalpColors(state) {
 export function locksUnderlayGeometry(bodyGeometry, alpha, color) {
   const pos = bodyGeometry.getAttribute('position'), normals = bodyGeometry.getAttribute('normal');
   const joints = bodyGeometry.getAttribute('skinIndex'), weights = bodyGeometry.getAttribute('skinWeight');
-  const baseIds = bodyGeometry.userData.baseIds, tint = new Color(color).multiplyScalar(0.85);
+  const baseIds = bodyGeometry.userData.baseIds, tint = new Color(color).multiplyScalar(0.7);
   const out = { pos: [], normal: [], joints: [], weights: [], color: [], index: [] };
   for (let quad = 0; quad < bodyGeometry.index.count; quad += 6) {
     const first = bodyGeometry.index.array[quad];
@@ -916,3 +956,42 @@ export function locksUnderlayGeometry(bodyGeometry, alpha, color) {
   return geometry;
 }
 export const underlayMaterial = () => new MeshStandardMaterial({ vertexColors: true, transparent: true, depthWrite: false, roughness: 0.95 });
+
+/**
+ * Comb a new lock over the scalp, as groom tools lay hair on the head: from
+ * the root the path follows the head surface in the combing direction
+ * (re-aimed along the surface at every step) and only leaves it to fall
+ * straight down past the widest part of the head (where the surface turns
+ * downwards). Used by the hair brush and by the ready-made styles.
+ */
+export function combLock(state, root, comb, length, params = {}) {
+  const lock = makeLock(state, root, null, params);
+  const head = state.collider.head, C = state.frame.C, hit = {};
+  const lift = 0.5 * lock.width * lock.volume * 0.45 + 0.0025;
+  const h = length / 120, path = [lock.rootP.clone()];
+  let p = lock.rootP.clone(), dir = null, falling = false, travelled = 0;
+  const surface = q => head.closest(q.x, q.y, q.z, 0.06, hit) ? { point: new Vector3(hit.x, hit.y, hit.z), normal: new Vector3(hit.nx, hit.ny, hit.nz) } : null;
+  while (travelled < length) {
+    const s = surface(p);
+    const n = s?.normal ?? p.clone().sub(C).normalize();
+    if (!falling && n.y < -0.12) falling = true;
+    const want = falling ? new Vector3(0, -1, 0) : comb.clone();
+    if (!falling || (s && p.distanceTo(s.point) < lift * 1.5)) want.addScaledVector(n, -want.dot(n));
+    if (want.lengthSq() < 1e-10) want.set(0, -1, 0);
+    want.normalize();
+    dir = dir ? dir.multiplyScalar(0.7).addScaledVector(want, 0.3).normalize() : want;
+    p = p.clone().addScaledVector(dir, h);
+    const t = surface(p);
+    // On the scalp the path is held at the lock's thickness above the skin;
+    // falling, it is only kept out of the body.
+    if (t && (!falling || p.clone().sub(t.point).dot(t.normal) < lift)) p = t.point.clone().addScaledVector(t.normal, lift);
+    path.push(p);
+    travelled += h;
+  }
+  const dense = new Float32Array(path.length * 3);
+  path.forEach((q, i) => dense.set(q.toArray(), i * 3));
+  const total = path.reduce((sum, q, i) => i ? sum + q.distanceTo(path[i - 1]) : 0, 0);
+  const points = resamplePolyline(dense, total);
+  lock.x.set(points); lock.rest.set(points); lock.old.set(points); lock.seg = total / (N - 1);
+  return lock;
+}

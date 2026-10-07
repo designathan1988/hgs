@@ -216,8 +216,8 @@ export async function createHuman(spec = {}) {
   const bounds = body.geometry.boundingBox;
   const height = bounds.max.y - bounds.min.y;
   return {
-    // What the Groom editor needs to rebuild guides on this exact body.
-    context: { data, positions, skeleton, outfitSurface: context.outfitSurface ?? null, height: context.height, lod: context.lod, groomState: context.groomState ?? null },
+    // What the hair editor needs to rebuild locks on this exact body.
+    context: { data, positions, skeleton, outfitSurface: context.outfitSurface ?? null, height: context.height, lod: context.lod },
     group, body, animations, faceMeshes, metrics: { height, vertices: body.geometry.getAttribute('position').count, triangles: body.geometry.index.count / 3 },
     dispose() {
       group.traverse(object => {
