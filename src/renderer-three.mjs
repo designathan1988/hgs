@@ -1,6 +1,6 @@
 import {
   AmbientLight, AnimationMixer, Color, DirectionalLight, GridHelper, Group, Mesh,
-  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Scene, Vector3, WebGLRenderer,
+  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, Scene, Vector3, WebGLRenderer,
 } from 'three';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
@@ -79,7 +79,27 @@ export class Camera {
       this.target.z + Math.cos(this.yaw) * Math.cos(this.pitch) * this.distance,
     );
   }
-  orbit(dx, dy) { this.yaw += dx * 0.008; this.pitch = clamp(this.pitch + dy * 0.006, -1.2, 1.2); }
+  /**
+   * Orbit; with a pivot (the surface point under the cursor, as Blender's
+   * Auto Depth), the camera turns around that point, which stays where it is
+   * on screen.
+   */
+  orbit(dx, dy, pivot = null) {
+    const before = pivot && this.basis(), eye = pivot && this.eye();
+    this.yaw += dx * 0.008; this.pitch = clamp(this.pitch + dy * 0.006, -1.2, 1.2);
+    if (!pivot) return;
+    // The pivot in the old camera frame, put back at the same place in the new one.
+    const rel = pivot.clone().sub(eye), local = before.map(axis => rel.dot(axis));
+    const after = this.basis(), newEye = pivot.clone();
+    after.forEach((axis, k) => newEye.addScaledVector(axis, -local[k]));
+    this.target.copy(newEye).addScaledVector(after[2], this.distance);
+  }
+  /** Camera right, up and forward (towards the target). */
+  basis() {
+    const forward = new Vector3(-Math.sin(this.yaw) * Math.cos(this.pitch), -Math.sin(this.pitch), -Math.cos(this.yaw) * Math.cos(this.pitch));
+    const right = new Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    return [right, new Vector3().crossVectors(right, forward), forward];
+  }
   zoom(delta) { this.distance = clamp(this.distance * Math.exp(delta * 0.001), 0.35, 90); }
   pan(dx, dy) {
     const factor = this.distance * 0.0013;
@@ -126,6 +146,7 @@ export class Renderer {
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
     this.lockEditor = new LockEditor(this); this.locksMode = false;
+    this.pivotRay = new Raycaster();
   }
   async setCharacter(person) {
     const token = ++this.token;
@@ -279,6 +300,14 @@ export class Renderer {
     }
     const human = await createHuman({ ...studioSpec(this.person), lod, groom });
     try { return await exportHumanGLB(human, options); } finally { human.dispose(); }
+  }
+  /** The point of the character (body, clothes, hair) under the cursor, or null. */
+  pivotAt(ndc) {
+    const objects = [this.current?.group, this.lockEditor.group].filter(Boolean);
+    if (!objects.length) return null;
+    this.pivotRay.setFromCamera(ndc, this.viewCamera);
+    const hit = this.pivotRay.intersectObjects(objects, true).find(h => h.object.visible && h.object.isMesh && !h.object.isInstancedMesh);
+    return hit ? hit.point.clone() : null;
   }
   render(time) {
     if (this.lastTime == null) this.lastTime = time;

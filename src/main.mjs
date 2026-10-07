@@ -15,7 +15,13 @@ window.addEventListener('keyup', event => held.delete(event.key.toLowerCase()));
 // elsewhere a left drag also orbits.
 canvas.addEventListener('pointerdown', event => {
   canvas.setPointerCapture(event.pointerId);
-  if (event.button === 1) { event.preventDefault(); drag = { x: event.clientX, y: event.clientY, pan: !event.altKey }; return; }
+  if (event.button === 1) {
+    event.preventDefault();
+    // Orbit around the point under the cursor (around the view centre over empty space).
+    const pivot = event.altKey ? renderer?.pivotAt(sculptNdc(event, canvas)) : null;
+    drag = { x: event.clientX, y: event.clientY, pan: !event.altKey, pivot };
+    return;
+  }
   if (event.button !== 0) { drag = null; return; }
   if (ui.locking) {
     const editor = renderer.lockEditor, ndc = sculptNdc(event, canvas);
@@ -45,7 +51,7 @@ canvas.addEventListener('pointermove', event => {
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (!drag) return;
   const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
-  if (drag.pan) renderer.camera.pan(dx, dy); else renderer.camera.orbit(dx, dy);
+  if (drag.pan) renderer.camera.pan(dx, dy); else renderer.camera.orbit(dx, dy, drag.pivot);
   drag.x = event.clientX; drag.y = event.clientY;
 });
 const release = () => {
