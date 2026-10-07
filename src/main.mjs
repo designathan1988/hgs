@@ -8,7 +8,7 @@ let renderer;
 let drag = null;
 const sculptHit = event => renderer?.sculpt.hit(sculptNdc(event, canvas), renderer.viewCamera);
 const held = new Set();
-window.addEventListener('keyup', event => held.delete(event.key.toLowerCase()));
+window.addEventListener('keyup', event => { held.delete(event.key.toLowerCase()); if (renderer) renderer.lockEditor.fixHeld = held.has('f'); });
 // Navigation: the wheel zooms towards the point under the cursor, the middle
 // button (wheel pressed) pans and the right button orbits around the point
 // under the cursor (Blender's Auto Depth / Zoom to Mouse Position). While editing hair or
@@ -57,7 +57,7 @@ canvas.addEventListener('pointermove', event => {
   drag.x = event.clientX; drag.y = event.clientY;
 });
 const release = () => {
-  if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p') });
+  if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p'), fix: held.has('f') });
   if (drag?.sculpt) {
     const target = renderer.sculpt.end();
     renderer.sculpt.settings.invert = drag.restoreInvert;
@@ -78,6 +78,9 @@ window.addEventListener('keydown', event => {
     if (command && key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo(); return; }
     if (command && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); editor.redo(); return; }
     if (key === 'delete') { event.preventDefault(); editor.deleteSelected(); return; }
+    // F: keep shape (held while releasing a pulled lock, or pressed with locks selected); G: gravity on/off.
+    if (!command && key === 'f') { editor.fixHeld = true; if (!event.repeat && !drag) editor.fixSelected(); return; }
+    if (!command && key === 'g' && !event.repeat) { editor.setGravityOn(!editor.settings.gravityOn); ui.render(); return; }
     if (!command && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
     if (!command && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
   }

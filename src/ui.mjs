@@ -29,7 +29,8 @@ const hints = {
   default: 'Roda: zoom no cursor · botão direito: girar no ponto do cursor · botão do meio: mover',
   esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão direito: girar',
   brush: 'Pinte sobre o couro cabeludo: o traço cria mechas penteadas na direção do movimento',
-  pull: 'Arraste do couro cabeludo para criar uma mecha · arraste um ponto da mecha para movê-la',
+  move: 'Arraste uma mecha para mudar o lugar dela no couro cabeludo; ela vai inteira, com a mesma forma',
+  pull: 'Arraste do couro cabeludo para criar uma mecha · arraste um ponto da mecha para movê-la · segure F ao soltar para manter a forma, P para prender o ponto · G liga/desliga a gravidade',
   select: 'Clique para selecionar · Shift soma · Ctrl alterna',
   grow: 'Clique numa mecha e arraste no sentido da ponta',
   cut: 'Passe a tesoura sobre as mechas',
@@ -38,8 +39,8 @@ const hints = {
 // These only change playback or lights, so they never rebuild the mesh.
 const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
-const toolNames = { brush: 'Pincel', pull: 'Puxar', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender' };
-const toolIcons = { brush: 'sculpt', pull: 'pull', select: 'select', grow: 'grow', cut: 'cut', pin: 'pin' };
+const toolNames = { brush: 'Pincel', pull: 'Puxar', move: 'Mover', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender' };
+const toolIcons = { brush: 'sculpt', pull: 'pull', move: 'move', select: 'select', grow: 'grow', cut: 'cut', pin: 'pin' };
 const patternNames = { solid: 'Liso', stripes: 'Listras', pinstripe: 'Risca de giz', checks: 'Xadrez', gradient: 'Degradê' };
 const brushNames = { draw: 'Desenhar', inflate: 'Inflar', grab: 'Arrastar', smooth: 'Suavizar', flatten: 'Achatar', pinch: 'Pinçar' };
 const PRESET_PREFIX = 'hgs.preset.';
@@ -299,7 +300,7 @@ export class StudioUI {
     const node = document.getElementById('lockStatus'), editor = this.renderer?.lockEditor;
     if (!node || !editor?.active) return;
     const s = editor.summary();
-    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''}${s.styled ? ` · ${s.styled} com forma fixa` : ''}`;
+    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''}${s.styled ? ` · ${s.styled} com forma fixa` : ''}${s.gravityOn ? '' : ' · gravidade desligada'}`;
     const undo = document.getElementById('lockUndo'), redo = document.getElementById('lockRedo');
     if (undo) undo.disabled = !editor.undoStack.length;
     if (redo) redo.disabled = !editor.redoStack.length;
@@ -355,6 +356,7 @@ export class StudioUI {
     }
     this.toggle(tools, 'Espelhar no outro lado', settings.mirror, on => { settings.mirror = on; }, 'Cada mecha nova nasce também do lado oposto');
     this.toggle(tools, 'Prender ao soltar', settings.pinOnRelease, on => { settings.pinOnRelease = on; }, 'O ponto puxado fica preso onde você soltar (ou segure P)');
+    this.toggle(tools, 'Manter forma ao soltar', settings.fixOnRelease, on => { settings.fixOnRelease = on; }, 'A mecha puxada fica na forma em que você soltar, sem cair (ou segure F ao soltar)');
     this.toggle(tools, 'Mostrar couro cabeludo', settings.showScalp, on => { settings.showScalp = on; editor.updateHelpers(); });
     // The selected locks.
     const count = editor.selected.size, lock = editor.summary().first;
@@ -385,10 +387,11 @@ export class StudioUI {
     // Gravity: an operation applied after each edit; nothing runs by itself.
     const physics = this.group('Gravidade');
     physics.append(h('p', { class: 'status-line', id: 'lockStatus' }));
+    this.toggle(physics, 'Gravidade ligada (G)', settings.gravityOn, on => { editor.setGravityOn(on); this.render(); }, 'Desligada, as mechas ficam na forma em que você as puxar');
     this.slide(physics, { label: 'Força da gravidade', value: settings.gravity, min: 0, max: 1, onStart: record, onInput: v => editor.setGravity(v), title: '0: as mechas mantêm o formato desenhado' });
     physics.append(h('div', { class: 'button-grid' },
       h('button', { type: 'button', class: 'button', id: 'lockGravity', onclick: () => editor.applyGravity(), title: 'Assenta as mechas soltas pela gravidade' }, icon('settle', 16), 'Aplicar gravidade'),
-      h('button', { type: 'button', class: 'button primary', id: 'lockSetRest', onclick: () => editor.setRest(), title: 'O formato atual vira a forma do penteado e resiste à gravidade' }, icon('lock', 16), 'Fixar forma'),
+      h('button', { type: 'button', class: 'button primary', id: 'lockSetRest', onclick: () => editor.setRest(), title: 'O formato atual das mechas selecionadas (ou de todas) vira a forma do penteado e resiste à gravidade · tecla F' }, icon('lock', 16), 'Fixar forma (F)'),
       h('button', { type: 'button', class: 'button', onclick: () => editor.releaseRest(), title: 'As mechas voltam a cair com a gravidade' }, icon('unlock', 16), 'Soltar forma')));
     // Files.
     const files = this.group('Arquivo', { open: false });

@@ -23,6 +23,7 @@ const paths = {
   settle: '<path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 19h14"/>',
   lock: '<rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
   unlock: '<rect x="5.5" y="10.5" width="13" height="9.5" rx="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 6.8-1.2"/>',
+  move: '<path d="M12 3v18M3 12h18M12 3l-2.5 2.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/>',
   pin: '<path d="M12 21v-6"/><path d="M8 4h8l-1.5 5 3 3h-11l3-3z"/>',
   cut: '<circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M8.5 16 18 4M15.5 16 6 4"/>',
   select: '<path d="M5 4.5 18.5 11 12.5 12.8 9.8 19z"/>',

@@ -346,13 +346,16 @@ export class LockShaper {
    * Lay every lock (or recompute only `only`, keeping the others where they
    * are) in layer order. `force` 0 keeps the design shapes (out of the body).
    */
-  apply({ only = null, force = this.force } = {}) {
+  apply({ only = null, force = this.force, still = null } = {}) {
     const state = this.state, grid = new Map();
     // Lowest roots first; roots at the same height (mirrored locks) in a fixed
     // order, so tiny differences never swap which one lies on top.
     const order = state.locks.map(lock => [Math.round(layer(state, lock) * 1e4), lock.rootP.x, lock]).sort((a, b) => a[0] - b[0] || a[1] - b[1]).map(([, , lock]) => lock);
     for (const lock of order) {
-      if (!lock.styled && !lock.hold && (!only || only.has(lock))) this.hang(lock, grid, force);
+      // A lock with a set shape follows the hand when pulled, without falling;
+      // so does a lock in `still` (shaped by hand with gravity held off).
+      const free = !lock.styled || lock.grab;
+      if (free && !lock.hold && (!only || only.has(lock))) this.hang(lock, grid, lock.styled || still?.has(lock) ? 0 : force);
       else if (lock.hold) lock.x.set(lock.hold);
       this.store(lock, grid);
     }
