@@ -26,7 +26,8 @@ canvas.addEventListener('pointerdown', event => {
   }
   if (event.button !== 0) { drag = null; return; }
   if (ui.tailoring) {
-    // Clothes: drag an edge of the garment (hem, sleeve, neckline, waistband, legs).
+    // Clothes: drag an edge of the garment under the cursor (hem, sleeve, neckline, waistband, legs).
+    ui.pickGarment(renderer.clothEditor.garmentAt(sculptNdc(event, canvas), renderer.viewCamera));
     drag = renderer.clothEditor.down(sculptNdc(event, canvas), renderer.viewCamera, event.clientY) ? { cloth: true } : null;
     if (drag) ui.clothEdgeStart();
     return;
@@ -47,7 +48,7 @@ canvas.addEventListener('pointerdown', event => {
     }
     return;
   }
-  drag = { x: event.clientX, y: event.clientY, pan: false };
+  drag = { x: event.clientX, y: event.clientY, pan: false, startX: event.clientX, startY: event.clientY, ndc: sculptNdc(event, canvas) };
 });
 canvas.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
 canvas.addEventListener('auxclick', event => event.preventDefault());
@@ -77,7 +78,9 @@ canvas.addEventListener('pointermove', event => {
   if (drag.pan) renderer.camera.pan(dx, dy); else renderer.camera.orbit(dx, dy, drag.pivot);
   drag.x = event.clientX; drag.y = event.clientY;
 });
-const release = () => {
+const release = event => {
+  // A click (no drag) on a made-to-measure garment selects that piece.
+  if (drag?.ndc && ui.dressing && event && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) ui.pickGarment(renderer.clothEditor.garmentAt(drag.ndc, renderer.viewCamera));
   if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p'), fix: held.has('f') });
   if (drag?.cloth) ui.clothEdgeEnd(renderer.clothEditor.up());
   if (drag?.sculpt) {

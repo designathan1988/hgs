@@ -71,6 +71,15 @@ export class ClothEditor {
     }
     return best;
   }
+  /** The garment (index in the outfit) under the cursor, or -1 (skin or nothing). */
+  garmentAt(ndc, camera) {
+    const outfit = this.human?.group.getObjectByName('Outfit'), of = outfit?.geometry.userData.garmentOf;
+    if (!outfit || !of) return -1;
+    const probe = new Mesh(outfit.geometry, outfit.material); probe.matrixWorld.copy(outfit.matrixWorld);
+    this.raycaster.setFromCamera(ndc, camera);
+    const [hit] = this.raycaster.intersectObject(probe, false);
+    return hit ? of[hit.face.a] : -1;
+  }
   /** Start dragging the edge under the cursor; null when there is none. */
   down(ndc, camera, clientY) {
     if (!this.garment) return null;

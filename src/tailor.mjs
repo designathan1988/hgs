@@ -141,7 +141,9 @@ function coverage(garment, v, layout, positions) {
     // Hem from a crop under the chest (0) to below the hips (1); arms are exempt.
     // A top ends on a level line no lower than the hip joints; below that the
     // body splits into legs and the cloth would follow the crotch.
-    const hemY = layout.chestY - (layout.chestY - layout.hipY - 0.015 * k) * garment.length;
+    // A dress's bodice ends just inside its skirt (sewn to it at the waist);
+    // its length is the skirt's.
+    const hemY = type === 'dress' ? dressWaist(layout) - 0.04 * k : layout.chestY - (layout.chestY - layout.hipY - 0.015 * k) * garment.length;
     const hem = y - hemY + layout.armW[v] * 0.6;
     // Sleeveless: the armhole follows where the arm takes over the skin.
     const sleeve = garment.sleeve > 0.02 ? garment.sleeve * armLength - layout.arm[v] : 0.02 * k * (1 - layout.armW[v] * 1.6) - Math.max(0, layout.arm[v]);
@@ -177,7 +179,7 @@ export function garmentField(context, garment) {
   const layout = bodyLayout(context), positions = context.positions, k = layout.k, out = new Float32Array(positions.length / 3);
   let tube = null;
   if (garment.type === 'skirt' || garment.type === 'dress') {
-    const top = garment.type === 'dress' ? layout.hipY + (layout.waistY - layout.hipY) * 0.9 : layout.hipY + (layout.waistY - layout.hipY) * (0.35 + garment.rise * 0.9);
+    const top = garment.type === 'dress' ? dressWaist(layout) : layout.hipY + (layout.waistY - layout.hipY) * (0.35 + garment.rise * 0.9);
     tube = { top, hem: layout.hipY - (0.06 + garment.length * 0.62) * k };
   }
   for (let v = 0; v < out.length; v++) {
@@ -206,6 +208,9 @@ export function garmentEdgeAt(context, garment, v) {
   if (t === 'socks') return { key: 'leg', label: 'Altura', sign: 1 };
   return null;
 }
+
+/** Height where a dress's skirt is sewn to its bodice. */
+function dressWaist(layout) { return layout.hipY + (layout.waistY - layout.hipY) * 0.9; }
 
 function patternColor(garment, p, k) {
   const a = new Color(garment.color), b = new Color(garment.color2);
@@ -325,7 +330,7 @@ function cutPanel(context, garment, layout, layer) {
     if (['pants', 'shorts'].includes(garment.type)) {
       const band = layout.hipY + (layout.waistY - layout.hipY) * (0.35 + garment.rise * 0.9);
       if (band - y < 0.025 * k) panel.elastic[at] = 1;
-    } else if (garment.type === 'hoodie' && field(v) < 0.02 * k) panel.elastic[at] = 1;
+    } else if ((garment.type === 'hoodie' || garment.type === 'dress') && field(v) < 0.02 * k) panel.elastic[at] = 1;
   }
   return { panel, covered };
 }
@@ -333,7 +338,7 @@ function cutPanel(context, garment, layout, layer) {
 /** Waist-to-hem tube for skirts and dresses, enclosing the legs at every height. */
 function skirtPanel(context, garment, layout, layer) {
   const { data, positions } = context, k = layout.k;
-  const top = garment.type === 'dress' ? layout.hipY + (layout.waistY - layout.hipY) * 0.9 : layout.hipY + (layout.waistY - layout.hipY) * (0.35 + garment.rise * 0.9);
+  const top = garment.type === 'dress' ? dressWaist(layout) : layout.hipY + (layout.waistY - layout.hipY) * (0.35 + garment.rise * 0.9);
   const hem = layout.hipY - (0.06 + garment.length * 0.62) * k;
   const lower = [];
   for (let v = 0; v < positions.length / 3; v++) if (layout.armW[v] < 0.3 && layout.headW[v] < 0.3 && positions[v * 3 + 1] < top + 0.03 * k && positions[v * 3 + 1] > hem - 0.05 * k) lower.push(v);
@@ -469,16 +474,18 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   const layout = bodyLayout(context);
   const skin = bodyCollider(context);
   const k = layout.k, height = context.height ?? 1.7;
-  const meshData = { pos: [], color: [], uv: [], joints: [], weights: [], index: [], keys: [] };
+  const meshData = { pos: [], color: [], uv: [], joints: [], weights: [], index: [], keys: [], garment: [] };
   const covered = new Set(), finished = [];
   garments.forEach((garment, layer) => {
+    // Inner parts first: a dress's bodice is draped before its skirt, which
+    // then hangs over the bodice's hem (sewn at the waist), not under it.
     const panels = [];
-    if (garment.type === 'skirt' || garment.type === 'dress') panels.push(skirtPanel(context, garment, layout, layer));
     if (garment.type !== 'skirt') {
       const { panel, covered: faces } = cutPanel(context, garment, layout, layer);
       if (panel.index.length) panels.push(panel);
       for (const f of faces) covered.add(f);
     }
+    if (garment.type === 'skirt' || garment.type === 'dress') panels.push(skirtPanel(context, garment, layout, layer));
     for (const panel of panels) {
       // Start just above the surface beneath, then drape.
       const lift = (0.0035 + layer * 0.0035) * k;
@@ -538,6 +545,7 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       meshData.pos.push(p.x, p.y, p.z); meshData.color.push(color.r, color.g, color.b);
     }
     meshData.uv.push(...panel.uv); meshData.joints.push(...panel.joints); meshData.weights.push(...panel.weights); meshData.keys.push(...panel.keys);
+    for (let v = 0; v < panel.pos.length / 3; v++) meshData.garment.push(layer);
     for (let i = 0; i < panel.index.length; i += 3) {
       const a = panel.index[i], b = panel.index[i + 1], c = panel.index[i + 2];
       if (hidden[a] && hidden[b] && hidden[c]) continue;
@@ -555,6 +563,8 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   geometry.computeVertexNormals();
   geometry.userData.sculptKeys = Int32Array.from(meshData.keys);
   geometry.userData.proxyVertexCount = meshData.keys.length;
+  // Which garment (its index in the outfit) each vertex belongs to, for picking a piece by clicking it.
+  geometry.userData.garmentOf = Int8Array.from(meshData.garment);
   const roughness = garments.reduce((sum, g) => sum + g.roughness, 0) / Math.max(1, garments.length);
   const mesh = new SkinnedMesh(geometry, new MeshStandardMaterial({ vertexColors: true, roughness, side: DoubleSide }));
   mesh.name = 'Outfit';

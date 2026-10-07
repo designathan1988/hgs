@@ -2,7 +2,9 @@ import { blendshapeNames } from './face-rig.mjs';
 import { LockEditor, lockTools } from './lock-editor.mjs';
 import { lockLength } from './locks.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
-import { garmentTypes, garmentLabels, garmentPatterns, newGarment } from './tailor.mjs';
+import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment } from './tailor.mjs';
+
+const OUTFIT_PREFIX = 'hgs.outfit.';
 import { icon, hairPictogram } from './icons.mjs';
 import {
   defaultCharacter, randomCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
@@ -436,6 +438,44 @@ export class StudioUI {
       fileInput);
     this.updateLockStatus();
   }
+  // ------------------------------------------------------------ outfit files
+  /** Saved made-to-measure outfits (all pieces, cut, fabric and painting). */
+  static outfitSlots() { return storage.keys().filter(k => k.startsWith(OUTFIT_PREFIX)).map(k => k.slice(OUTFIT_PREFIX.length)).sort((a, b) => a.localeCompare(b)); }
+  outfitData() { return { format: 'hgs-outfit', v: 1, garments: this.person.garments }; }
+  /** Load an outfit (JSON text); false if it is not one. */
+  loadOutfit(json) {
+    let data;
+    try { data = JSON.parse(json); } catch { return false; }
+    if (!data || data.format !== 'hgs-outfit' || !Array.isArray(data.garments)) return false;
+    this.setGarments(data.garments.slice(0, 8).map(normalizeGarment), 0);
+    return true;
+  }
+  renderOutfitFiles() {
+    const files = this.group('Arquivo', { open: false });
+    const nameInput = h('input', { type: 'text', id: 'outfitSlotName', value: this.outfitSlot ?? 'Minha roupa', maxlength: 40, 'aria-label': 'Nome da roupa' });
+    const slots = StudioUI.outfitSlots();
+    const slotSelect = h('select', { id: 'outfitSlots', 'aria-label': 'Roupas salvas' }, slots.map(name => h('option', { value: name, text: name })));
+    if (this.outfitSlot && slots.includes(this.outfitSlot)) slotSelect.value = this.outfitSlot;
+    const fileInput = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0]; if (!file) return;
+      this.ready(this.loadOutfit(await file.text()) ? `"${file.name}" carregado` : 'Arquivo não é uma roupa', false); fileInput.value = '';
+    });
+    files.append(
+      this.row('Nome', nameInput),
+      h('div', { class: 'button-grid' },
+        h('button', { type: 'button', class: 'button', id: 'outfitSave', onclick: () => { const name = nameInput.value.trim() || 'Minha roupa'; this.outfitSlot = name; this.ready(storage.set(OUTFIT_PREFIX + name, JSON.stringify(this.outfitData())) ? `Roupa "${name}" salva` : 'Armazenamento indisponível'); this.render(); } }, icon('save', 16), 'Salvar'),
+        h('button', { type: 'button', class: 'button', onclick: () => {
+          const url = URL.createObjectURL(new Blob([JSON.stringify(this.outfitData())], { type: 'application/json' }));
+          const a = document.createElement('a'); a.href = url; a.download = `${slug(nameInput.value || 'roupa')}.roupa.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+        } }, icon('file', 16), 'Exportar .json')),
+      slots.length ? this.row('Salvas', slotSelect) : null,
+      h('div', { class: 'button-grid' },
+        h('button', { type: 'button', class: 'button', id: 'outfitLoad', disabled: !slots.length, onclick: () => { const name = slotSelect.value; if (!name) return; this.outfitSlot = name; const json = storage.get(OUTFIT_PREFIX + name); this.ready(json && this.loadOutfit(json) ? `Roupa "${name}" carregada` : 'Roupa não encontrada'); } }, icon('folder', 16), 'Carregar'),
+        h('button', { type: 'button', class: 'button', onclick: () => fileInput.click() }, 'Importar .json'),
+        slots.length ? h('button', { type: 'button', class: 'button danger', onclick: () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { storage.remove(OUTFIT_PREFIX + name); this.render(); } } }, icon('trash', 16), 'Excluir') : null),
+      fileInput);
+  }
   downloadLocks(editor, name) {
     const url = URL.createObjectURL(new Blob([JSON.stringify(editor.serialize())], { type: 'application/json' }));
     const a = document.createElement('a'); a.href = url; a.download = `${slug(name || 'penteado')}.mechas.json`; a.click();
@@ -472,6 +512,13 @@ export class StudioUI {
   }
   undoGarment() { if (!this.garmentUndo?.length) return; (this.garmentRedo ??= []).push(JSON.stringify(this.person.garments)); this.restoreGarments(this.garmentUndo.pop()); }
   redoGarment() { if (!this.garmentRedo?.length) return; (this.garmentUndo ??= []).push(JSON.stringify(this.person.garments)); this.restoreGarments(this.garmentRedo.pop()); }
+  /** Select the garment at `index` (a click on it in the viewport); -1 keeps the selection. */
+  pickGarment(index) {
+    if (index < 0 || index === (this.garmentIndex ?? 0) || index >= this.person.garments.length) return;
+    this.garmentIndex = index;
+    this.render();
+    if (this.tailoring) this.renderer.clothEditor.show(this.person.garments[index]);
+  }
   clothEdgeStart() { this.ready('Arraste para cima ou para baixo'); }
   clothEdgeMove(drag) { if (drag) this.ready(`${drag.label}: ${Math.round(drag.value * 100)}%`); }
   clothEdgeEnd(result) {
@@ -572,7 +619,8 @@ export class StudioUI {
     }
     this.slide(fabric, { label: 'Aspereza', value: garment.roughness, min: 0, max: 1, onInput: v => this.updateGarment({ roughness: v }, 250) });
     const paint = this.group('Pintura', { open: false });
-    paint.append(h('button', { type: 'button', class: 'button wide', disabled: !Object.keys(garment.paint).length, onclick: () => { this.updateGarment({ paint: {} }, 0); this.render(); } }, `Limpar pintura (${Object.keys(garment.paint).length})`));
+    paint.append(h('button', { type: 'button', class: 'button wide', disabled: !Object.keys(garment.paint).length, onclick: () => { this.garmentCheckpoint(); this.updateGarment({ paint: {} }, 0); this.render(); } }, `Limpar pintura (${Object.keys(garment.paint).length})`));
+    this.renderOutfitFiles();
   }
 
   // ------------------------------------------------------------ sculpt

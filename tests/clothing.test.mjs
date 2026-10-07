@@ -100,3 +100,26 @@ test('a garment edge dragged on the body: the right edge is picked and the previ
   assert.ok(garmentField(context, tshirt)[arm] < 0 && garmentField(context, { ...tshirt, sleeve: 1 })[arm] > 0, 'sleeve reaches the forearm');
   assert.ok(garmentField(context, pants)[shin] > 0 && garmentField(context, { ...pants, leg: 0.3 })[shin] < 0, 'short legs uncover the shin');
 });
+
+test('every garment type can be made: it is built, stays outside the skin and is picked by clicking it', async () => {
+  const { garmentTypes } = await import('../src/tailor.mjs');
+  for (const type of garmentTypes) {
+    const garment = newGarment(type);
+    // A free garment starts empty: paint a patch on the belly to make it.
+    if (type === 'paint') {
+      const probe = await createHuman({ ageYears: 30, gender: 0.2, heightMeters: 1.7, clothing: { style: 'none' }, hair: { style: 'none' } });
+      const P = probe.context.positions;
+      for (let v = 0; v < P.length / 3; v++) if (P[v * 3 + 2] > 0.05 && Math.abs(P[v * 3]) < 0.1 && P[v * 3 + 1] > 0.95 && P[v * 3 + 1] < 1.2) garment.paint[v] = 1;
+      probe.dispose();
+      assert.ok(Object.keys(garment.paint).length > 20, 'a patch was painted');
+    }
+    const human = await createHuman({ ageYears: 30, gender: 0.2, heightMeters: 1.7, clothing: { style: 'tailor', garments: [newGarment('tank'), garment] }, hair: { style: 'none' } });
+    const outfit = human.group.getObjectByName('Outfit')?.geometry;
+    assert.ok(outfit && outfit.index.count > 30, `${type}: a garment mesh is built`);
+    assert.equal(inside(outfit, skinCollider(human)), 0, `${type}: nothing inside the skin`);
+    const of = outfit.userData.garmentOf;
+    assert.equal(of.length, outfit.getAttribute('position').count, `${type}: every vertex knows its garment`);
+    assert.ok(of.includes(1), `${type}: the garment's own vertices are tagged`);
+    human.dispose();
+  }
+});
