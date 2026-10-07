@@ -29,7 +29,7 @@ export class LockEditor {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: true, pinOnRelease: false, fixOnRelease: false, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
+    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: true, pinOnRelease: false, fixOnRelease: false, showMidline: true, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.onChange = () => {};
@@ -188,7 +188,7 @@ export class LockEditor {
     this.handles.count = h; this.pinMarks.count = p;
     this.handles.instanceMatrix.needsUpdate = true; this.pinMarks.instanceMatrix.needsUpdate = true;
     this.scalpOverlay.visible = this.settings.tool === 'pull' && this.settings.showScalp;
-    this.midline.visible = ['brush', 'pull', 'move'].includes(this.settings.tool);
+    this.midline.visible = this.settings.showMidline && ['brush', 'pull', 'move'].includes(this.settings.tool);
   }
   /** Per frame: only rebuild what an edit changed (nothing runs on its own). */
   step() {

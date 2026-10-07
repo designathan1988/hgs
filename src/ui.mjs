@@ -357,6 +357,7 @@ export class StudioUI {
     this.toggle(tools, 'Espelhar no outro lado', settings.mirror, on => { settings.mirror = on; }, 'Cada mecha nova nasce também do lado oposto');
     this.toggle(tools, 'Prender ao soltar', settings.pinOnRelease, on => { settings.pinOnRelease = on; }, 'O ponto puxado fica preso onde você soltar (ou segure P)');
     this.toggle(tools, 'Manter forma ao soltar', settings.fixOnRelease, on => { settings.fixOnRelease = on; }, 'A mecha puxada fica na forma em que você soltar, sem cair (ou segure F ao soltar)');
+    this.toggle(tools, 'Mostrar linha central', settings.showMidline, on => { settings.showMidline = on; editor.updateHelpers(); }, 'A linha do meio da cabeça (as raízes perto dela encaixam no meio mesmo escondida)');
     this.toggle(tools, 'Mostrar couro cabeludo', settings.showScalp, on => { settings.showScalp = on; editor.updateHelpers(); });
     // The selected locks.
     const count = editor.selected.size, lock = editor.summary().first;
