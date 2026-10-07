@@ -8,7 +8,7 @@ import {
   serializeLocks, setLockLength, underlayMaterial, updateGeometry, combLock, rootFrame,
 } from './locks.mjs';
 
-export const lockTools = ['brush', 'pull', 'move', 'select', 'grow', 'cut', 'pin'];
+export const lockTools = ['brush', 'comb', 'pull', 'move', 'select', 'grow', 'cut', 'pin'];
 const SLOT_PREFIX = 'hgs.locks.';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const storage = {
@@ -29,7 +29,7 @@ export class LockEditor {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: true, pinOnRelease: false, fixOnRelease: false, showMidline: true, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
+    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: true, pinOnRelease: false, fixOnRelease: false, showMidline: true, combRadius: 0.14, combStrength: 1, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.onChange = () => {};
@@ -296,6 +296,12 @@ export class LockEditor {
       if (scalpHit?.root) return this.sprout(scalpHit, camera, { shift });
       return false;
     }
+    if (tool === 'comb') {
+      // Comb (Blender's hair Comb brush): drag over the hair to pull every lock under the brush.
+      this.checkpoint();
+      this.drag = { tool, last: { x: ndc.x, y: ndc.y } };
+      return true;
+    }
     if (tool === 'move') {
       // Reposition: the lock's root slides over the scalp under the cursor, the lock goes with it.
       if (!lockHit) return false;
@@ -364,6 +370,46 @@ export class LockEditor {
     if (twin) this.shapeSprout(twin, twin.rootP.clone().addScaledVector(twin.rootN, 0.03));
     this.syncMeshes(); this.updateUnderlay(); this.updateHelpers(); this.onChange();
     return true;
+  }
+  /**
+   * One step of the comb: every lock point under the brush circle (on
+   * screen) follows the cursor's movement, fully at the centre and fading to
+   * the rim; with Mirror, points whose mirror image is under the brush move
+   * the mirrored way. The lock's drawn shape is moved (lengths kept from the
+   * root) and gravity hangs it from there, so combing never stretches a lock.
+   */
+  comb(drag, ndc, camera) {
+    const dx = ndc.x - drag.last.x, dy = ndc.y - drag.last.y;
+    drag.last = { x: ndc.x, y: ndc.y };
+    if (!dx && !dy) return;
+    const r = this.settings.combRadius, k = this.settings.combStrength, aspect = camera.aspect;
+    const p = new Vector3(), s = new Vector3(), q = new Vector3(), move = new Vector3(), touched = new Set();
+    const weight = (v) => { const d = Math.hypot((v.x - ndc.x) * aspect, v.y - ndc.y) / r; return v.z > 1 || d >= 1 ? 0 : (1 - d * d) ** 2 * k; };
+    const shift = (v, w) => q.set(v.x + dx * w, v.y + dy * w, v.z).unproject(camera);
+    for (const lock of this.locks) {
+      let moved = false;
+      for (let i = 2; i < N; i++) {
+        p.fromArray(lock.x, i * 3); move.set(0, 0, 0);
+        const w = weight(s.copy(p).project(camera));
+        if (w > 0) move.add(shift(s, w).sub(p));
+        if (this.settings.mirror) {
+          const m = p.clone(); m.x = -m.x;
+          const wm = weight(s.copy(m).project(camera));
+          if (wm > 0) { const d = shift(s, wm).sub(m); move.x -= d.x; move.y += d.y; move.z += d.z; }
+        }
+        if (move.lengthSq() < 1e-14) continue;
+        for (const a of lock.styled ? [lock.rest, lock.x] : [lock.rest]) { a[i * 3] += move.x; a[i * 3 + 1] += move.y; a[i * 3 + 2] += move.z; }
+        moved = true;
+      }
+      if (!moved) continue;
+      // Lengths from the root (follow-the-leader), so the lock is never stretched.
+      for (const a of lock.styled ? [lock.rest, lock.x] : [lock.rest]) for (let i = 2; i < N; i++) {
+        const o = i * 3, ex = a[o] - a[o - 3], ey = a[o + 1] - a[o - 2], ez = a[o + 2] - a[o - 1], l = Math.hypot(ex, ey, ez) || 1, f = lock.seg / l;
+        a[o] = a[o - 3] + ex * f; a[o + 1] = a[o - 2] + ey * f; a[o + 2] = a[o - 1] + ez * f;
+      }
+      touched.add(lock);
+    }
+    if (touched.size) { this.relax(touched); this.step(); }
   }
   /**
    * Put a lock's root at another place on the scalp: its shape (drawn and
@@ -481,6 +527,10 @@ export class LockEditor {
       drag.lastNdc = { x: ndc.x, y: ndc.y };
       if (drag.created.size) this.relax(drag.created);
       this.step();
+      return;
+    }
+    if (drag.tool === 'comb') {
+      this.comb(drag, ndc, camera);
       return;
     }
     if (drag.tool === 'move') {

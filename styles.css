@@ -159,7 +159,7 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .style-card:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-hover); }
 .style-card.on { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
 .pictogram svg { width: 44px; height: 44px; display: block; }
-.tool-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 12px; }
+.tool-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 12px; }
 .tool { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 0 6px; border: 1px solid transparent; border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 11px; }
 .tool:hover { color: var(--text); background: var(--surface-hover); }
 .tool.on { color: var(--accent); border-color: #f0894c66; background: var(--accent-soft); }

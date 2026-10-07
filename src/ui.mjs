@@ -29,6 +29,7 @@ const hints = {
   default: 'Roda: zoom no cursor · botão direito: girar no ponto do cursor · botão do meio: mover',
   esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão direito: girar',
   brush: 'Pinte sobre o couro cabeludo: o traço cria mechas penteadas na direção do movimento',
+  comb: 'Arraste sobre o cabelo: todas as mechas dentro do círculo seguem o movimento (G desliga a gravidade, F fixa a forma)',
   move: 'Arraste uma mecha para mudar o lugar dela no couro cabeludo; ela vai inteira, com a mesma forma',
   pull: 'Arraste do couro cabeludo para criar uma mecha · arraste um ponto da mecha para movê-la · segure F ao soltar para manter a forma, P para prender o ponto · G liga/desliga a gravidade',
   select: 'Clique para selecionar · Shift soma · Ctrl alterna',
@@ -39,8 +40,8 @@ const hints = {
 // These only change playback or lights, so they never rebuild the mesh.
 const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
-const toolNames = { brush: 'Pincel', pull: 'Puxar', move: 'Mover', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender' };
-const toolIcons = { brush: 'sculpt', pull: 'pull', move: 'move', select: 'select', grow: 'grow', cut: 'cut', pin: 'pin' };
+const toolNames = { brush: 'Pincel', comb: 'Pentear', pull: 'Puxar', move: 'Mover', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender' };
+const toolIcons = { brush: 'sculpt', comb: 'hair', pull: 'pull', move: 'move', select: 'select', grow: 'grow', cut: 'cut', pin: 'pin' };
 const patternNames = { solid: 'Liso', stripes: 'Listras', pinstripe: 'Risca de giz', checks: 'Xadrez', gradient: 'Degradê' };
 const brushNames = { draw: 'Desenhar', inflate: 'Inflar', grab: 'Arrastar', smooth: 'Suavizar', flatten: 'Achatar', pinch: 'Pinçar' };
 const PRESET_PREFIX = 'hgs.preset.';
@@ -350,6 +351,10 @@ export class StudioUI {
       type: 'button', class: `tool${settings.tool === tool ? ' on' : ''}`, 'data-lock-tool': tool, title: `${toolNames[tool]} — ${hints[tool]}`, 'aria-pressed': String(settings.tool === tool),
       onclick: () => { editor.setTool(tool); this.render(); },
     }, icon(toolIcons[tool], 20), h('span', { text: toolNames[tool] })))));
+    if (settings.tool === 'comb') {
+      this.slide(tools, { label: 'Tamanho do pente', value: settings.combRadius, min: 0.03, max: 0.4, step: 0.005, onInput: v => { settings.combRadius = v; } });
+      this.slide(tools, { label: 'Força do pente', value: settings.combStrength, min: 0.1, max: 1, step: 0.05, onInput: v => { settings.combStrength = v; } });
+    }
     if (settings.tool === 'brush') {
       this.slide(tools, { label: 'Comprimento das mechas', value: settings.brushLength, min: 0.04, max: 0.8, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushLength = v; } });
       this.slide(tools, { label: 'Distância entre mechas', value: settings.brushSpacing, min: 0.008, max: 0.06, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.brushSpacing = v; } });

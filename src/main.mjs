@@ -45,8 +45,22 @@ canvas.addEventListener('pointerdown', event => {
 });
 canvas.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
 canvas.addEventListener('auxclick', event => event.preventDefault());
+// The comb's circle follows the cursor.
+const combRing = document.createElement('div');
+combRing.style.cssText = 'position:fixed;pointer-events:none;border:1.5px solid rgba(255,255,255,.75);border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.35);display:none;z-index:5';
+document.body.append(combRing);
+function showRing(event) {
+  const editor = renderer?.lockEditor, on = Boolean(ui.locking && editor?.settings.tool === 'comb');
+  combRing.style.display = on ? 'block' : 'none';
+  if (!on) return;
+  const size = editor.settings.combRadius * canvas.getBoundingClientRect().height;
+  combRing.style.width = combRing.style.height = `${size}px`;
+  combRing.style.left = `${event.clientX - size / 2}px`; combRing.style.top = `${event.clientY - size / 2}px`;
+}
+canvas.addEventListener('pointerleave', () => { combRing.style.display = 'none'; });
 canvas.addEventListener('pointermove', event => {
   if (!renderer) return;
+  showRing(event);
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
   if (ui.locking && !drag) renderer.lockEditor.hover(sculptNdc(event, canvas), renderer.viewCamera);
   if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera); return; }
