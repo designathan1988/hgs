@@ -78,3 +78,25 @@ test('ready-made outfits, shoes and hair are layered outside the skin', async ()
   for (const name of ['Outfit', 'Hair']) assert.equal(inside(human.group.getObjectByName(name).geometry, collider), 0, `${name} stays outside`);
   human.dispose();
 });
+
+test('a garment edge dragged on the body: the right edge is picked and the preview field moves', async () => {
+  const { garmentEdgeAt, garmentField, bodyLayout } = await import('../src/tailor.mjs');
+  const human = await createHuman({ seed: 42, gender: 0, ageYears: 28, heightMeters: 1.72, hair: { style: 'none' }, clothing: { style: 'tailor', garments: [newGarment('tshirt'), newGarment('pants')] } });
+  const context = human.context;
+  context.body ??= human.body;
+  const layout = bodyLayout(context), P = context.positions, count = P.length / 3;
+  const tshirt = newGarment('tshirt'), pants = newGarment('pants');
+  // A vertex on the forearm, on the lower neck, on the belly and on the shin.
+  const find = test => { for (let v = 0; v < count; v++) if (test(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2])) return v; return -1; };
+  const arm = find(v => layout.armW[v] > 0.9 && layout.arm[v] > layout.arms.l.l1 * 1.15 && layout.arm[v] < layout.arms.l.l1 + 0.7 * layout.arms.l.l2);
+  const neck = find((v, x, y, z) => Math.abs(x) < 0.01 && z > 0 && y > (layout.chestY + layout.neckY) / 2 && y < layout.neckY && layout.headW[v] < 0.1);
+  const belly = find((v, x, y, z) => Math.abs(x) < 0.01 && z > 0 && Math.abs(y - (layout.waistY + layout.hipY) / 2) < 0.02);
+  const shin = find(v => layout.legW[v] > 0.9 && layout.leg[v] > layout.legs.l.l1 * 1.3);
+  assert.equal(garmentEdgeAt(context, tshirt, arm).key, 'sleeve');
+  assert.equal(garmentEdgeAt(context, tshirt, neck).key, 'neckline');
+  assert.equal(garmentEdgeAt(context, tshirt, belly).key, 'length');
+  assert.equal(garmentEdgeAt(context, pants, shin).key, 'leg');
+  // Longer sleeves cover the forearm; shorter trousers uncover the shin.
+  assert.ok(garmentField(context, tshirt)[arm] < 0 && garmentField(context, { ...tshirt, sleeve: 1 })[arm] > 0, 'sleeve reaches the forearm');
+  assert.ok(garmentField(context, pants)[shin] > 0 && garmentField(context, { ...pants, leg: 0.3 })[shin] < 0, 'short legs uncover the shin');
+});

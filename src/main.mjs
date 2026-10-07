@@ -25,6 +25,12 @@ canvas.addEventListener('pointerdown', event => {
     return;
   }
   if (event.button !== 0) { drag = null; return; }
+  if (ui.tailoring) {
+    // Clothes: drag an edge of the garment (hem, sleeve, neckline, waistband, legs).
+    drag = renderer.clothEditor.down(sculptNdc(event, canvas), renderer.viewCamera, event.clientY) ? { cloth: true } : null;
+    if (drag) ui.clothEdgeStart();
+    return;
+  }
   if (ui.locking) {
     const editor = renderer.lockEditor, ndc = sculptNdc(event, canvas);
     drag = editor.pointerDown(ndc, renderer.viewCamera, { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey }) ? { locks: true } : null;
@@ -64,6 +70,7 @@ canvas.addEventListener('pointermove', event => {
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
   if (ui.locking && !drag) renderer.lockEditor.hover(sculptNdc(event, canvas), renderer.viewCamera);
   if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera); return; }
+  if (drag?.cloth) { ui.clothEdgeMove(renderer.clothEditor.move(event.clientY, canvas.clientHeight)); return; }
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (!drag) return;
   const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
@@ -72,6 +79,7 @@ canvas.addEventListener('pointermove', event => {
 });
 const release = () => {
   if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p'), fix: held.has('f') });
+  if (drag?.cloth) ui.clothEdgeEnd(renderer.clothEditor.up());
   if (drag?.sculpt) {
     const target = renderer.sculpt.end();
     renderer.sculpt.settings.invert = drag.restoreInvert;
@@ -97,6 +105,10 @@ window.addEventListener('keydown', event => {
     if (!command && key === 'g' && !event.repeat) { editor.setGravityOn(!editor.settings.gravityOn); ui.render(); return; }
     if (!command && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
     if (!command && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
+  }
+  if (ui.dressing && command) {
+    if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoGarment(); return; }
+    if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); ui.redoGarment(); return; }
   }
   if (ui.sculpting && command) {
     if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoSculpt(); }

@@ -8,6 +8,7 @@ import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './hu
 import { oneShotClips } from './motion.mjs';
 import { SculptSession } from './sculpt.mjs';
 import { LockEditor } from './lock-editor.mjs';
+import { ClothEditor } from './cloth-editor.mjs';
 import { hairPresetData } from './hair-presets.mjs';
 import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPalette } from './state.mjs';
 
@@ -156,6 +157,7 @@ export class Renderer {
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
     this.lockEditor = new LockEditor(this); this.locksMode = false;
+    this.clothEditor = new ClothEditor(this);
     this.pivotRay = new Raycaster();
   }
   async setCharacter(person) {

@@ -160,11 +160,51 @@ function coverage(garment, v, layout, positions) {
   } else if (type === 'gloves') {
     s = layout.arm[v] - (armLength - 0.012 * k);
   }
-  // Painted cloth: +1 adds, -1 erases, blended over a few centimetres.
+  // Painted cloth: +1 adds, -1 erases, over nearly the whole brush circle
+  // (only its faint rim is left out), blended over a few centimetres.
   const painted = garment.paint[v];
-  if (painted > 0) s = Math.max(s, (painted - 0.5) * 0.04 * k);
-  if (painted < 0) s = Math.min(s, (0.5 + painted) * 0.04 * k);
+  if (painted > 0) s = Math.max(s, (painted - 0.2) * 0.05 * k);
+  if (painted < 0) s = Math.min(s, (0.2 + painted) * 0.05 * k);
   return s;
+}
+
+/**
+ * The garment's coverage at every body vertex (metres, > 0 inside), for
+ * previewing its edges on the body without cutting and draping it. Skirts and
+ * dresses include their waist-to-hem tube.
+ */
+export function garmentField(context, garment) {
+  const layout = bodyLayout(context), positions = context.positions, k = layout.k, out = new Float32Array(positions.length / 3);
+  let tube = null;
+  if (garment.type === 'skirt' || garment.type === 'dress') {
+    const top = garment.type === 'dress' ? layout.hipY + (layout.waistY - layout.hipY) * 0.9 : layout.hipY + (layout.waistY - layout.hipY) * (0.35 + garment.rise * 0.9);
+    tube = { top, hem: layout.hipY - (0.06 + garment.length * 0.62) * k };
+  }
+  for (let v = 0; v < out.length; v++) {
+    let s = garment.type === 'skirt' ? -1 : coverage(garment, v, layout, positions);
+    if (tube && layout.armW[v] < 0.3 && layout.headW[v] < 0.3) { const y = positions[v * 3 + 1]; s = Math.max(s, Math.min(tube.top - y, y - tube.hem)); }
+    out[v] = s;
+  }
+  return out;
+}
+
+/**
+ * Which edge of the garment a point of the body belongs to, for dragging it:
+ * the sleeve on an arm, the neckline near the neck, the waistband at the
+ * waist, the legs' ends on the legs, else the hem; with the direction that
+ * makes it longer when dragged down (the waistband rises when dragged up).
+ */
+export function garmentEdgeAt(context, garment, v) {
+  const layout = bodyLayout(context), y = context.positions[v * 3 + 1], t = garment.type, k = layout.k;
+  if (['tshirt', 'longsleeve', 'tank', 'hoodie', 'dress'].includes(t)) {
+    if (layout.armW[v] > 0.5) return { key: 'sleeve', label: 'Manga', sign: 1 };
+    if (y > (layout.chestY + layout.neckY) / 2) return { key: 'neckline', label: 'Decote', sign: 1 };
+    return { key: 'length', label: t === 'dress' ? 'Barra' : 'Comprimento', sign: 1 };
+  }
+  if (t === 'pants' || t === 'shorts') return y < layout.hipY - 0.03 * k ? { key: 'leg', label: 'Perna', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
+  if (t === 'skirt') return y < layout.hipY ? { key: 'length', label: 'Barra', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
+  if (t === 'socks') return { key: 'leg', label: 'Altura', sign: 1 };
+  return null;
 }
 
 function patternColor(garment, p, k) {
@@ -271,6 +311,12 @@ function cutPanel(context, garment, layout, layer) {
       for (let q = 1; q + 1 < unique.length; q++) if (unique[0] !== unique[q] && unique[q] !== unique[q + 1]) panel.index.push(unique[0], unique[q], unique[q + 1]);
     }
   });
+  // Painted cloth stays where it was painted (like a mask extracted from the
+  // body surface): those points are held, so a patch on a leg cannot slide down.
+  if (Object.keys(garment.paint).length) {
+    panel.pinned = new Uint8Array(panel.pos.length / 3);
+    panel.origins.forEach((v, i) => { if (v >= 0 && garment.paint[v] > 0.2) panel.pinned[i] = 1; });
+  }
   // Elastic bands: trouser and skirt waistbands, and the cuffs and hem of a sweater.
   panel.elastic = new Uint8Array(panel.pos.length / 3);
   for (const [key, at] of panel.map) {

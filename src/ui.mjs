@@ -41,6 +41,14 @@ const hints = {
 const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
 const toolNames = { brush: 'Pincel', comb: 'Pentear', pull: 'Puxar', move: 'Mover', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender' };
+// Made-to-measure clothes tools: [tool, name, icon].
+const clothTools = [[null, 'Girar', 'resume'], ['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar', 'sculpt'], ['clothErase', 'Apagar', 'cut']];
+const clothHints = {
+  look: 'Roda: zoom no cursor · botão direito: girar · botão do meio: mover',
+  edges: 'Arraste a barra, a manga, o decote, a cintura ou a perna da peça para cima ou para baixo · Ctrl+Z desfaz',
+  clothAdd: 'Pinte no corpo onde a peça deve cobrir · Ctrl+Z desfaz',
+  clothErase: 'Pinte no corpo onde a peça não deve cobrir · Ctrl+Z desfaz',
+};
 const toolIcons = { brush: 'sculpt', comb: 'hair', pull: 'pull', move: 'move', select: 'select', grow: 'grow', cut: 'cut', pin: 'pin' };
 const patternNames = { solid: 'Liso', stripes: 'Listras', pinstripe: 'Risca de giz', checks: 'Xadrez', gradient: 'Degradê' };
 const brushNames = { draw: 'Desenhar', inflate: 'Inflar', grab: 'Arrastar', smooth: 'Suavizar', flatten: 'Achatar', pinch: 'Pinçar' };
@@ -92,7 +100,12 @@ export class StudioUI {
     clearTimeout(this.rebuildTimer);
     this.ready('Gerando…');
     this.rebuildTimer = setTimeout(async () => {
-      if (await this.renderer?.setCharacter(this.person)) { this.ready('Pronto'); this.updateMeta(); if (this.section === 'cabelo' || this.section === 'exportar') this.render(); }
+      if (await this.renderer?.setCharacter(this.person)) {
+        this.ready('Pronto'); this.updateMeta();
+        if (this.section === 'cabelo' || this.section === 'exportar') this.render();
+        // The edge lines follow the rebuilt garment.
+        if (this.tailoring) this.renderer.clothEditor.show(this.person.garments[this.garmentIndex ?? 0] ?? null);
+      }
     }, 80);
   }
   updateMeta() {
@@ -195,7 +208,7 @@ export class StudioUI {
 
   // ------------------------------------------------------------ sections
   setSection(name) {
-    if (this.clothBrush && name !== 'roupas') this.setClothBrush(null);
+    if ((this.clothBrush || this.clothTool) && name !== 'roupas') { this.setClothBrush(null); this.clothTool = null; this.renderer?.clothEditor.hide(); }
     if (this.section === 'cabelo' && name !== 'cabelo') this.finishLocks();
     const wasSculpting = this.section === 'esculpir';
     const previous = this.section;
@@ -431,6 +444,42 @@ export class StudioUI {
 
   // ------------------------------------------------------------ clothes
   get sculpting() { return Boolean(this.renderer) && (this.section === 'esculpir' || (this.section === 'roupas' && Boolean(this.clothBrush))); }
+  /** Made-to-measure clothes are being edited (undo/redo applies to them). */
+  get dressing() { return Boolean(this.renderer) && this.section === 'roupas' && this.person.outfit === 4; }
+  /** The edge tool is on: the left button drags the garment's edges. */
+  get tailoring() { return this.dressing && this.clothTool === 'edges'; }
+  /** Clothes tools: null (look around), 'edges', 'clothAdd', 'clothErase'. */
+  setClothTool(tool) {
+    this.clothTool = tool;
+    if (tool === 'clothAdd' || tool === 'clothErase') { this.setClothBrush(tool); this.renderer?.clothEditor.hide(); }
+    else {
+      this.setClothBrush(null);
+      if (tool === 'edges') { this.renderer?.setSculptMode(true); this.renderer?.clothEditor.show(this.person.garments[this.garmentIndex ?? 0] ?? null); }
+      else this.renderer?.clothEditor.hide();
+    }
+    this.setHint(clothHints[tool ?? 'look']);
+  }
+  // Undo/redo of the made-to-measure outfit (every change is a whole-outfit snapshot).
+  garmentCheckpoint() {
+    (this.garmentUndo ??= []).push(JSON.stringify(this.person.garments));
+    if (this.garmentUndo.length > 60) this.garmentUndo.shift();
+    this.garmentRedo = [];
+  }
+  restoreGarments(json) {
+    this.person = normalizeCharacter({ ...this.person, garments: JSON.parse(json) });
+    this.garmentIndex = Math.min(this.garmentIndex ?? 0, Math.max(0, this.person.garments.length - 1));
+    this.queueCharacter(); this.render();
+  }
+  undoGarment() { if (!this.garmentUndo?.length) return; (this.garmentRedo ??= []).push(JSON.stringify(this.person.garments)); this.restoreGarments(this.garmentUndo.pop()); }
+  redoGarment() { if (!this.garmentRedo?.length) return; (this.garmentUndo ??= []).push(JSON.stringify(this.person.garments)); this.restoreGarments(this.garmentRedo.pop()); }
+  clothEdgeStart() { this.ready('Arraste para cima ou para baixo'); }
+  clothEdgeMove(drag) { if (drag) this.ready(`${drag.label}: ${Math.round(drag.value * 100)}%`); }
+  clothEdgeEnd(result) {
+    if (!result) { this.ready('Pronto'); return; }
+    this.garmentCheckpoint();
+    this.updateGarment({ [result.key]: result.value }, 0);
+    this.render();
+  }
   setClothBrush(mode) {
     const settings = this.renderer?.sculpt.settings;
     if (!settings) return;
@@ -442,6 +491,7 @@ export class StudioUI {
   commitClothPaint({ mode, weights }) {
     const garment = this.person.garments[this.garmentIndex ?? 0];
     if (!garment || !weights.size) return;
+    this.garmentCheckpoint();
     const paint = { ...garment.paint };
     for (const [v, w] of weights) { const old = paint[v] ?? 0; paint[v] = mode === 'clothAdd' ? Math.max(old, w) : Math.min(old, -w); }
     this.updateGarment({ paint }, 0);
@@ -453,6 +503,7 @@ export class StudioUI {
     this.garmentTimer = setTimeout(() => this.queueCharacter(), delay);
   }
   setGarments(garments, index) {
+    this.garmentCheckpoint();
     this.person = normalizeCharacter({ ...this.person, garments });
     this.garmentIndex = Math.max(0, Math.min(this.person.garments.length - 1, index));
     this.queueCharacter(); this.render();
@@ -470,8 +521,23 @@ export class StudioUI {
     }
     const garments = this.person.garments;
     this.garmentIndex = Math.max(0, Math.min(garments.length - 1, this.garmentIndex ?? 0));
+    // Tools in the viewport, as in the hair editor.
+    const tools = this.group('Ferramentas');
+    tools.append(h('div', { class: 'tool-row', role: 'group', 'aria-label': 'Ferramenta de roupa' }, clothTools.map(([tool, name, glyph]) => h('button', {
+      type: 'button', class: `tool${(this.clothTool ?? null) === tool ? ' on' : ''}`, 'data-cloth-tool': tool ?? 'look', title: `${name} — ${clothHints[tool ?? 'look']}`, 'aria-pressed': String((this.clothTool ?? null) === tool),
+      onclick: () => { this.setClothTool(tool); this.render(); },
+    }, icon(glyph, 20), h('span', { text: name })))));
+    if (this.clothBrush) {
+      const settings = this.renderer.sculpt.settings;
+      this.slide(tools, { label: 'Tamanho do pincel', value: settings.radius, min: 0.01, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.radius = v; } });
+      this.toggle(tools, 'Espelhar no corpo', settings.symmetry, on => { settings.symmetry = on; });
+    }
+    this.setHint(clothHints[this.clothTool ?? 'look']);
+    if (this.clothTool === 'edges') this.renderer?.clothEditor.show(garments[this.garmentIndex] ?? null);
     const pieces = this.group('Peças');
     pieces.append(h('div', { class: 'chips' }, garments.map((g, i) => h('button', { type: 'button', class: `chip${i === this.garmentIndex ? ' on' : ''}`, onclick: () => { this.garmentIndex = i; this.render(); }, text: `${i + 1}. ${garmentLabels[g.type]}` }))));
+    pieces.append(h('div', { class: 'button-grid' },
+      this.iconButton('undo', 'Desfazer (Ctrl+Z)', () => this.undoGarment()), this.iconButton('redo', 'Refazer (Ctrl+Y)', () => this.redoGarment())));
     const addSelect = h('select', { 'aria-label': 'Nova peça' }, garmentTypes.map(type => h('option', { value: type, text: garmentLabels[type] })));
     pieces.append(this.row('Nova peça', addSelect), h('div', { class: 'button-grid' },
       h('button', { type: 'button', class: 'button', disabled: garments.length >= 8, onclick: () => this.setGarments([...garments, newGarment(addSelect.value)], garments.length) }, icon('plus', 16), 'Adicionar'),
@@ -483,9 +549,9 @@ export class StudioUI {
     const cut = this.group('Modelagem');
     const typeSelect = h('select', { 'aria-label': 'Tipo' }, garmentTypes.map(type => h('option', { value: type, text: garmentLabels[type] })));
     typeSelect.value = garment.type;
-    typeSelect.addEventListener('change', () => { this.updateGarment({ ...newGarment(typeSelect.value), paint: garment.paint, color: garment.color, color2: garment.color2, pattern: garment.pattern }); this.render(); });
+    typeSelect.addEventListener('change', () => { this.garmentCheckpoint(); this.updateGarment({ ...newGarment(typeSelect.value), paint: garment.paint, color: garment.color, color2: garment.color2, pattern: garment.pattern }); this.render(); });
     cut.append(this.row('Tipo', typeSelect));
-    const field = (key, label) => this.slide(cut, { label, value: garment[key], min: 0, max: 1, onInput: v => this.updateGarment({ [key]: v }, 250) });
+    const field = (key, label) => this.slide(cut, { label, value: garment[key], min: 0, max: 1, onStart: () => this.garmentCheckpoint(), onInput: v => this.updateGarment({ [key]: v }, 250) });
     const t = garment.type;
     if (['tshirt', 'longsleeve', 'tank', 'hoodie', 'dress'].includes(t)) { field('sleeve', 'Manga'); field('neckline', 'Decote'); }
     if (['tshirt', 'longsleeve', 'tank', 'hoodie', 'skirt', 'dress'].includes(t)) field('length', t === 'skirt' || t === 'dress' ? 'Barra' : 'Comprimento');
@@ -496,22 +562,16 @@ export class StudioUI {
     const fabric = this.group('Tecido');
     const patternSelect = h('select', { 'aria-label': 'Padrão' }, garmentPatterns.map(name => h('option', { value: name, text: patternNames[name] ?? name })));
     patternSelect.value = garment.pattern;
-    patternSelect.addEventListener('change', () => { this.updateGarment({ pattern: patternSelect.value }); this.render(); });
+    patternSelect.addEventListener('change', () => { this.garmentCheckpoint(); this.updateGarment({ pattern: patternSelect.value }); this.render(); });
     fabric.append(this.row('Padrão', patternSelect));
-    const colorInput = key => { const input = h('input', { type: 'color', value: garment[key] }); input.addEventListener('input', () => this.updateGarment({ [key]: input.value }, 200)); return input; };
+    const colorInput = key => { const input = h('input', { type: 'color', value: garment[key] }); input.addEventListener('click', () => this.garmentCheckpoint()); input.addEventListener('input', () => this.updateGarment({ [key]: input.value }, 200)); return input; };
     fabric.append(this.row('Cor', colorInput('color')));
     if (garment.pattern !== 'solid') {
       fabric.append(this.row('Segunda cor', colorInput('color2')));
       this.slide(fabric, { label: 'Escala', value: garment.scale, min: 0, max: 1, onInput: v => this.updateGarment({ scale: v }, 250) });
     }
     this.slide(fabric, { label: 'Aspereza', value: garment.roughness, min: 0, max: 1, onInput: v => this.updateGarment({ roughness: v }, 250) });
-    const paint = this.group('Pincel de tecido', { open: Boolean(this.clothBrush) });
-    this.segmented(paint, null, ['Desligado', 'Pintar', 'Apagar'], [null, 'clothAdd', 'clothErase'].indexOf(this.clothBrush ?? null), i => { this.setClothBrush([null, 'clothAdd', 'clothErase'][i]); });
-    if (this.clothBrush) {
-      const settings = this.renderer.sculpt.settings;
-      this.slide(paint, { label: 'Tamanho', value: settings.radius, min: 0.01, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.radius = v; } });
-      this.toggle(paint, 'Espelhar no corpo', settings.symmetry, on => { settings.symmetry = on; });
-    }
+    const paint = this.group('Pintura', { open: false });
     paint.append(h('button', { type: 'button', class: 'button wide', disabled: !Object.keys(garment.paint).length, onclick: () => { this.updateGarment({ paint: {} }, 0); this.render(); } }, `Limpar pintura (${Object.keys(garment.paint).length})`));
   }
 

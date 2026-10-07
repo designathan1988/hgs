@@ -253,10 +253,14 @@ export class SculptSession {
     }
     const hit = this.hit(ndc, camera);
     if (!hit) return;
-    // Space dabs at a fifth of the radius along the stroke.
-    if (hit.point.distanceTo(this.stroke.last) < this.settings.radius * 0.2) return;
+    // Dabs a fifth of the radius apart along the whole stroke (also between
+    // pointer events far apart, as a fast stroke delivers them), so a stroke
+    // leaves a continuous band, not separate spots.
+    const spacing = this.settings.radius * 0.2, from = this.stroke.last.clone(), gap = hit.point.distanceTo(from);
+    if (gap < spacing) return;
+    const steps = Math.min(64, Math.floor(gap / spacing));
+    for (let k = 1; k <= steps; k++) this.dab(k === steps ? hit.point : from.clone().lerp(hit.point, k / steps), hit.face?.normal);
     this.stroke.last.copy(hit.point);
-    this.dab(hit.point, hit.face?.normal);
   }
   dab(center, faceNormal) {
     const t = this.target, s = this.settings, sign = s.invert ? -1 : 1;
