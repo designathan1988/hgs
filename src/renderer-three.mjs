@@ -1,6 +1,6 @@
 import {
   AmbientLight, AnimationMixer, Color, DirectionalLight, GridHelper, Group, Mesh,
-  MeshBasicMaterial, MeshStandardMaterial, SphereGeometry, PerspectiveCamera, PlaneGeometry, Raycaster, Scene, Vector3, WebGLRenderer,
+  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, Scene, Vector3, WebGLRenderer,
 } from 'three';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
@@ -157,9 +157,6 @@ export class Renderer {
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
     this.lockEditor = new LockEditor(this); this.locksMode = false;
     this.pivotRay = new Raycaster();
-    // Marks the point the camera turns around while orbiting.
-    this.pivotMark = new Mesh(new SphereGeometry(1, 12, 8), new MeshBasicMaterial({ color: 0xff8a3d, depthTest: false, transparent: true, opacity: 0.9 }));
-    this.pivotMark.renderOrder = 20; this.pivotMark.visible = false; this.scene.add(this.pivotMark);
   }
   async setCharacter(person) {
     const token = ++this.token;
@@ -328,10 +325,6 @@ export class Renderer {
     if (hit) return hit;
     const ray = this.pivotRay.ray, depth = this.camera.target.clone().sub(ray.origin).dot(ray.direction);
     return ray.origin.clone().addScaledVector(ray.direction, Math.max(0.05, depth));
-  }
-  showPivot(point) {
-    this.pivotMark.visible = Boolean(point);
-    if (point) { this.pivotMark.position.copy(point); this.pivotMark.scale.setScalar(Math.max(0.003, this.camera.distance * 0.006)); }
   }
   render(time) {
     if (this.lastTime == null) this.lastTime = time;

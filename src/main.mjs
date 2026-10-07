@@ -21,7 +21,6 @@ canvas.addEventListener('pointerdown', event => {
     // Right button: orbit around the point under the cursor (the view centre over empty space).
     const orbit = event.button === 2;
     const pivot = orbit && renderer ? renderer.pivotAt(sculptNdc(event, canvas)) ?? renderer.camera.target.clone() : null;
-    renderer?.showPivot(pivot);
     drag = { x: event.clientX, y: event.clientY, pan: !orbit, pivot };
     return;
   }
@@ -58,7 +57,6 @@ canvas.addEventListener('pointermove', event => {
   drag.x = event.clientX; drag.y = event.clientY;
 });
 const release = () => {
-  renderer?.showPivot(null);
   if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p') });
   if (drag?.sculpt) {
     const target = renderer.sculpt.end();
