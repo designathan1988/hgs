@@ -1,6 +1,8 @@
 import { blendshapeNames } from './face-rig.mjs';
 import { brushes } from './sculpt.mjs';
 import { groomTools } from './groom-editor.mjs';
+import { LockEditor, lockTools } from './lock-editor.mjs';
+import { lockLength } from './locks.mjs';
 import { hairTextureTypes } from './groom.mjs';
 import { garmentTypes, garmentLabels, garmentPatterns, newGarment } from './tailor.mjs';
 import { defaultCharacter, randomCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference, skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, hairNames, hairTextureNames, expressionNames, animationNames, lightingNames } from './state.mjs';
@@ -8,7 +10,7 @@ import { defaultCharacter, randomCharacter, normalizeCharacter, serializePreset,
 const sections = [
   ['Character', '♟', 'Identity and generation'], ['Body', '♙', 'Proportions and build'],
   ['Face', '◕', 'Facial structure'], ['Eyes', '◉', 'Gaze and colour'],
-  ['Skin', '◐', 'Tone and surface'], ['Hair', '♧', 'Style and colour'], ['Groom', '✂', 'Scalp, partings, locks and hair physics'],
+  ['Skin', '◐', 'Tone and surface'], ['Hair', '♧', 'Style and colour'], ['Groom', '✂', 'Scalp, partings, locks and hair physics'], ['Mechas', '≋', 'Cabelo em malha: puxe, modele e assente mechas'],
   ['Clothing', '▣', 'Outfit and palette'], ['Sculpt', '✎', 'Brushes for body, face, hair and clothes'],
   ['Expression', '☺', 'Facial character'],
   ['Pose', '♢', 'Standing attitude'], ['Animation', '↝', 'Motion preview'],
@@ -68,6 +70,8 @@ export class StudioUI {
   setSection(name) {
     if (this.clothBrush && name !== 'Clothing') this.setClothBrush(null);
     if (this.section === 'Groom' && name !== 'Groom') this.finishGroom();
+    if (this.section === 'Mechas' && name !== 'Mechas') this.finishLocks();
+    if (name === 'Mechas' && this.section !== 'Mechas') { this.section = name; this.startLocks(); this.render(); return; }
     if (name === 'Groom' && this.section !== 'Groom') { this.section = name; this.startGroom(); this.render(); return; }
     const wasSculpting = this.section === 'Sculpt';
     this.section = name;
@@ -79,6 +83,166 @@ export class StudioUI {
       if (this.renderer && name === 'Sculpt' && this.undressBody && this.renderer.sculpt.settings.target === 'body') { this.renderer.undressed = true; this.queueCharacter(); }
     }
     this.render();
+  }
+  get locking() { return Boolean(this.renderer) && this.section === 'Mechas' && this.renderer.lockEditor.active; }
+  /** Enter the Mechas editor: the character switches to its mesh-locks hairstyle. */
+  startLocks() {
+    if (!this.renderer) return;
+    const index = hairNames.indexOf('Mechas (malha)');
+    this.renderer.lockEditor.onChange = () => this.locksChanged();
+    if (this.person.hairStyle !== index) {
+      this.person = normalizeCharacter({ ...this.person, hairStyle: index });
+      this.renderer.locksMode = true;
+      this.queueCharacter();
+    } else this.renderer.setLocksMode(true);
+  }
+  /** Leave the editor: the hairstyle is stored with the character and rebuilt as one game mesh. */
+  finishLocks() {
+    if (!this.renderer?.locksMode) return;
+    const data = this.renderer.setLocksMode(false);
+    if (data) { this.person = normalizeCharacter({ ...this.person, locks: data }); this.clearPresetSelection(); this.queueCharacter(); }
+  }
+  lockPanelState() {
+    const editor = this.renderer.lockEditor;
+    return `${[...editor.selected].sort((a, b) => a - b).join(',')}|${editor.locks.length}|${editor.settings.running}|${editor.settings.tool}|${editor.revision ?? 0}`;
+  }
+  /** The status line on every change; the whole panel only when the selection changes (never mid-slider). */
+  locksChanged() {
+    const editor = this.renderer?.lockEditor;
+    if (!editor?.active || this.section !== 'Mechas') return;
+    if (this.lockPanelState() !== this.lockPanelKey && !this.lockSliding) { this.render(); return; }
+    this.updateLockStatus();
+  }
+  updateLockStatus() {
+    const node = document.getElementById('lockStatus'), editor = this.renderer?.lockEditor;
+    if (!node || !editor?.active) return;
+    const s = editor.summary();
+    const status = { simulating: 'simulando', settled: 'assentada (em repouso)', paused: 'pausada' }[s.status];
+    node.textContent = `${s.count} mechas · ${s.selected} selecionadas · ${s.pins} pinos · ${s.styled} com forma fixada · física ${status}`;
+    const history = document.getElementById('lockHistory');
+    if (history) history.textContent = `Passos para desfazer: ${editor.undoStack.length} · para refazer: ${editor.redoStack.length}`;
+  }
+  renderLocks() {
+    const editor = this.renderer?.lockEditor;
+    if (!editor?.active) { this.block('Mechas', 'Preparando a cabeça…'); setTimeout(() => { if (this.section === 'Mechas') this.render(); }, 400); return; }
+    const settings = editor.settings;
+    this.lockPanelKey = this.lockPanelState();
+    const act = (grid, label, fn, { primary = false, id = null, disabled = false } = {}) => {
+      const b = el('button', primary ? 'primary' : '', label); b.type = 'button'; if (id) b.id = id; b.disabled = disabled;
+      b.addEventListener('click', fn); grid.append(b); return b;
+    };
+    const check = (block, label, value, onChange, id) => {
+      const r = el('label', 'check-row'); const box = el('input'); box.type = 'checkbox'; box.checked = value; if (id) box.id = id;
+      box.addEventListener('change', () => onChange(box.checked)); r.append(box, el('span', '', label)); block.append(r); return box;
+    };
+    const tools = this.block('Ferramenta', 'Arraste no vazio para girar a câmera, Shift+arrastar para mover, roda do mouse para zoom.');
+    const names = { pull: 'Puxar', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender / soltar' };
+    const row = el('div', 'segmented'); row.setAttribute('role', 'group'); row.setAttribute('aria-label', 'Ferramenta de mechas');
+    for (const tool of lockTools) {
+      const b = el('button', settings.tool === tool ? 'selected' : '', names[tool]); b.type = 'button'; b.dataset.lockTool = tool;
+      b.setAttribute('aria-pressed', String(settings.tool === tool));
+      b.addEventListener('click', () => { editor.setTool(tool); this.render(); });
+      row.append(b);
+    }
+    tools.append(row);
+    const hints = {
+      pull: 'Clique no couro cabeludo (área verde) e arraste: a mecha nasce presa à raiz e vai até o cursor. Clique numa mecha e arraste para puxá-la. Segure P ao soltar para prender aquele ponto.',
+      select: 'Clique numa mecha para selecioná-la. Shift adiciona, Ctrl alterna. Clique no vazio para limpar a seleção.',
+      grow: 'Clique numa mecha e arraste no sentido da ponta: ela cresce a partir da ponta (arrastar de volta encurta). Teclas + e − alongam ou encurtam as selecionadas.',
+      cut: 'Clique ou passe sobre as mechas: cada uma é cortada onde você tocou, com a ponta arredondada.',
+      pin: 'Clique numa mecha para prender aquele ponto onde ele está (marca vermelha). Clique no pino de novo para soltá-lo.',
+    };
+    tools.append(el('p', 'section-note', hints[settings.tool]));
+    check(tools, 'Mostrar a área do couro cabeludo', settings.showScalp, on => { settings.showScalp = on; editor.updateHelpers(); });
+    check(tools, 'Prender o ponto puxado ao soltar', settings.pinOnRelease, on => { settings.pinOnRelease = on; });
+    check(tools, 'Espelhar: cada mecha nova nasce também do outro lado', settings.mirror, on => { settings.mirror = on; }, 'lockMirror');
+
+    const count = editor.selected.size, lock = editor.summary().first;
+    const shape = this.block(count ? (count > 1 ? `${count} mechas selecionadas` : 'Mecha selecionada') : 'Novas mechas',
+      count ? 'Os controles valem para todas as mechas selecionadas.' : 'Sem seleção: largura, volume e afunilamento valem para as próximas mechas. Selecione uma mecha para editá-la.');
+    const slider = (block, id, label, value, min, max, step, onInput, format, { start, end } = {}) => {
+      const r = el('div', 'control');
+      const text = el('label', '', label); text.htmlFor = id;
+      const input = el('input'); input.type = 'range'; input.id = id; input.min = min; input.max = max; input.step = step; input.value = value;
+      const out = el('output'); out.htmlFor = id; out.value = format(value);
+      let first = true;
+      input.addEventListener('input', () => {
+        this.lockSliding = true;
+        if (first) { start?.(); first = false; }
+        out.value = format(Number(input.value)); onInput(Number(input.value));
+      });
+      input.addEventListener('change', () => { first = true; this.lockSliding = false; end?.(input, out); this.updateLockStatus(); });
+      r.append(text, input, out); block.append(r); return input;
+    };
+    const cm = v => `${(v * 100).toFixed(1)}cm`, two = v => v.toFixed(2);
+    const record = () => editor.checkpoint();
+    if (lock && count) {
+      slider(shape, 'lock-length', 'Comprimento', lockLength(lock), 0.015, 1.1, 0.005, v => editor.setLength(v), cm, { start: record });
+      const lengthRow = el('div', 'action-grid');
+      act(lengthRow, '＋ Alongar', () => editor.scaleLength(1.15), { id: 'lockLonger' });
+      act(lengthRow, '− Encurtar', () => editor.scaleLength(1 / 1.15), { id: 'lockShorter' });
+      shape.append(lengthRow);
+      slider(shape, 'lock-width', 'Largura', lock.width, 0.006, 0.09, 0.001, v => editor.setParam('width', v), cm, { start: record });
+      slider(shape, 'lock-volume', 'Volume', lock.volume, 0.12, 1, 0.01, v => editor.setParam('volume', v), two, { start: record });
+      slider(shape, 'lock-taper', 'Afunilamento', lock.taper, 0, 1, 0.01, v => editor.setParam('taper', v), two, { start: record });
+      slider(shape, 'lock-bend', 'Curvar', 0, -1, 1, 0.01, v => editor.bend(v), two, { start: () => editor.beginBend(), end: (input, out) => { editor.endBend(); input.value = 0; out.value = two(0); } });
+      slider(shape, 'lock-curl', 'Enrolar', lock.curl, 0, 1, 0.01, v => editor.setParam('curl', v), two, { start: record });
+      slider(shape, 'lock-turns', 'Voltas', lock.turns, 0.5, 14, 0.1, v => editor.setParam('turns', v), v => v.toFixed(1), { start: record });
+      slider(shape, 'lock-twist', 'Torcer', lock.twist * 180 / Math.PI, -540, 540, 1, v => editor.setParam('twist', v * Math.PI / 180), v => `${Math.round(v)}°`, { start: record });
+      slider(shape, 'lock-stiffness', 'Firmeza', lock.stiffness, 0, 1, 0.01, v => editor.setParam('stiffness', v), two, { start: record });
+      const grid = el('div', 'action-grid');
+      act(grid, 'Engrossar', () => editor.scaleParam('width', 1.15), { id: 'lockThicker' });
+      act(grid, 'Afinar', () => editor.scaleParam('width', 1 / 1.15), { id: 'lockThinner' });
+      act(grid, 'Prender ponta', () => editor.pinTip(), { id: 'lockPinTip' });
+      act(grid, 'Soltar pinos', () => editor.unpin(), { id: 'lockUnpin' });
+      act(grid, 'Apagar selecionadas', () => editor.deleteSelected(), { id: 'lockDelete' });
+      act(grid, 'Limpar seleção', () => editor.clearSelection());
+      shape.append(grid);
+    } else {
+      slider(shape, 'lock-width', 'Largura', settings.width, 0.006, 0.09, 0.001, v => { settings.width = v; }, cm);
+      slider(shape, 'lock-volume', 'Volume', settings.volume, 0.12, 1, 0.01, v => { settings.volume = v; }, two);
+      slider(shape, 'lock-taper', 'Afunilamento', settings.taper, 0, 1, 0.01, v => { settings.taper = v; }, two);
+    }
+    const sim = this.block('Simulação', 'A gravidade faz as mechas penderem e assentarem sobre a cabeça e os ombros. Pause para ajustar à mão; depois fixe o resultado como forma de repouso.');
+    const status = el('p', 'section-note'); status.id = 'lockStatus'; sim.append(status);
+    const simActions = el('div', 'action-grid');
+    act(simActions, settings.running ? '⏸ Pausar' : '▶ Continuar', () => { editor.setRunning(!settings.running); this.render(); }, { id: 'lockRun' });
+    act(simActions, 'Assentar agora', () => { editor.settleNow(); this.updateLockStatus(); }, { id: 'lockSettle' });
+    act(simActions, 'Fixar forma (repouso)', () => editor.setRest(), { primary: true, id: 'lockSetRest' });
+    act(simActions, 'Soltar forma (cai)', () => editor.releaseRest(), { id: 'lockRelease' });
+    sim.append(simActions);
+    check(sim, 'Gravidade', settings.gravity, on => editor.setGravity(on), 'lockGravity');
+
+    const style = this.block('Penteado', 'Ctrl+Z desfaz, Ctrl+Y refaz, Delete apaga as selecionadas, Espaço pausa ou continua.');
+    const hist = el('p', 'section-note'); hist.id = 'lockHistory'; style.append(hist);
+    const grid = el('div', 'action-grid');
+    act(grid, 'Desfazer', () => editor.undo(), { id: 'lockUndo' });
+    act(grid, 'Refazer', () => editor.redo(), { id: 'lockRedo' });
+    act(grid, 'Selecionar todas', () => editor.selectAll(), { id: 'lockSelectAll' });
+    act(grid, 'Apagar tudo', () => { if (confirm('Apagar todas as mechas? (Desfazer traz de volta)')) editor.clearAll(); });
+    style.append(grid);
+    check(style, 'Pintar o couro cabeludo sob as raízes', Boolean(editor.state.scalp), on => { editor.state.scalp = on ? 1 : 0; editor.updateUnderlay(); });
+    const nameRow = el('div', 'input-row'); const nameLabel = el('label', '', 'Nome'); const nameInput = el('input'); nameInput.id = 'lockSlotName'; nameLabel.htmlFor = nameInput.id;
+    nameInput.value = this.lockSlot ?? 'Meu penteado'; nameInput.maxLength = 40; nameRow.append(nameLabel, nameInput); style.append(nameRow);
+    const slots = LockEditor.slots();
+    const slotRow = el('div', 'input-row'); const slotLabel = el('label', '', 'Salvos'); const slotSelect = el('select'); slotSelect.id = 'lockSlots'; slotLabel.htmlFor = slotSelect.id;
+    for (const name of slots) slotSelect.add(new Option(name, name));
+    if (this.lockSlot && slots.includes(this.lockSlot)) slotSelect.value = this.lockSlot;
+    slotRow.append(slotLabel, slotSelect); style.append(slotRow);
+    const io = el('div', 'action-grid');
+    act(io, 'Salvar', () => { const name = nameInput.value.trim() || 'Meu penteado'; this.lockSlot = name; this.ready(editor.saveSlot(name) ? `Penteado "${name}" salvo` : 'Armazenamento indisponível'); this.render(); }, { id: 'lockSave' });
+    act(io, 'Carregar', () => { const name = slotSelect.value; if (!name) return; this.lockSlot = name; this.ready(editor.loadSlot(name) ? `Penteado "${name}" carregado` : 'Penteado não encontrado'); }, { id: 'lockLoad', disabled: !slots.length });
+    act(io, 'Exportar arquivo', () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(editor.serialize())], { type: 'application/json' }));
+      const a = document.createElement('a'); a.href = url; a.download = `${slug(nameInput.value || 'penteado')}.mechas.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    });
+    const file = el('input'); file.type = 'file'; file.accept = '.json,application/json'; file.hidden = true;
+    file.addEventListener('change', async () => { const f = file.files[0]; if (!f) return; this.ready(editor.load(await f.text()) ? `Arquivo "${f.name}" carregado` : 'O arquivo não é um penteado de mechas'); file.value = ''; });
+    act(io, 'Importar arquivo', () => file.click());
+    act(io, 'Excluir salvo', () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { editor.deleteSlot(name); this.render(); } }, { disabled: !slots.length });
+    act(io, 'Concluir', () => this.setSection('Hair'), { primary: true, id: 'lockDone' });
+    style.append(io, file);
+    this.updateLockStatus();
   }
   get grooming() { return Boolean(this.renderer) && this.section === 'Groom' && this.renderer.groom.active; }
   /** Enter the Groom editor: the character switches to its custom groom (grown fresh the first time). */
@@ -758,6 +922,8 @@ export class StudioUI {
       this.renderSculpt();
     } else if (this.section === 'Groom') {
       this.renderGroom();
+    } else if (this.section === 'Mechas') {
+      this.renderLocks();
     } else if (this.section === 'Export') {
       this.renderExport();
     } else if (this.section === 'Performance') {

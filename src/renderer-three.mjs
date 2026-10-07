@@ -8,6 +8,7 @@ import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './hu
 import { oneShotClips } from './motion.mjs';
 import { SculptSession } from './sculpt.mjs';
 import { GroomEditor } from './groom-editor.mjs';
+import { LockEditor } from './lock-editor.mjs';
 import { hairTextures } from './appearance.mjs';
 import { ageHeightReference, randomCharacter, hairStyles, hairPalette, topPalette, bottomPalette } from './state.mjs';
 
@@ -58,6 +59,7 @@ export function studioSpec(person, { undressed = false } = {}) {
     shoes: undressed ? 'none' : 'shoes01',
     sculpt: person.sculpt,
     hairGroom: person.groom,
+    hairLocks: person.locks,
     animationSpeed: person.animationSpeed,
     pose: person.pose,
     faceWeights: faceWeights(person.expression, person.expressionIntensity ?? 0.5, person.faceShapes),
@@ -124,6 +126,7 @@ export class Renderer {
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
     this.groom = new GroomEditor(this); this.groomMode = false;
+    this.lockEditor = new LockEditor(this); this.locksMode = false;
   }
   async setCharacter(person) {
     const token = ++this.token;
@@ -147,6 +150,7 @@ export class Renderer {
       if (crowdSeed !== person.seed || this.crowdBuiltFor !== this.requestedCrowd) this.setCrowdCount(this.requestedCrowd);
       if (this.sculptMode) this.freezeForSculpt();
       if (this.groomMode) this.beginGroom();
+      if (this.locksMode) this.beginLocks();
       return true;
     } catch (error) { this.onError(error.message); console.error(error); return false; }
   }
@@ -187,7 +191,7 @@ export class Renderer {
     applyFaceWeights(this.current.faceMeshes, {});
     this.sculpt.prepare(this.current, { pins: this.person?.sculpt?.pins?.[this.current.group.getObjectByName('Hair')?.userData.style] });
   }
-  get frozen() { return this.sculptMode || this.groomMode; }
+  get frozen() { return this.sculptMode || this.groomMode || this.locksMode; }
   /** Groom editing: rest pose, live guide physics, cards regenerated as you work. */
   setGroomMode(on) {
     this.groomMode = on;
@@ -209,6 +213,24 @@ export class Renderer {
     // Grooming happens around the head: frame it unless the user already zoomed in.
     const height = this.current.metrics.height;
     if (this.camera.distance > 1.2) { this.camera.yaw = 0.5; this.camera.pitch = 0.1; this.camera.distance = 0.85; this.camera.target.set(0, height * 0.9, 0); }
+  }
+  /** Mesh-lock editing (Mechas): rest pose, live lock physics, meshes rebuilt as you work. */
+  setLocksMode(on) {
+    this.locksMode = on;
+    if (on) { this.beginLocks(); return null; }
+    const data = this.lockEditor.end();
+    if (this.person) this.setPresentation(this.person);
+    return data;
+  }
+  beginLocks() {
+    if (!this.current) return;
+    this.mixer?.stopAllAction(); this.action = null;
+    this.current.body.skeleton.pose();
+    applyFaceWeights(this.current.faceMeshes, {});
+    const keep = this.lockEditor.active ? this.lockEditor.end() : null;
+    this.lockEditor.begin(this.current, keep ?? this.person?.locks ?? null, this.hairColor ?? 0x30231e);
+    const height = this.current.metrics.height;
+    if (this.camera.distance > 1.2) { this.camera.yaw = 0.55; this.camera.pitch = 0.12; this.camera.distance = 1.05; this.camera.target.set(0, height * 0.88, 0); }
   }
   setSculptMode(on) {
     this.sculptMode = on;
@@ -291,6 +313,7 @@ export class Renderer {
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (!this.frozen) this.mixer?.update(dt);
     if (this.groomMode && this.groom.active) this.groom.step(dt || 1 / 60);
+    if (this.locksMode && this.lockEditor.active) this.lockEditor.step(dt || 1 / 60);
     // Clips animate blinks and the jaw; keep the chosen expression underneath.
     for (const mesh of this.frozen ? [] : this.current?.faceMeshes ?? []) {
       for (const [name, value] of Object.entries(this.faceBase ?? {})) {

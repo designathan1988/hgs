@@ -15,6 +15,13 @@ const held = new Set();
 window.addEventListener('keyup', event => held.delete(event.key.toLowerCase()));
 canvas.addEventListener('pointerdown', event => {
   canvas.setPointerCapture(event.pointerId);
+  // In Mechas, a left press on a lock or the scalp uses the current tool
+  // (Shift-drag off the hair still pans).
+  if (ui.locking && event.button === 0 && !event.altKey) {
+    const editor = renderer.lockEditor, ndc = sculptNdc(event, canvas);
+    const panning = event.shiftKey && editor.settings.tool === 'pull' && !editor.pickLock(ndc, renderer.viewCamera);
+    if (!panning && editor.pointerDown(ndc, renderer.viewCamera, { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey })) { drag = { locks: true }; return; }
+  }
   // In Groom, a left press on hair or a handle uses the current tool.
   if (ui.grooming && event.button === 0 && !event.altKey) {
     const { ndc, pixel } = groomPoint(event);
@@ -36,6 +43,7 @@ canvas.addEventListener('pointerdown', event => {
 canvas.addEventListener('pointermove', event => {
   if (!renderer) return;
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
+  if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (ui.grooming && (drag?.groom || !drag)) { const { ndc, pixel } = groomPoint(event); renderer.groom.pointerMove(ndc, pixel, renderer.viewCamera); if (drag?.groom) return; }
   if (!drag) return;
@@ -45,6 +53,7 @@ canvas.addEventListener('pointermove', event => {
 });
 const release = () => {
   if (drag?.groom) renderer.groom.pointerUp({ pin: held.has('p') });
+  if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p') });
   if (drag?.sculpt) {
     const target = renderer.sculpt.end();
     renderer.sculpt.settings.invert = drag.restoreInvert;
@@ -57,6 +66,15 @@ canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('pointerleave', () => { if (renderer && !drag) renderer.sculpt.cursor.visible = false; });
 window.addEventListener('keydown', event => {
   if (!event.target.matches?.('input, textarea, select')) held.add(event.key.toLowerCase());
+  if (ui.locking && !event.target.matches?.('input[type=text], input:not([type]), textarea, select')) {
+    const key = event.key.toLowerCase(), editor = renderer.lockEditor;
+    if ((event.ctrlKey || event.metaKey) && key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo(); return; }
+    if ((event.ctrlKey || event.metaKey) && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); editor.redo(); return; }
+    if (key === 'delete') { event.preventDefault(); editor.deleteSelected(); return; }
+    if (!event.ctrlKey && !event.metaKey && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
+    if (!event.ctrlKey && !event.metaKey && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
+    if (key === ' ' && !event.target.matches?.('button, input')) { event.preventDefault(); editor.setRunning(!editor.settings.running); ui.render(); return; }
+  }
   if (ui.grooming && (event.ctrlKey || event.metaKey)) {
     const key = event.key.toLowerCase();
     if (key === 'z' && !event.shiftKey) { event.preventDefault(); renderer.groom.undo(); return; }
@@ -73,6 +91,8 @@ canvas.addEventListener('wheel', event => { event.preventDefault(); renderer?.ca
 try {
   renderer = await Renderer.create(canvas, message => ui.fail(message));
   ui.attachRenderer(renderer);
+  // Handle for inspecting the editor from the browser console.
+  window.__studio = { ui, renderer };
   let last = performance.now(), bucketStart = last, frames = 0, aggregate = 0;
   function frame(now) {
     const delta = Math.min(100, now - last); last = now;

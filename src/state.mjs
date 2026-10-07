@@ -1,6 +1,7 @@
 import { normalizeSculpt } from './sculpt.mjs';
 import { normalizeGarment, newGarment } from './tailor.mjs';
 import { normalizeGroom } from './groom.mjs';
+import { normalizeLocks } from './locks.mjs';
 
 export const skinPalette = ['#f0c9ad', '#dfad8b', '#c98c66', '#b77850', '#97603f', '#75472f', '#563524', '#39261d'];
 export const hairPalette = ['#181514', '#30231e', '#4b3327', '#70503a', '#a1784c', '#c9a977', '#823d2d', '#474343', '#ddd2bf'];
@@ -14,7 +15,7 @@ export const hairStyles = [
   ['Short crop', 'short02'], ['Side swept', 'culturalibre_hair_06'], ['Long straight', 'long01'],
   ['Blunt bob', 'toigo_blunt_bob'], ['Inverted bob', 'toigo_inverted_bob'], ['Soft bob', 'toigo_curled_under_bob'],
   ['Bob with bangs', 'toigo_blunt_bob_with_bangs'], ['Braid', 'braid01'], ['Curled bob with bangs', 'toigo_curled_under_bob_with_bangs'],
-  ['Inverted bob with bangs', 'toigo_inverted_bob_with_bangs'], ['Afro', 'afro'], ['Buzz cut', 'buzz'], ['Bald', 'none'], ['Custom groom', 'groom'],
+  ['Inverted bob with bangs', 'toigo_inverted_bob_with_bangs'], ['Afro', 'afro'], ['Buzz cut', 'buzz'], ['Bald', 'none'], ['Custom groom', 'groom'], ['Mechas (malha)', 'locks'],
 ];
 export const hairTextureNames = ['Straight', 'Wavy', 'Curly', 'Coily'];
 export const hairNames = hairStyles.map(([name]) => name);
@@ -62,7 +63,7 @@ const ranges = {
   build: [-1, 1], muscle: [0, 1], shoulders: [-1, 1], waist: [-1, 1], hips: [-1, 1],
   legLength: [-1, 1], headSize: [-1, 1], faceWidth: [-1, 1], jaw: [-1, 1], cheek: [-1, 1],
   nose: [-1, 1], eyeSize: [-1, 1], eyeSpacing: [-1, 1], skin: [0, 7, true],
-  skinDetail: [0, 1], skinRoughness: [0, 1], hairStyle: [0, 13, true], hairColor: [0, 8, true], hairTexture: [0, 3, true], hairCurl: [0, 1], hairVolume: [0, 1],
+  skinDetail: [0, 1], skinRoughness: [0, 1], hairStyle: [0, 14, true], hairColor: [0, 8, true], hairTexture: [0, 3, true], hairCurl: [0, 1], hairVolume: [0, 1],
   hairLength: [0, 1], eyeColor: [0, 5, true], outfit: [0, 4, true], topColor: [0, 5, true],
   browAngle: [-25, 25], browShape: [0, 3, true], browArch: [-1, 1], browThickness: [0.35, 2.1],
   browWidth: [0.7, 1.4], browHeight: [-1, 1], browDensity: [0, 1],
@@ -92,6 +93,8 @@ export function normalizeCharacter(value = {}) {
   result.sculpt = normalizeSculpt(value.sculpt);
   // A custom groom (guides, hairline, partings) or null until one is made.
   result.groom = value.groom ? normalizeGroom(value.groom) : null;
+  // A mesh-locks hairstyle (Mechas editor) or null until one is made.
+  result.locks = value.locks ? normalizeLocks(value.locks) : null;
   result.garments = Array.isArray(value.garments) ? value.garments.slice(0, 8).map(normalizeGarment) : [newGarment('tshirt'), newGarment('pants')];
   // Free colours chosen with the colour picker; a palette swatch clears them.
   result.colors = {};

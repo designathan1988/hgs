@@ -11,6 +11,7 @@ import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
 import { prepareGroom, groomMesh } from './groom.mjs';
+import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial } from './locks.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 
 const hairGenerators = new Map();
@@ -541,9 +542,14 @@ function groomScalp(context, state, hairColor) {
   const pos = original.getAttribute('position'), normals = original.getAttribute('normal');
   const joints = original.getAttribute('skinIndex'), weights = original.getAttribute('skinWeight');
   const baseIds = original.userData.baseIds;
-  const hair = new Color(hairColor).multiplyScalar(0.3);
+  // Painted-hairline underlay in a shade close to the hair colour.
+  const hair = new Color(hairColor).multiplyScalar(0.6);
   const out = { pos: [], normal: [], joints: [], weights: [], color: [], index: [] };
-  const alphaAt = v => { const f = state.field[baseIds[v]]; return f < -0.03 ? 0 : Math.min(1, (f + 0.03) / 0.07); };
+  // Only under the roots: roots are sampled on faces wholly inside the
+  // hairline, so the first row starts about one face (field ~0.03) in. The
+  // underlay fades in from there; painted ahead of the roots it showed as a
+  // bare band on the forehead.
+  const alphaAt = v => { const t = Math.min(1, Math.max(0, (state.field[baseIds[v]] - 0.02) / 0.06)); return t * t * (3 - 2 * t); };
   for (let quad = 0; quad < original.index.count; quad += 6) {
     const first = original.index.array[quad];
     const alpha = [0, 1, 2, 3].map(k => alphaAt(first + k));
@@ -719,7 +725,23 @@ export async function dressHuman(context, spec) {
   }
   const hair = spec.hair ?? { style: spec.gender < 0.5 ? 'long01' : 'short01' };
   if (hair.style && hair.style !== 'none') {
-    if (hair.style === 'groom') {
+    if (hair.style === 'locks') {
+      // Mesh locks styled in the Mechas editor: solid smooth locks, merged and skinned to the head.
+      const state = prepareLocks(context, spec.hairLocks);
+      if (state.locks.length) {
+        const color = spec.hairColor ?? 0x30231e;
+        const mesh = locksMesh(context, state, color);
+        context.group.add(mesh);
+        mesh.bind(context.body.skeleton, context.body.bindMatrix);
+        const under = context.lod === 'low' ? null : locksUnderlayGeometry(context.body.geometry, locksScalpColors(state), color);
+        if (under) {
+          const scalp = new SkinnedMesh(under, underlayMaterial());
+          scalp.name = 'ScalpUnderlay';
+          context.group.add(scalp);
+          scalp.bind(context.body.skeleton, context.body.bindMatrix);
+        }
+      }
+    } else if (hair.style === 'groom') {
       // A custom groom: guide strands styled in the Groom editor, built as hair cards.
       const state = prepareGroom(context, spec.hairGroom);
       context.groomState = state;

@@ -67,6 +67,7 @@ export function normalizeGroom(value) {
       // b[0] in [2, 3] marks the quad's second triangle (see rootPoint).
       f: g.f, b: [round(finite(g.b[0], 0, 3, 0.33), 1e5), round(finite(g.b[1], 0, 1, 0.33), 1e5)],
       p: g.p.map(x => round(clamp(x, -30, 30))),
+      r: Array.isArray(g.r) && g.r.length === POINTS * 3 && g.r.every(Number.isFinite) ? g.r.map(x => round(clamp(x, -30, 30))) : undefined,
       fz: g.fz ? 1 : 0,
       c: Array.isArray(g.c) ? g.c.filter(c => Array.isArray(c) && c.length === 4 && c.every(Number.isFinite) && c[0] >= 1 && c[0] < POINTS).map(([i, x, y, z]) => [Math.round(i), round(x), round(y), round(z)]) : [],
       t: Math.round(finite(g.t, 0, 3, 0)), cu: round(finite(g.cu, 0, 1, 0.5)), w: round(finite(g.w, 0.3, 3, 1)),
@@ -329,6 +330,11 @@ export class HairSim {
       if (g.frozen && !g.grab && !g.clips.size) { g.old.set(g.points); continue; }
       const x = g.points, old = g.old, rest = g.rest, l = g.segment;
       fixed.fill(0); fixed[0] = 1;
+      // The follicle sets the direction a hair leaves the scalp: the first
+      // segment keeps its styled direction (unless that point is being held).
+      // Without it gravity tips front-top roots over sideways and opens a
+      // bare parting down the middle.
+      fixed[1] = 1; target[3] = rest[3]; target[4] = rest[4]; target[5] = rest[5];
       for (const [i, t] of g.clips) { fixed[i] = 1; target[i * 3] = t.x; target[i * 3 + 1] = t.y; target[i * 3 + 2] = t.z; }
       if (g.grab) for (const [i, t] of g.grab) { fixed[i] = 1; target[i * 3] = t.x; target[i * 3 + 1] = t.y; target[i * 3 + 2] = t.z; }
       // 1. Verlet integration with damping and gravity.
@@ -517,7 +523,9 @@ export function growStrand(root, normal, frame, length) {
     const n = p.clone().sub(frame.C).normalize();
     // Hair at the forehead is combed up and back over the head; the sides and
     // back fall downward and slightly outward.
-    const front = smooth(0.15, 0.65, n.z), side = Math.sign(n.x) || 1;
+    // No hard parting: roots near the midline comb straight back, covering the
+    // top; only roots further out turn to the sides.
+    const front = smooth(0.15, 0.65, n.z), side = Math.max(-1, Math.min(1, n.x / 0.35));
     // Sideways flow only over the upper head; below its widest part hair hangs straight.
     const upper = smooth(-0.2, 0.35, n.y);
     const want = new Vector3(side * (0.3 - 0.1 * front) * upper, -1 + 2 * front, (-0.2 - 0.6 * front) * (0.3 + 0.7 * upper));
@@ -534,7 +542,7 @@ export function growStrand(root, normal, frame, length) {
     const { t, n } = flow(p);
     // Roots leave the scalp at an angle; further on, the strand lies on the head.
     const onHead = p.distanceTo(frame.C) < frame.R * 1.15;
-    const lift = i === 0 ? 0.45 : onHead ? 0.06 : 0;
+    const lift = i === 0 ? 0.15 : onHead ? 0.06 : 0;
     const next = t.clone().addScaledVector(i === 0 ? normal : n, lift).normalize();
     dir = dir ? dir.lerp(next, 0.7).normalize() : next;
     p = p.clone().addScaledVector(dir, segment);
@@ -594,6 +602,13 @@ export function hairCardTexture() {
     fade.addColorStop(0, 'rgba(0,0,0,0)'); fade.addColorStop(1, 'rgba(0,0,0,1)');
     g.globalCompositeOperation = 'destination-out';
     g.fillStyle = fade; g.fillRect(x0, height * 0.65, w, height * 0.35);
+    // And fade in from the root: cards blend into the scalp instead of
+    // starting with a hard edge along the hairline.
+    // Kept short: hairline strands start at the hairline, and a long fade
+    // leaves the front of the scalp bare.
+    const root = g.createLinearGradient(0, 0, 0, height * 0.03);
+    root.addColorStop(0, 'rgba(0,0,0,0.85)'); root.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = root; g.fillRect(x0, 0, w, height * 0.03);
     g.globalCompositeOperation = 'source-over';
   }
   strandTexture = new CanvasTexture(canvas);
@@ -643,7 +658,9 @@ export function buildCards(guides, frame, { width = 0.022, weightsFor, ties = []
   const ribbon = (line, offsets, column, widthScale) => {
     const u0 = column * 0.25 + 0.01, u1 = column * 0.25 + 0.24, rows = [];
     line.forEach((p, i) => {
-      const half = widthScale * (1 - 0.65 * i / (line.length - 1)) / 2;
+      // Slightly narrower at the root (it grows out of the scalp), full width
+      // two points later, then tapering to the tip.
+      const half = widthScale * (0.75 + 0.25 * Math.min(1, i / 2)) * (1 - 0.65 * i / (line.length - 1)) / 2;
       const v = i / (line.length - 1);
       rows.push([vertex(p.clone().addScaledVector(offsets[i], -half), u0, v), vertex(p.clone().addScaledVector(offsets[i], half), u1, v)]);
     });
@@ -679,8 +696,18 @@ export function buildCards(guides, frame, { width = 0.022, weightsFor, ties = []
     const outs = visible.map((p, i) => offsets[i].clone().cross(visible[Math.min(visible.length - 1, i + 1)].clone().sub(visible[Math.max(0, i - 1)]).normalize()).normalize());
     const w = width * (g.w ?? 1), column = n % 4;
     ribbon(visible, offsets, column, w);
-    // Second card tilted 25° off the first, so the lock has depth but still lies on the head.
-    ribbon(visible.map((p, i) => p.clone().addScaledVector(outs[i], 0.0025 * k)), offsets.map((o, i) => o.clone().multiplyScalar(0.906).addScaledVector(outs[i], 0.423).normalize()), (column + 2) % 4, w * 0.85);
+    // Second card lifted and tilted 25° off the first, so the lock has depth.
+    // Both grow in over the first points: at the root the cards lie together
+    // on the scalp instead of standing up like shingles along the hairline.
+    const grow = i => Math.min(1, i / 3);
+    ribbon(visible.map((p, i) => p.clone().addScaledVector(outs[i], 0.0025 * k * grow(i))), offsets.map((o, i) => o.clone().multiplyScalar(1 - 0.094 * grow(i)).addScaledVector(outs[i], 0.423 * grow(i)).normalize()), (column + 2) % 4, w * 0.85);
+    // Follow cards, as TressFX's follow hairs: copies of the guide offset to
+    // either side at the root (separating slightly towards the tip). They fill
+    // the scalp between guides at no simulation cost.
+    for (const sign of [-1, 1]) {
+      const spread = i => sign * w * 0.5 * (1 + 0.3 * i / (visible.length - 1));
+      ribbon(visible.map((p, i) => p.clone().addScaledVector(offsets[i], spread(i)).addScaledVector(outs[i], 0.0012 * k * grow(i))), offsets, (column + (sign > 0 ? 1 : 3)) % 4, w * 0.9);
+    }
   });
   // Braids: three strands circling the lock's centre line.
   for (const group of braids.values()) {
@@ -768,7 +795,13 @@ export function prepareGroom(context, groomData, { settle = true } = {}) {
       const shift = root.p.clone().sub(new Vector3().fromArray(points, 0));
       for (let i = 0; i < POINTS; i++) { points[i * 3] += shift.x; points[i * 3 + 1] += shift.y; points[i * 3 + 2] += shift.z; }
       const segment = Math.hypot(points[3] - points[0], points[4] - points[1], points[5] - points[2]);
-      guides.push({ f: g.f, b: g.b, root: root.p, normal: root.n, points, segment, frozen: !!g.fz, clips: new Map(g.c.map(([i, x, y, z]) => [i, toWorld(frame, [x, y, z]).add(shift)])), t: g.t, cu: g.cu, w: g.w, br: g.br });
+      // The styled shape, saved with the pose; older grooms have only the pose.
+      let rest;
+      if (g.r) {
+        rest = new Float32Array(POINTS * 3);
+        for (let i = 0; i < POINTS; i++) rest.set(toWorld(frame, g.r.slice(i * 3, i * 3 + 3)).add(shift).toArray(), i * 3);
+      }
+      guides.push({ f: g.f, b: g.b, root: root.p, normal: root.n, points, rest, segment, frozen: !!g.fz, clips: new Map(g.c.map(([i, x, y, z]) => [i, toWorld(frame, [x, y, z]).add(shift)])), t: g.t, cu: g.cu, w: g.w, br: g.br });
     }
     const area = scalpTriangles(data, positions, frame, field).reduce((sum, t) => sum + t.area, 0);
     if (area) spacing = Math.sqrt(area / groom.density) * 0.92;
@@ -781,11 +814,12 @@ export function prepareGroom(context, groomData, { settle = true } = {}) {
     }
   }
   const sim = new HairSim(guides, collider, { thickness: 0.004 * k });
-  if (settle && !groom.guides?.length) {
-    // As in TressFX, the rest shape is the styled shape the hair holds under
-    // gravity: settle the grown guess, adopt that equilibrium, settle again.
-    for (let pass = 0; pass < 2; pass++) { sim.settle(pass ? 45 : 90); for (const g of guides) HairSim.setRest(g); }
-  }
+  // The grown shape stays the rest (styled) shape, as TressFX keeps its
+  // initial positions as the target of the shape constraints: those
+  // constraints are what hold hair up against gravity. Adopting the settled
+  // state as the new rest removes that support and hair sags a step further
+  // each time (forehead locks slid over the eyes).
+  if (settle && !groom.guides?.length) sim.settle(135);
   const ties = groom.ties.map(t => ({ world: toWorld(frame, t.p).toArray() }));
   return { groom, frame, normals, field, k, collider, guides, sim, spacing, ties };
 }
@@ -798,6 +832,7 @@ export function serializeGroom(state) {
     guides: guides.map(g => ({
       f: g.f, b: g.b, fz: g.frozen ? 1 : 0, t: g.t, cu: g.cu, w: g.w, br: g.br,
       p: Array.from({ length: POINTS }, (_, i) => toLocal(frame, g.points[i * 3], g.points[i * 3 + 1], g.points[i * 3 + 2])).flat(),
+      r: g.rest ? Array.from({ length: POINTS }, (_, i) => toLocal(frame, g.rest[i * 3], g.rest[i * 3 + 1], g.rest[i * 3 + 2])).flat() : undefined,
       c: [...g.clips].map(([i, t]) => [i, ...toLocal(frame, t.x, t.y, t.z)]),
     })),
     ties: (state.ties ?? []).map(t => ({ p: toLocal(frame, ...t.world) })),

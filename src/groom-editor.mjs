@@ -24,7 +24,7 @@ export class GroomEditor {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { tool: 'pull', radius: 40, strength: 0.6, gravity: true, pinOnRelease: false, lock: 0.025 };
+    this.settings = { tool: 'pull', radius: 40, strength: 0.6, gravity: true, pinOnRelease: false, lock: 0.025, showGuides: false };
     this.selected = new Set();
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.onChange = () => {};
@@ -188,7 +188,10 @@ export class GroomEditor {
   update(cards = true) {
     const s = this.state, pos = [], color = [];
     const normal = new Color(0xd8d2c8), chosen = new Color(0xf27a2e), frozen = new Color(0x5ab8ff), braided = new Color(0xc28bff);
+    // Guide strands are an editing aid: by default only the selected locks show.
+    const all = this.settings.showGuides !== false;
     s.guides.forEach((g, n) => {
+      if (!all && !this.selected.has(n)) return;
       const c = this.selected.has(n) ? chosen : g.br >= 0 ? braided : g.frozen ? frozen : normal;
       for (let i = 0; i + 1 < POINTS; i++) {
         pos.push(g.points[i * 3], g.points[i * 3 + 1], g.points[i * 3 + 2], g.points[i * 3 + 3], g.points[i * 3 + 4], g.points[i * 3 + 5]);
@@ -196,7 +199,7 @@ export class GroomEditor {
       }
     });
     this.replace(this.lines, pos, color);
-    this.lines.visible = this.settings.showGuides !== false;
+    this.lines.visible = true;
     // Clips: small markers where locks are held.
     const marker = [], size = 0.004 * s.k;
     for (const g of s.guides) for (const target of g.clips.values()) {
