@@ -3,12 +3,11 @@ import {
   Skeleton, SkinnedMesh, SRGBColorSpace, Uint16BufferAttribute, Uint32BufferAttribute, Vector3,
 } from 'three';
 import { loadHumanData, shapeHuman } from './parametric.mjs';
-import { dressHuman } from './appearance.mjs';
+import { dressHuman, tintedSkinTexture } from './appearance.mjs';
 import { reduceGeometry } from './lod.mjs';
 import { buildClips } from './motion.mjs';
 import { addFaceRig } from './face-mesh.mjs';
 import { applyOffsets } from './sculpt.mjs';
-import { imageTexture } from './texture-cache.mjs';
 import { sanitizeSkin } from './skin.mjs';
 export { auditCharacter } from './skin.mjs';
 export { blendshapeNames } from './face-rig.mjs';
@@ -250,6 +249,7 @@ export function skinMaterialFor(spec) {
   const tint = new Color(target.r / best.mean.r, target.g / best.mean.g, target.b / best.mean.b);
   const peak = Math.max(tint.r, tint.g, tint.b);
   if (peak > 1.6) tint.multiplyScalar(1.6 / peak);
+  // `tint` multiplies texels (baked into the texture); it is never a material factor.
   return { file: `${best.name}.webp`, tint, target };
 }
 
@@ -276,13 +276,17 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   for (const root of skeleton.roots) group.add(root);
   const geometry = makeBodyGeometry(data, positions);
   const skin = skinMaterialFor(spec);
+  // glTF limits baseColorFactor to [0, 1]: untextured skin is the target tone;
+  // a textured one carries the tint baked into its texture and a white factor.
   const material = new MeshStandardMaterial({
-    color: spec.lod === 'low' ? skin.target : skin.tint,
+    color: skin.target,
     roughness: 0.55 + 0.4 * Math.max(0, Math.min(1, spec.skinRoughness ?? 0.6)),
   });
-  if (spec.lod !== 'low') material.userData.hgsSkinTexture = new URL(`../assets/skins/${skin.file}`, import.meta.url).href;
+  const skinURL = new URL(`../assets/skins/${skin.file}`, import.meta.url).href;
+  if (spec.lod !== 'low') material.userData.hgsSkinTexture = { url: skinURL, tint: skin.tint.toArray() };
   if (typeof document !== 'undefined' && spec.lod !== 'low') {
-    material.map = await imageTexture(new URL(`../assets/skins/${skin.file}`, import.meta.url).href, { flipY: true });
+    material.map = await tintedSkinTexture(skinURL, skin.tint.toArray());
+    material.color.set(0xffffff);
     material.needsUpdate = true;
   }
   const body = new SkinnedMesh(geometry, material);
@@ -306,6 +310,8 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
       const previous = mesh.geometry;
       mesh.geometry = await reduceGeometry(previous, spec.lod);
       if (mesh.geometry !== previous) previous.dispose();
+      // Simplification drops material groups; a reduced multi-material mesh keeps its first material.
+      if (Array.isArray(mesh.material) && !mesh.geometry.groups.length) { mesh.material.slice(1).forEach(m => m.dispose()); mesh.material = mesh.material[0]; }
     }
   }
   // Every skinned mesh leaves with glTF-valid weights (one set of four, summing to 1, unused slots 0).

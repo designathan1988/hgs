@@ -633,9 +633,12 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
     }
     return coverage(outer, v, layout, context.positions) >= 0.03 * k;
   });
+  // Index range of every finished panel, drawn with its garment's roughness.
+  const ranges = [];
   for (const { panel, garment, layer } of finished) {
     const hidden = panel.origins.map(v => !panel.pattern && outerCovers(layer, v));
     const offset = meshData.pos.length / 3;
+    ranges.push({ start: meshData.index.length, roughness: garment.roughness });
     for (let v = 0; v < panel.pos.length / 3; v++) {
       const p = new Vector3(panel.pos[v * 3], panel.pos[v * 3 + 1], panel.pos[v * 3 + 2]);
       const pieceMaterial = panel.materials?.[v] ?? panel.materials?.[panel.origins[v]];
@@ -667,8 +670,14 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   geometry.userData.garmentOf = Int8Array.from(meshData.garment);
   geometry.userData.pieceOf = Int16Array.from(meshData.piece);
   geometry.userData.patternSources = meshData.sources;
-  const roughness = garments.reduce((sum, g) => sum + g.roughness, 0) / Math.max(1, garments.length);
-  const mesh = new SkinnedMesh(geometry, new MeshStandardMaterial({ vertexColors: true, roughness, side: DoubleSide }));
+  // One material per distinct roughness and one group per panel (a glTF primitive each).
+  const roughnesses = [...new Set(ranges.map(range => range.roughness))];
+  ranges.forEach((range, i) => {
+    const end = ranges[i + 1]?.start ?? meshData.index.length;
+    if (end > range.start) geometry.addGroup(range.start, end - range.start, roughnesses.indexOf(range.roughness));
+  });
+  const materials = roughnesses.map(roughness => new MeshStandardMaterial({ vertexColors: true, roughness, side: DoubleSide }));
+  const mesh = new SkinnedMesh(geometry, materials);
   mesh.name = 'Outfit';
   mesh.userData.style = 'tailor';
   mesh.userData.tailor = true;

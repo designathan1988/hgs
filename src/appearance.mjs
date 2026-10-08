@@ -38,9 +38,28 @@ const shellStyles = { afro: { thickness: 0.06, bumps: 0.2, round: 0.7 }, buzz: {
 
 const linear = value => { const x = value / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
 const encode = x => Math.round(255 * (x <= 0.0031308 ? x * 12.92 : 1.055 * x ** (1 / 2.4) - 0.055));
-// The recoloured texture keeps the garment's shading at half brightness on
-// average so the vertex colour can reach the chosen swatch without exceeding 1.
-const DETAIL_MEAN = 0.5;
+const LINEAR = Float32Array.from({ length: 256 }, (_, i) => linear(i));
+
+/**
+ * The skin texture with its tone tint baked in, in linear light. glTF keeps
+ * material factors within [0, 1], so a tint that brightens a channel cannot
+ * be a factor; only texels pushed past 1 clip.
+ */
+export function tintedSkinTexture(url, tint) {
+  return sharedTexture(`skin:${url}:${tint.map(value => value.toFixed(4)).join(',')}`, async () => {
+    const base = await imageTexture(url, { flipY: true });
+    const canvas = document.createElement('canvas');
+    canvas.width = base.image.width; canvas.height = base.image.height;
+    const drawing = canvas.getContext('2d', { willReadFrequently: true });
+    drawing.drawImage(base.image, 0, 0);
+    const pixels = drawing.getImageData(0, 0, canvas.width, canvas.height), d = pixels.data;
+    for (let i = 0; i < d.length; i += 4) for (let c = 0; c < 3; c++) d[i + c] = encode(Math.min(1, LINEAR[d[i + c]] * tint[c]));
+    drawing.putImageData(pixels, 0, 0);
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace; texture.flipY = true; texture.needsUpdate = true;
+    return texture;
+  });
+}
 
 /**
  * Split a garment into its UV islands (shirt panels, trouser legs, belt...) and
@@ -61,18 +80,20 @@ function garmentPieces(positions, index, waistY) {
   return lower;
 }
 
-/** A grey version of the garment texture whose mean over the mesh is DETAIL_MEAN in linear light. */
-function detailTexture(image, uvs) {
+/**
+ * The garment texture recoloured: the chosen colour (top or bottom, by the UV
+ * islands of `garmentPieces`) times the texture's shading, normalised to a
+ * mean of 1 over the mesh, in linear light. The colour lives in the texture,
+ * so neither the material factor nor a vertex colour has to exceed 1.
+ */
+function garmentTexture(image, proxy, lower, top, bottom) {
   const canvas = document.createElement('canvas');
   canvas.width = image.width; canvas.height = image.height;
   const drawing = canvas.getContext('2d', { willReadFrequently: true });
   drawing.drawImage(image, 0, 0);
-  const pixels = drawing.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = drawing.getImageData(0, 0, canvas.width, canvas.height), d = pixels.data, uvs = proxy.uvs;
   const luminance = new Float32Array(canvas.width * canvas.height);
-  for (let i = 0; i < luminance.length; i++) {
-    const d = pixels.data;
-    luminance[i] = 0.2126 * linear(d[i * 4]) + 0.7152 * linear(d[i * 4 + 1]) + 0.0722 * linear(d[i * 4 + 2]);
-  }
+  for (let i = 0; i < luminance.length; i++) luminance[i] = 0.2126 * LINEAR[d[i * 4]] + 0.7152 * LINEAR[d[i * 4 + 1]] + 0.0722 * LINEAR[d[i * 4 + 2]];
   let mean = 0, count = 0;
   for (let i = 0; i < uvs.length; i += 2) {
     const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(uvs[i] * canvas.width)));
@@ -80,9 +101,23 @@ function detailTexture(image, uvs) {
     mean += luminance[y * canvas.width + x]; count++;
   }
   mean = Math.max(0.02, mean / Math.max(1, count));
+  // Texels of the lower-body islands, rasterised from the proxy's UV triangles.
+  const mask = document.createElement('canvas');
+  mask.width = canvas.width; mask.height = canvas.height;
+  const pen = mask.getContext('2d', { willReadFrequently: true });
+  pen.fillStyle = '#fff'; pen.strokeStyle = '#fff'; pen.lineWidth = 2;
+  pen.beginPath();
+  for (let i = 0; i < proxy.index.length; i += 3) {
+    if (!lower[proxy.index[i]]) continue;
+    for (let k = 0; k < 3; k++) { const v = proxy.index[i + k], x = uvs[v * 2] * canvas.width, y = uvs[v * 2 + 1] * canvas.height; if (k) pen.lineTo(x, y); else pen.moveTo(x, y); }
+    pen.closePath();
+  }
+  pen.fill(); pen.stroke();
+  const below = pen.getImageData(0, 0, mask.width, mask.height).data;
+  const colors = [new Color(top), new Color(bottom)].map(c => [c.r, c.g, c.b]);
   for (let i = 0; i < luminance.length; i++) {
-    const value = encode(Math.min(1, luminance[i] / mean * DETAIL_MEAN));
-    pixels.data[i * 4] = pixels.data[i * 4 + 1] = pixels.data[i * 4 + 2] = value;
+    const tone = colors[below[i * 4] > 127 ? 1 : 0], shade = luminance[i] / mean;
+    for (let c = 0; c < 3; c++) d[i * 4 + c] = encode(Math.min(1, tone[c] * shade));
   }
   drawing.putImageData(pixels, 0, 0);
   return new CanvasTexture(canvas);
@@ -121,14 +156,17 @@ async function proxyObject(name, label, context, { color, hair = false, length =
   geometry.setIndex(new Uint32BufferAttribute(proxy.index, 1));
   geometry.computeVertexNormals();
   const textured = typeof document !== 'undefined' && context.lod !== 'low';
-  if (recolor) {
-    const lower = garmentPieces(shaped, proxy.index, recolor.waistY);
-    const scale = textured && proxy.uvs.length ? 1 / DETAIL_MEAN : 1;
-    const [top, bottom] = [recolor.top, recolor.bottom].map(value => new Color(value).multiplyScalar(scale));
+  const textureURL = textureFile ? new URL(`../assets/proxies/${textureFile}`, import.meta.url).href : proxyTextureURL(proxy);
+  // A recoloured garment: the colour goes into its texture when it has one
+  // (garmentTexture); untextured (worker, Node, low detail) it is the vertex colour.
+  const lower = recolor ? garmentPieces(shaped, proxy.index, recolor.waistY) : null;
+  const bakeColour = Boolean(recolor && textureURL && proxy.uvs.length && context.lod !== 'low');
+  if (recolor && !(bakeColour && textured)) {
+    const [top, bottom] = [recolor.top, recolor.bottom].map(value => new Color(value));
     const colors = new Float32Array(shaped.length);
     for (let v = 0; v < lower.length; v++) {
       const tone = lower[v] ? bottom : top;
-      colors[v * 3] = Math.min(1, tone.r); colors[v * 3 + 1] = Math.min(1, tone.g); colors[v * 3 + 2] = Math.min(1, tone.b);
+      colors[v * 3] = tone.r; colors[v * 3 + 1] = tone.g; colors[v * 3 + 2] = tone.b;
     }
     geometry.setAttribute('color', new Float32BufferAttribute(colors, 3));
   }
@@ -153,19 +191,19 @@ async function proxyObject(name, label, context, { color, hair = false, length =
   const cutout = proxy.meta.transparent;
   const Material = hair && context.lod !== 'low' ? MeshPhysicalMaterial : MeshStandardMaterial;
   const material = new Material({
-    color: recolor ? 0xffffff : color ?? 0xffffff, roughness: hair ? 0.5 : 0.75, vertexColors: Boolean(recolor),
+    color: recolor ? 0xffffff : color ?? 0xffffff, roughness: hair ? 0.5 : 0.75, vertexColors: Boolean(geometry.getAttribute('color')),
     alphaTest: cutout ? 0.35 : 0, alphaToCoverage: cutout,
     transparent: false, depthWrite: true,
     side: hair || proxy.meta.doubleSided || proxy.meta.transparent ? DoubleSide : FrontSide,
   });
   if (hair && material.isMeshPhysicalMaterial) { material.sheen = 0.6; material.sheenRoughness = 0.65; material.sheenColor.set(0x958477); }
-  const textureURL = textureFile ? new URL(`../assets/proxies/${textureFile}`, import.meta.url).href : proxyTextureURL(proxy);
-  if (textureURL && context.lod !== 'low') material.userData.hgsProxyTexture = { url: textureURL, name, recolor: Boolean(recolor), kind: proxy.meta.kind, hair };
+  const recolorSource = bakeColour ? { top: new Color(recolor.top).getHex(), bottom: new Color(recolor.bottom).getHex(), lower } : null;
+  if (textureURL && context.lod !== 'low') material.userData.hgsProxyTexture = { url: textureURL, name, recolor: recolorSource, kind: proxy.meta.kind, hair };
   if (textureURL && textured) {
     const base = await imageTexture(textureURL);
     const derived = make => async () => { const texture = make(); texture.colorSpace = SRGBColorSpace; texture.flipY = false; texture.needsUpdate = true; return texture; };
     let texture = base;
-    if (recolor) texture = await sharedTexture(`detail:${name}`, derived(() => detailTexture(base.image, proxy.uvs)));
+    if (recolorSource) texture = await sharedTexture(`garment:${name}:${recolorSource.top}:${recolorSource.bottom}`, derived(() => garmentTexture(base.image, proxy, lower, recolorSource.top, recolorSource.bottom)));
     else if (proxy.meta.kind === 'eyebrows' || proxy.meta.kind === 'eyelashes') {
       // Alpha-only cards: white texels, coloured by the material.
       texture = await sharedTexture(`white:${textureURL}`, derived(() => {
@@ -202,17 +240,18 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
     signal?.throwIfAborted();
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const material of materials) {
-      if (material.userData.hgsSkinTexture) material.map = await imageTexture(material.userData.hgsSkinTexture, { flipY: true });
+      const skin = material.userData.hgsSkinTexture;
+      if (skin) { material.map = await tintedSkinTexture(skin.url, skin.tint); material.color.set(0xffffff); }
       const source = material.userData.hgsProxyTexture;
       if (source) {
         const base = await imageTexture(source.url);
         const derived = make => async () => { const texture = make(); texture.colorSpace = SRGBColorSpace; texture.flipY = false; texture.needsUpdate = true; return texture; };
         let texture = base;
         if (source.recolor) {
-          const proxy = await loadProxy(source.name);
-          texture = await sharedTexture(`detail:${source.name}`, derived(() => detailTexture(base.image, proxy.uvs)));
-          const colors = mesh.geometry.getAttribute('color');
-          if (colors) { for (let i = 0; i < colors.array.length; i++) colors.array[i] = Math.min(1, colors.array[i] / DETAIL_MEAN); colors.needsUpdate = true; }
+          // The worker coloured the vertices; on the page the colour moves into the texture.
+          const proxy = await loadProxy(source.name), { top, bottom, lower } = source.recolor;
+          texture = await sharedTexture(`garment:${source.name}:${top}:${bottom}`, derived(() => garmentTexture(base.image, proxy, lower, top, bottom)));
+          mesh.geometry.deleteAttribute('color'); material.vertexColors = false;
         } else if (source.kind === 'eyebrows' || source.kind === 'eyelashes') {
           texture = await sharedTexture(`white:${source.url}`, derived(() => {
             const canvas = document.createElement('canvas'); canvas.width = base.image.width; canvas.height = base.image.height;
