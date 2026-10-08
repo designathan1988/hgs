@@ -77,11 +77,53 @@ function boneRest(direction, roll) {
   return new Quaternion().setFromRotationMatrix(basis);
 }
 
-function makeSkeleton(data, positions) {
+/**
+ * Sculpted skin moves the joints with it. The joint cubes are never sculpted,
+ * so each joint is moved by the mean sculpt displacement of the ring of skin
+ * around it (body vertices weighted to the given bones, within a slab across
+ * the bone axis), as a point bound to the surface follows its deformation:
+ * widening a limb leaves the joint centred, lengthening or moving it carries
+ * the joint along.
+ */
+function sculptShift(data, unsculpted, displaced, bodyVertices, point, axis, bones, half) {
+  let x = 0, y = 0, z = 0, n = 0;
+  for (const v of bodyVertices) {
+    let w = 0;
+    for (let k = 0; k < 4; k++) if (bones.has(data.joints[v * 4 + k])) w += data.weights[v * 4 + k];
+    if (!w) continue;
+    const along = (unsculpted[v * 3] - point.x) * axis.x + (unsculpted[v * 3 + 1] - point.y) * axis.y + (unsculpted[v * 3 + 2] - point.z) * axis.z;
+    if (Math.abs(along) > half) continue;
+    x += displaced[v * 3]; y += displaced[v * 3 + 1]; z += displaced[v * 3 + 2]; n++;
+  }
+  return n ? new Vector3(x / n, y / n, z / n) : new Vector3();
+}
+
+function makeSkeleton(data, positions, unsculpted = null, height = 1.7) {
   const meta = data.skeleton.bones;
   const heads = meta.map(bone => boneHead(bone, data.base.vertexGroups, positions));
   const tails = meta.map(bone => boneHead({ head: bone.tail }, data.base.vertexGroups, positions));
   const byName = new Map(meta.map((bone, i) => [bone.name, i]));
+  if (unsculpted) {
+    const displaced = new Float32Array(positions.length);
+    let moved = false;
+    for (let i = 0; i < positions.length; i++) { displaced[i] = positions[i] - unsculpted[i]; if (displaced[i]) moved = true; }
+    if (moved) {
+      const bodyGroup = data.base.faceGroups.indexOf('body'), bodyVertices = new Set();
+      for (let f = 0; f < data.faceGroup.length; f++) if (data.faceGroup[f] === bodyGroup) for (let c = 0; c < 4; c++) bodyVertices.add(data.faces[f * 4 + c]);
+      const half = 0.015 * height / 1.7;
+      const parentOf = meta.map(bone => bone.parent == null ? -1 : byName.get(bone.parent));
+      const shifts = meta.map((bone, i) => {
+        const axis = tails[i].clone().sub(heads[i]).normalize();
+        if (axis.lengthSq() < 0.5) return [new Vector3(), new Vector3()];
+        const children = parentOf.flatMap((p, c) => p === i ? [c] : []);
+        return [
+          sculptShift(data, unsculpted, displaced, bodyVertices, heads[i], axis, new Set([i, parentOf[i]]), half),
+          sculptShift(data, unsculpted, displaced, bodyVertices, tails[i], axis, new Set([i, ...children]), half),
+        ];
+      });
+      shifts.forEach(([head, tail], i) => { heads[i].add(head); tails[i].add(tail); });
+    }
+  }
   const bones = meta.map(({ name }) => { const bone = new Bone(); bone.name = name; return bone; });
   // World rest rotation of every bone (Root: head and tail coincide, identity).
   const rest = meta.map((bone, i) => boneRest(tails[i].clone().sub(heads[i]), bone.roll ?? 0));
@@ -224,11 +266,13 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   await checkpoint('Corpo');
   const positions = shapeHuman(data, spec);
   // Sculpted body offsets act on the base mesh, so wearables and the face rig fit them.
+  const unsculpted = spec.sculpt?.body && Object.keys(spec.sculpt.body).length ? positions.slice() : null;
   applyOffsets(positions, spec.sculpt?.body, spec.heightMeters ?? 1.7);
   const group = new Group();
   try {
   group.name = 'Human';
-  const skeleton = makeSkeleton(data, positions);
+  // Joints follow the sculpted skin as well as the morphs.
+  const skeleton = makeSkeleton(data, positions, unsculpted, spec.heightMeters ?? 1.7);
   for (const root of skeleton.roots) group.add(root);
   const geometry = makeBodyGeometry(data, positions);
   const skin = skinMaterialFor(spec);

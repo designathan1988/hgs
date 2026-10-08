@@ -53,13 +53,46 @@ function mouthMesh(context) {
   return mesh;
 }
 
-function setMorphs(geometry, deltaFor) {
-  geometry.morphAttributes.position = blendshapeNames.map(name => {
-    const attribute = new Float32BufferAttribute(deltaFor(name), 3);
-    attribute.name = name;
-    return attribute;
-  });
+/**
+ * Named morph targets for position and normal (glTF morphs POSITION and
+ * NORMAL as relative displacements). `normalFor(name, delta)` returns the
+ * normal displacement of the shape; without it normals are left neutral.
+ */
+function setMorphs(geometry, deltaFor, normalFor = null) {
+  const deltas = blendshapeNames.map(name => deltaFor(name));
+  const named = (array, name) => { const attribute = new Float32BufferAttribute(array, 3); attribute.name = name; return attribute; };
+  geometry.morphAttributes.position = deltas.map((delta, i) => named(delta, blendshapeNames[i]));
+  if (normalFor) geometry.morphAttributes.normal = deltas.map((delta, i) => named(normalFor(blendshapeNames[i], delta), blendshapeNames[i]));
   geometry.morphTargetsRelative = true;
+}
+
+/** Smooth normals per base vertex over the visible body faces (as human-three.mjs builds the body's own normals). */
+function baseNormals(data, faces, positions) {
+  const smooth = new Float32Array(positions.length);
+  for (const face of faces) {
+    const a = data.faces[face * 4] * 3, b = data.faces[face * 4 + 1] * 3, c = data.faces[face * 4 + 2] * 3;
+    const abx = positions[b] - positions[a], aby = positions[b + 1] - positions[a + 1], abz = positions[b + 2] - positions[a + 2];
+    const acx = positions[c] - positions[a], acy = positions[c + 1] - positions[a + 1], acz = positions[c + 2] - positions[a + 2];
+    const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+    for (let k = 0; k < 4; k++) { const at = data.faces[face * 4 + k] * 3; smooth[at] += nx; smooth[at + 1] += ny; smooth[at + 2] += nz; }
+  }
+  for (let i = 0; i < smooth.length; i += 3) { const l = Math.hypot(smooth[i], smooth[i + 1], smooth[i + 2]) || 1; smooth[i] /= l; smooth[i + 1] /= l; smooth[i + 2] /= l; }
+  return smooth;
+}
+
+/** Normal displacement of a shape on a mesh whose normals are its own vertex normals (mouth, grooms). */
+function meshNormalDelta(geometry) {
+  const position = geometry.getAttribute('position'), index = geometry.index;
+  const normalsOf = array => { const g = new BufferGeometry(); g.setAttribute('position', new Float32BufferAttribute(array, 3)); if (index) g.setIndex(index.clone()); g.computeVertexNormals(); const n = g.getAttribute('normal').array; g.dispose(); return n; };
+  const neutral = normalsOf(Float32Array.from(position.array));
+  return (_name, delta) => {
+    if (!delta.some(Boolean)) return new Float32Array(delta.length);
+    const moved = Float32Array.from(position.array);
+    for (let i = 0; i < moved.length; i++) moved[i] += delta[i];
+    const shaped = normalsOf(moved), out = new Float32Array(delta.length);
+    for (let i = 0; i < out.length; i++) out[i] = shaped[i] - neutral[i];
+    return out;
+  };
 }
 
 function nearestHeadVertex(positions, candidates) {
@@ -105,10 +138,22 @@ export async function addFaceRig(context, weights = {}) {
     return out;
   };
   const meshes = [];
-  setMorphs(body.geometry, name => perVertex(body.geometry.userData.baseIds, name));
+  // Body normals per base vertex, neutral and for each shape, so a shape's normal
+  // displacement is exactly zero wherever no face around a vertex moves.
+  const bodyGroup = data.base.faceGroups.indexOf('body'), bodyFaces = [];
+  for (let f = 0; f < data.faceGroup.length; f++) if (data.faceGroup[f] === bodyGroup) bodyFaces.push(f);
+  const neutral = baseNormals(data, bodyFaces, positions);
+  const bodyNormal = name => {
+    const delta = dense.get(name), shaped = Float32Array.from(positions);
+    for (let i = 0; i < shaped.length; i++) shaped[i] += delta[i];
+    const normals = baseNormals(data, bodyFaces, shaped), ids = body.geometry.userData.baseIds, out = new Float32Array(ids.length * 3);
+    ids.forEach((v, i) => { for (let k = 0; k < 3; k++) out[i * 3 + k] = normals[v * 3 + k] - neutral[v * 3 + k]; });
+    return out;
+  };
+  setMorphs(body.geometry, name => perVertex(body.geometry.userData.baseIds, name), bodyNormal);
   meshes.push(body);
   const mouth = mouthMesh(context);
-  if (mouth) { setMorphs(mouth.geometry, name => perVertex(mouth.geometry.userData.baseIds, name)); meshes.push(mouth); }
+  if (mouth) { setMorphs(mouth.geometry, name => perVertex(mouth.geometry.userData.baseIds, name), meshNormalDelta(mouth.geometry)); meshes.push(mouth); }
   // Grooms follow the skin they sit on.
   const headBone = data.skeleton.bones.findIndex(bone => bone.name === 'head');
   const headVertices = [];
@@ -127,7 +172,7 @@ export async function addFaceRig(context, weights = {}) {
     const position = mesh.geometry.getAttribute('position');
     const ids = Array.from({ length: position.count }, (_, i) => nearest(position.getX(i), position.getY(i), position.getZ(i)));
     const brow = name !== 'Lashes';
-    setMorphs(mesh.geometry, shape => brow && lidShapes.test(shape) ? new Float32Array(ids.length * 3) : perVertex(ids, shape));
+    setMorphs(mesh.geometry, shape => brow && lidShapes.test(shape) ? new Float32Array(ids.length * 3) : perVertex(ids, shape), meshNormalDelta(mesh.geometry));
     meshes.push(mesh);
   }
   for (const mesh of meshes) { mesh.updateMorphTargets(); }
