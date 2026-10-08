@@ -67,6 +67,8 @@ export function normalizeLocks(value) {
       q: vec(lock.q) ? lock.q.map(x => round(clamp(x, -2, 2), 1e9)) : null,
       sg: Number.isFinite(lock.sg) && lock.sg >= 1e-5 && lock.sg <= 0.1 ? lock.sg : null,
       sy: lock.sy ? 1 : 0,
+      // Held against gravity ("Fixar forma"), apart from a kept shape (sy); older v1 files have neither.
+      ...(lock.fx !== undefined ? { fx: Boolean(lock.fx) } : {}),
       pins: Array.isArray(lock.pins) ? lock.pins.filter(p => Array.isArray(p) && p.length === 4 && p.every(Number.isFinite) && p[0] >= 2 && p[0] < N).map(([i, x, y, z]) => [Math.round(i), round(x, 1e9), round(y, 1e9), round(z, 1e9)]) : [],
     };
     for (const [key, short] of [['width', 'w'], ['volume', 'vo'], ['taper', 'ta'], ['curl', 'cu'], ['turns', 'tu'], ['twist', 'tw'], ['stiffness', 'st'], ['bend', 'be']]) {
@@ -114,7 +116,7 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
     else { lock.seg = segmentOf(lock.x); fitLengths(lock.rest, lock.seg); }
     lock.styled = Boolean(item.sy);
     if (saved.v >= 2) { lock.id = item.id; lock.group = item.g; lock.density = item.dn; lock.tipShape = item.ti; lock.fixed = item.fx; lock.bendEmbedded = item.bi; lock.rootTaper = item.rt; lock.ribbonNormal = item.rn ? [...item.rn] : null; }
-    else lock.fixed = lock.styled;
+    else lock.fixed = item.fx ?? lock.styled;
     for (const [i, x, y, z] of item.pins) lock.pins.set(i, new Vector3(x, y, z).multiplyScalar(scale).add(root));
     state.locks.push(lock);
   }
@@ -130,7 +132,7 @@ export function serializeLocks(state) {
     locks: state.locks.map(lock => {
       const root = lock.rootP, rel = a => Array.from(a, (x, j) => x - root.getComponent(j % 3));
       return {
-        r: { v: [...lock.root.v], w: [...lock.root.w] }, p: rel(lock.x), q: rel(lock.rest), sg: lock.seg, sy: lock.styled ? 1 : 0,
+        r: { v: [...lock.root.v], w: [...lock.root.w] }, p: rel(lock.x), q: rel(lock.rest), sg: lock.seg, sy: lock.styled ? 1 : 0, fx: Boolean(lock.fixed),
         w: lock.width, vo: lock.volume, ta: lock.taper, cu: lock.curl, tu: lock.turns, tw: lock.twist, st: lock.stiffness, be: lock.bend,
         pins: [...lock.pins].map(([i, p]) => [i, p.x - root.x, p.y - root.y, p.z - root.z]),
         ...(state.fusion ? { id: lock.id, g: lock.group ?? 'main', dn: lock.density ?? 1, ti: lock.tipShape ?? 'round', fx: Boolean(lock.fixed), bi: Boolean(lock.bendEmbedded), rt: Boolean(lock.rootTaper), rn: lock.ribbonNormal ? [...lock.ribbonNormal] : null } : {}),
@@ -329,12 +331,33 @@ export function bendLock(lock, base, amount, frame) {
 /**
  * Lock half-thickness at a chain point (the mesh's profile) plus half the
  * curl radius: the coils of a curl are sparse, so half their radius is kept
- * clear of the body.
+ * clear of the body. Shared with the editor's dynamics, so both keep the same clearance.
  */
-function collisionRadius(lock, i) {
+export function collisionRadius(lock, i) {
   const u = i / (N - 1);
   const width = lock.curl > 0 ? lock.width + (curlWidth(lock) - lock.width) * curlIn(lock, u) : lock.width;
   return 0.5 * width * sectionVolume(lock, u) * profile(lock, u * lockLength(lock), lockLength(lock)) + 0.5 * curlRadius(lock, u) + 0.0012;
+}
+
+/**
+ * How far gravity turns segment i (ending at point i) towards straight down,
+ * 0..1, read from the design shape: the weight grows with the arc length from
+ * the root (in head-radius units; firm hair starts later and turns more
+ * slowly), and hair combed onto the head keeps its path there (the head holds
+ * it, as a groom follows the skin contour), except past the widest point of
+ * the head, where the surface faces down. Every switch is gradual, so a
+ * slightly different input never gives a different shape. Shared by the
+ * static groom (LockShaper.hang) and the editor's dynamics.
+ */
+export function gravityWeight(state, lock, i, force, hit = {}) {
+  const rest = lock.rest, st = lock.stiffness, s = i * lock.seg * 0.11 / state.frame.R;
+  const start = 0.01 + 0.04 * st, rate = 12 + 50 * (1 - st) ** 2, head = state.collider?.head;
+  let hold = 0;
+  if (head?.closest(rest[i * 3 - 3], rest[i * 3 - 2], rest[i * 3 - 1], 0.04, hit)) {
+    const r = collisionRadius(lock, i);
+    hold = smooth(-0.35, -0.1, hit.ny) * (1 - smooth(r + 0.008, r + 0.016, hit.distance));
+  }
+  return force * (1 - hold) * (1 - Math.exp(-rate * Math.max(0, s - start)));
 }
 
 /**
@@ -438,26 +461,13 @@ export class LockShaper {
     // The follicle gives the direction; the first segment keeps its exact length.
     if (!fixed[2] || last < 2) place(x, 1, 0, l);
     this.chains(lock);
-    const C = this.state.frame.C, unit = 0.11 / this.state.frame.R, st = lock.stiffness;
-    // Gravity weight along the lock (arc length in head-radius units).
-    const start = 0.01 + 0.04 * st, rate = 12 + 50 * (1 - st) ** 2;
+    const C = this.state.frame.C;
     const d = new Vector3(), down = new Vector3(0, -1, 0), axis = new Vector3(), out = new Vector3();
-    const head = this.state.collider?.head, hit = {};
+    const hit = {};
     let bend = 0;
     for (let i = last + 1; i < N; i++) {
       d.set(rest[i * 3] - rest[i * 3 - 3], rest[i * 3 + 1] - rest[i * 3 - 2], rest[i * 3 + 2] - rest[i * 3 - 1]).normalize();
-      const s = i * l * unit;
-      // Hair combed onto the head keeps its path there (the head holds it, as
-      // a groom follows the skin contour); gravity turns the free part, and
-      // the part past the widest point of the head, where the surface faces down.
-      // Every switch here is gradual, so a slightly different input never
-      // gives a different shape (no jumps while editing or after reloading).
-      let hold = 0;
-      if (head?.closest(rest[i * 3 - 3], rest[i * 3 - 2], rest[i * 3 - 1], 0.04, hit)) {
-        const r = collisionRadius(lock, i);
-        hold = smooth(-0.35, -0.1, hit.ny) * (1 - smooth(r + 0.008, r + 0.016, hit.distance));
-      }
-      const w = force * (1 - hold) * (1 - Math.exp(-rate * Math.max(0, s - start)));
+      const w = gravityWeight(this.state, lock, i, force, hit);
       const c = clamp(d.dot(down), -1, 1);
       if (w > 0 && c < 0.999999) {
         axis.crossVectors(d, down);

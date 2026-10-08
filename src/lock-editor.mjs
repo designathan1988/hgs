@@ -34,7 +34,7 @@ export class LockEditor {
     this.raycaster = new Raycaster();
     this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: false, pinOnRelease: false, fixOnRelease: false, showMidline: false, combRadius: 0.14, combStrength: 1, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
-    Object.assign(this.settings, { width: .025, volume: .24, taper: .9, curl: 0, turns: 2, twist: 0, brushRadius: .045, brushStrength: .5, brushFalloff: 'smooth', activeGroup: 'main', brushInvert: false, densitySpacing: .018, brushCreation: 'stroke', hairRepresentation: 'lock', combScope: 'brush', tipShape: 'point', autoSettle: false });
+    Object.assign(this.settings, { width: .025, volume: .24, taper: .9, curl: 0, turns: 2, twist: 0, brushRadius: .045, brushStrength: .5, brushFalloff: 'smooth', activeGroup: 'main', brushInvert: false, brushCreation: 'stroke', hairRepresentation: 'lock', combScope: 'brush', tipShape: 'point', autoSettle: false });
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.bendBaselines = new WeakMap();
     this.onChange = () => {};
@@ -399,15 +399,18 @@ export class LockEditor {
     if (!this.state) return false;
     const tool = this.settings.tool;
     if (hairBrushTools.includes(tool)) {
-      const hit = tool === 'density' ? this.pickScalp(ndc, camera) : this.pickHair(ndc, camera);
-      if (!hit || (tool === 'density' && !hit.root)) return false;
+      // Density plants on the scalp; its stroke may start on the hair or the
+      // head and works where it crosses the scalp.
+      const scalp = tool === 'density' ? this.pickScalp(ndc, camera) : null;
+      const hit = scalp?.root ? scalp : this.pickHair(ndc, camera) ?? scalp;
+      if (!hit) return false;
+      // Surface brushes work on the fused volume: switch to it the way the
+      // Volume representation does (with its lock thickness), never raw.
+      if (['smooth', 'volume', 'mask'].includes(tool) && !this.state.fusion?.enabled) this.setRepresentation('volume');
       this.checkpoint();
-      if (['smooth', 'volume', 'mask'].includes(tool) && !this.state.fusion?.enabled) {
-        this.state.fusion ??= normalizeHairFusion(); this.state.fusion.enabled = true; this.syncMeshes(true);
-      }
       const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), hit.point);
-      this.drag = { tool, plane, lastPoint: hit.point.clone(), invert: ctrl || this.settings.brushInvert, group: this.settings.activeGroup };
-      this.brushAt(hit.point, { tool, invert: this.drag.invert, record: false });
+      this.drag = { tool, plane, lastPoint: tool === 'density' && !scalp?.root ? null : hit.point.clone(), invert: ctrl || this.settings.brushInvert, group: this.settings.activeGroup };
+      if (this.drag.lastPoint) this.brushAt(hit.point, { tool, invert: this.drag.invert, record: false });
       return true;
     }
     const lockHit = this.pickLock(ndc, camera);
@@ -418,11 +421,12 @@ export class LockEditor {
     }
     if (tool === 'brush') {
       const scalpHit = this.pickScalp(ndc, camera);
-      if (!scalpHit?.root) return false;
-      if (this.settings.brushCreation === 'stroke') return this.beginStroke(scalpHit, camera, { shift, ndc });
+      if (this.settings.brushCreation === 'stroke') return scalpHit?.root ? this.beginStroke(scalpHit, camera, { shift, ndc }) : false;
+      // Fill: the stroke may start on the hair or the head and plants where it crosses the scalp.
+      if (!scalpHit && !this.pickHair(ndc, camera)) return false;
       this.checkpoint();
       if (!shift) this.selected.clear();
-      this.drag = { tool, last: scalpHit.point.clone(), lastNdc: { x: ndc.x, y: ndc.y }, made: 0 };
+      this.drag = { tool, last: scalpHit?.root ? scalpHit.point.clone() : null, lastNdc: { x: ndc.x, y: ndc.y }, made: 0 };
       return true;
     }
     if (tool === 'pull') {
@@ -434,19 +438,21 @@ export class LockEditor {
       return false;
     }
     if (tool === 'comb') {
-      // Comb (Blender's hair Comb brush): drag over the hair to pull every lock under the brush.
-      const hit = this.settings.combScope === 'all' ? null : this.pickHair(ndc, camera);
-      if (this.settings.combScope !== 'all' && !hit) return false;
+      // Comb (Blender's Comb Curves): the brush is the circle on screen; a
+      // stroke starts wherever hair lies inside it and keeps combing all along.
+      if (this.settings.combScope !== 'all' && !this.combTargets(ndc, camera).length) return false;
       this.checkpoint();
       this.drag = { tool, last: { x: ndc.x, y: ndc.y } };
       return true;
     }
     if (tool === 'move') {
-      // Reposition: the lock's root slides over the scalp under the cursor, the lock goes with it.
+      // Reposition: grab a lock anywhere; its root slides over the scalp by
+      // the cursor's movement from where the root is on screen.
       if (!lockHit) return false;
       this.checkpoint();
       if (!this.selected.has(lockHit.index)) this.choose(lockHit.index, { shift, ctrl: false });
-      this.drag = { tool, lock: this.locks[lockHit.index] };
+      const lock = this.locks[lockHit.index], root = lock.rootP.clone().project(camera);
+      this.drag = { tool, lock, start: { x: ndc.x, y: ndc.y }, rootNdc: { x: root.x, y: root.y } };
       return true;
     }
     if (tool === 'grow') {
@@ -541,52 +547,60 @@ export class LockEditor {
     return true;
   }
   /**
-   * One step of the comb: every lock point under the brush circle (on
-   * screen) follows the cursor's movement, fully at the centre and fading to
-   * the rim; with Mirror, points whose mirror image is under the brush move
-   * the mirrored way. The lock's drawn shape is moved (lengths kept from the
-   * root) and gravity hangs it from there, so combing never stretches a lock.
+   * Comb weight of a lock point (Blender's Comb Curves brush settings): the
+   * brush is the circle drawn on screen (radius measured in screen space,
+   * `combRadius` in units of half the view height), and, like Front Faces
+   * Only, hair on the far side of the head is left alone.
+   */
+  combWeight(p, ndc, camera) {
+    const s = this._combScreen ??= new Vector3();
+    s.copy(p).project(camera);
+    if (s.z > 1) return 0;
+    const C = this.state.frame.C, R = this.state.frame.R, eye = camera.getWorldPosition(this._combEye ??= new Vector3());
+    const offset = this._combOffset ??= new Vector3();
+    offset.copy(p).sub(C);
+    if (offset.length() < 1.6 * R && offset.normalize().dot(eye.sub(C).normalize()) < -0.25) return 0;
+    return hairBrushFalloff(Math.hypot((s.x - ndc.x) * camera.aspect, s.y - ndc.y), this.settings.combRadius, this.settings.brushFalloff) * this.settings.combStrength;
+  }
+  /** Locks with a point inside the comb circle (only the selected ones with "selection" scope). */
+  combTargets(ndc, camera) {
+    const p = new Vector3(), list = this.settings.combScope === 'selected' ? [...this.selected].map(i => this.locks[i]).filter(Boolean) : this.locks;
+    return list.filter(lock => { for (let i = 2; i < N; i++) if (this.combWeight(p.fromArray(lock.x, i * 3), ndc, camera) > 0) return true; return false; });
+  }
+  /**
+   * One step of the comb: every lock point inside the brush circle on screen
+   * follows the cursor's movement, fully at the centre and fading to the rim,
+   * and more towards the tip than the root (Comb Curves' tip-to-root curve
+   * falloff); with Mirror, points whose mirror image is under the brush move
+   * the mirrored way. Lengths are kept from the root (constrainLockPose), so
+   * combing never stretches a lock.
    */
   comb(drag, ndc, camera) {
     const dx = ndc.x - drag.last.x, dy = ndc.y - drag.last.y;
     drag.last = { x: ndc.x, y: ndc.y };
     if (!dx && !dy) return;
-    const r = this.settings.combRadius, k = this.settings.combStrength, aspect = camera.aspect;
-    const scope = this.settings.combScope ?? 'brush';
-    const hit = scope === 'all' ? null : this.pickHair(ndc, camera);
-    if (scope !== 'all' && !hit) return;
-    const center = hit?.point, projected = center?.clone().project(camera);
-    const edge = projected ? new Vector3(projected.x, projected.y + r, projected.z).unproject(camera) : null;
-    const worldRadius = edge ? edge.distanceTo(center) : 0;
+    const k = this.settings.combStrength, scope = this.settings.combScope ?? 'brush';
     const p = new Vector3(), s = new Vector3(), q = new Vector3(), move = new Vector3(), touched = new Set();
     const shift = (v, w) => q.set(v.x + dx * w, v.y + dy * w, v.z).unproject(camera);
-    const targets = scope === 'selected' ? [...this.selected].map(i => this.locks[i]).filter(Boolean) : this.locks;
+    // Mirror also reaches locks whose mirror image is under the brush.
+    const targets = scope === 'all' || (this.settings.mirror && scope !== 'selected') ? this.locks : this.combTargets(ndc, camera);
     for (const lock of targets) {
       const reference = Float32Array.from(lock.x), protectedPoints = new Map();
-      const influence = new Float32Array(N);
-      if (scope !== 'all') {
-        const mesh = this.meshes[this.locks.indexOf(lock)], position = mesh?.geometry.getAttribute('position'), uv = mesh?.geometry.getAttribute('uv');
-        if (position && uv) for (let v = 0; v < position.count; v++) {
-          p.fromBufferAttribute(position, v); const d = p.distanceTo(center), w = hairBrushFalloff(d, worldRadius, this.settings.brushFalloff) * k;
-          if (!w) continue;
-          const f = clamp(uv.getY(v), 0, 1) * (N - 1), i = Math.min(N - 2, Math.floor(f)); influence[i] = Math.max(influence[i], w); influence[i + 1] = Math.max(influence[i + 1], w);
-        }
-        if (hit.index === this.locks.indexOf(lock)) { const i = Math.max(2, Math.min(N - 2, Math.floor((hit.arc ?? .5) * (N - 1)))); influence[i] = k; influence[i + 1] = k; }
-      }
       let moved = false;
       for (let i = 2; i < N; i++) {
         p.fromArray(lock.x, i * 3); move.set(0, 0, 0);
         const mask = hairMaskAt(this.state, p, lock.group ?? 'main');
         if (mask >= 1 - 1e-6) protectedPoints.set(i, p.clone());
         if (lock.pins.has(i) || mask >= 1 - 1e-6) continue;
-        const localWeight = scope === 'all' ? k : Math.max(influence[i], hairBrushFalloff(p.distanceTo(center), worldRadius, this.settings.brushFalloff) * k);
-        const along = i / (N - 1) * (1 - mask), w = localWeight * along;
+        // Tip-to-root curve falloff: the first quarter of a lock eases in from
+        // its anchored root, the rest follows the comb fully.
+        const along = Math.min(1, i / ((N - 1) * 0.25)) * (1 - mask), w = (scope === 'all' ? k : this.combWeight(p, ndc, camera)) * along;
         s.copy(p).project(camera);
         if (w > 0) move.add(shift(s, w).sub(p));
         if (this.settings.mirror && scope === 'all') move.x *= p.x < this.state.frame.C.x ? -1 : 1;
         if (this.settings.mirror && scope !== 'all') {
           const m = p.clone(); m.x = -m.x;
-          const wm = hairBrushFalloff(m.distanceTo(center), worldRadius, this.settings.brushFalloff) * k * along;
+          const wm = this.combWeight(m, ndc, camera) * along;
           s.copy(m).project(camera);
           if (wm > 0) { const d = shift(s, wm).sub(m); move.x -= d.x; move.y += d.y; move.z += d.z; }
         }
@@ -695,8 +709,10 @@ export class LockEditor {
     }
     if (hairBrushTools.includes(drag.tool)) {
       const hit = drag.tool === 'density' ? this.pickScalp(ndc, camera) : this.pickHair(ndc, camera);
-      const point = hit?.point ?? (drag.tool === 'density' ? null : this.raycaster.ray.intersectPlane(drag.plane, new Vector3()));
-      if (!point || point.distanceTo(drag.lastPoint) < this.settings.brushRadius * .15) return;
+      const point = drag.tool === 'density' ? (hit?.root ? hit.point : null) : hit?.point ?? this.raycaster.ray.intersectPlane(drag.plane, new Vector3());
+      if (!point) return;
+      if (!drag.lastPoint) { drag.lastPoint = point.clone(); this.brushAt(point, { tool: drag.tool, invert: drag.invert, record: false }); return; }
+      if (point.distanceTo(drag.lastPoint) < this.settings.brushRadius * .15) return;
       const distance = point.distanceTo(drag.lastPoint), steps = Math.min(32, Math.max(1, Math.ceil(distance / (this.settings.brushRadius * .3))));
       const from = drag.lastPoint.clone();
       for (let i = 1; i <= steps; i++) this.brushAt(from.clone().lerp(point, i / steps), { tool: drag.tool, invert: drag.invert, record: false });
@@ -728,6 +744,7 @@ export class LockEditor {
         if (this.locks.length >= 400) break;
         const hit = this.pickScalp({ x: from.x + (ndc.x - from.x) * k / n, y: from.y + (ndc.y - from.y) * k / n }, camera);
         if (!hit?.root) continue;
+        if (!drag.last) { drag.last = hit.point.clone(); continue; }
         const step = hit.point.clone().sub(drag.last);
         if (step.length() < this.settings.brushSpacing) continue;
         // On the centre line with mirroring, the two locks from that root are
@@ -757,7 +774,7 @@ export class LockEditor {
       return;
     }
     if (drag.tool === 'move') {
-      const hit = this.pickScalp(ndc, camera);
+      const hit = this.pickScalp({ x: drag.rootNdc.x + ndc.x - drag.start.x, y: drag.rootNdc.y + ndc.y - drag.start.y }, camera);
       if (!hit?.root) return;
       this.moveRoot(drag.lock, hit.root);
       this.relax(new Set([drag.lock]));
@@ -838,7 +855,7 @@ export class LockEditor {
     const state = this.state;
     if (typeof Worker === 'undefined') {
       const previous=this.locks.map(lock=>({lock,x:Float32Array.from(lock.x),rootTaper:lock.rootTaper,styled:lock.styled}));
-      this.physics ??= new HairDynamics(state, { surface: lockSurface, maskAt: (lock, p) => hairMaskAt(state, p, lock.group ?? 'main') });
+      this.physics ??= new HairDynamics(state, { maskAt: (lock, p) => hairMaskAt(state, p, lock.group ?? 'main') });
       const changed = this.physics.advance(delta, { on: true, strength: this.settings.gravity });
       if(changed&&this.physics.stats.validPose===false){for(const p of previous){p.lock.x.set(p.x);p.lock.rootTaper=p.rootTaper;p.lock.styled=p.styled;}this.physicsError=`${this.physics.stats.error} A pose anterior foi preservada.`;this.physicsStats={...this.physics.stats,error:this.physicsError};this.settings.gravityOn=false;this.physicsLive=false;this.onPhysics(this.physicsStats);this.onChange();return false;}
       if (changed) { this.physicsStats = this.physics.stats; for (const lock of this.locks) lock.styled = true; this.dirty = true; }
@@ -889,15 +906,21 @@ export class LockEditor {
     for (const lock of this.targets(all)) Object.assign(lock, preset);
     this.fusionDirty = true; this.syncMeshes(); this.updateHelpers(); this.onChange();
   }
-  setCurlPreset(kind, { all = true } = {}) {
+  /** Straight, wavy or curly; `apply: false` only sets what new locks are made with. */
+  setCurlPreset(kind, { all = true, apply = true } = {}) {
     const preset = kind === 'straight' ? { curl: 0, turns: 2, twist: 0 } : kind === 'wavy' ? { curl: .35, turns: 2, twist: .3 } : kind === 'curl' ? { curl: .8, turns: 5, twist: .1 } : null;
     if (!preset || !this.state) return;
-    this.checkpoint(); Object.assign(this.settings, preset); for (const lock of this.targets(all)) Object.assign(lock, preset);
+    Object.assign(this.settings, preset);
+    if (!apply) { this.onChange(); return; }
+    this.checkpoint(); for (const lock of this.targets(all)) Object.assign(lock, preset);
     this.dirty = true; this.step(); this.onChange();
   }
-  setTipShape(shape, { all = true } = {}) {
+  /** Round, pointed or flat tips; `apply: false` only sets what new locks are made with. */
+  setTipShape(shape, { all = true, apply = true } = {}) {
     if (!['round', 'point', 'flat'].includes(shape) || !this.state) return;
-    this.checkpoint(); this.state.fusion ??= normalizeHairFusion(); this.settings.tipShape = shape;
+    this.settings.tipShape = shape;
+    if (!apply) { this.onChange(); return; }
+    this.checkpoint(); this.state.fusion ??= normalizeHairFusion();
     for (const lock of this.targets(all)) lock.tipShape = shape;
     this.dirty = true; this.step(); this.onChange();
   }
@@ -1045,7 +1068,8 @@ export class LockEditor {
     const donor = this.locks.filter(l => (l.group ?? 'main') === brush.group).reduce((best, l) => !best || l.rootP.distanceTo(point) < best.rootP.distanceTo(point) ? l : best, null);
     if (!donor) return;
     const normal = point.clone().sub(this.state.frame.C).normalize(), tangent = new Vector3(1, 0, 0).addScaledVector(normal, -normal.x).normalize(), bitangent = new Vector3().crossVectors(normal, tangent);
-    const spacing = Math.max(.004, this.settings.densitySpacing / Math.max(.2, brush.strength));
+    // Goal distance between roots (Blender's Density "Distance Min"), shared with Fill.
+    const spacing = this.settings.brushSpacing;
     for (let i = 0; i < 8 && this.locks.length < 400; i++) {
       const angle = i * Math.PI / 4, position = point.clone().addScaledVector(tangent, Math.cos(angle) * brush.radius * .55).addScaledVector(bitangent, Math.sin(angle) * brush.radius * .55);
       const d = position.sub(this.state.frame.C).normalize();
@@ -1192,6 +1216,8 @@ export class LockEditor {
     try { data = JSON.parse(json); } catch { return false; }
     if (!data || data.format !== 'hgs-locks') return false;
     this.checkpoint();
+    // A simulation failure described the previous hairstyle.
+    this.physicsError = null; if (this.physicsStats) this.physicsStats = { ...this.physicsStats, error: null };
     this.restore(JSON.stringify(normalizeLocks(data)));
     return true;
   }

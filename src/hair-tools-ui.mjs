@@ -17,7 +17,7 @@ export function renderHairTools(container, editor, { onChange = () => {} } = {})
   const fusion = editor.summary().fusion;
   if (editor.summary().fusionBusy) container.append(make('p', 'Calculando união dos volumes…'));
   if (editor.summary().fusionError) container.append(make('p', `Falha na fusão: ${editor.summary().fusionError}`));
-  check('Fundir volumes das mechas', Boolean(fusion?.enabled), value => editor.setFusionEnabled(value));
+  // Fusion itself is switched by the Representation control (Volume); this panel only tunes it.
   const groups = fusion?.groups ?? [{ id: 'main', name: 'Principal', fuse: true }];
   const groupLabel = make('label', 'Grupo ativo'), select = make('select'); select.setAttribute('aria-label', 'Grupo ativo do cabelo');
   for (const group of groups) { const option = make('option', group.name); option.value = group.id; option.selected = group.id === editor.settings.activeGroup; select.append(option); }

@@ -16,7 +16,10 @@ Plano executado: correção de rig, roupas, cabelo, materiais e exportação (ap
 
 ## Ativo no app
 
-- Editor de mechas: a gravidade contínua trata mecha‑mecha por campo de densidade (atrito e repulsão, Müller et al. 2012 §3.5); só pausa por violação de corpo/roupa (> 1 mm), estiramento (> 1 %) ou contato inviável com o corpo.
+- Editor de mechas, painel: grupos Penteado, Ferramentas (Criar · Dar forma · Selecionar e mover; Volume só na representação Volume) com as opções só da ferramenta ativa, Ajustar mechas, Gravidade, Representação, Exibição, Arquivo.
+- Pentear: alcance Pincel (círculo na tela), Selecionadas ou Todo o cabelo; move os pontos mantendo o comprimento, com atenuação raiz→ponta (Comb do Blender).
+- Preencher e Adensar começam sobre o cabelo ou a cabeça e plantam onde o traço cruza o couro cabeludo; Adensar respeita a "Distância entre mechas" (Distance Min do Blender).
+- Gravidade (editor): contato com pele/roupa por partícula com a mesma folga do penteado estático (PBD), folículo fixo e restrição de forma local do TressFX liberada pela rampa da Firmeza (`gravityWeight`, a mesma do penteado estático); mecha‑mecha por campo de densidade (Müller et al. 2012 §3.5). Só desliga sozinha por estiramento ou ponto preso dentro do corpo. O worker recebe no máximo um quadro (1/60 s) por pedido; `fx` (fixa) é gravado também no formato v1.
 - Esqueleto: ossos orientados pela cabeça→cauda + roll do rig MPFB (+Y ao longo do osso); clipes convertidos para esse repouso; pesos de todas as malhas saneados (4 influências, soma 1, índice 0 onde peso 0); `auditCharacter` disponível.
 - Corpo: juntas acompanham a escultura do corpo (anel de pele em volta de cada junta); os 32 blendshapes levam também deslocamento de normal.
 - Roupas: peças cortadas do corpo mantêm os pesos da pele de origem; moldes 2D pegam pesos só da pele da própria região (saias: pelve/coxas); roupa pronta sem escala extra; roupa infantil esconde a pele coberta.
@@ -27,7 +30,8 @@ Plano executado: correção de rig, roupas, cabelo, materiais e exportação (ap
 
 ## Não ativo / pendente
 
-- Testes automáticos não foram executados (regra do projeto). Foram ajustados ao novo contrato: `tests/hair-dynamics.test.mjs`, `tests/hair-interaction.test.mjs`, `tests/human-three.test.mjs`.
+- Testes automáticos: na revisão do modo cabelo (pedido do usuário) rodaram `tests/hair-dynamics.test.mjs`, `tests/hair-interaction.test.mjs` e `tests/locks.test.mjs`: 30 de 30 passam. Os demais não foram executados.
+- Gravidade do editor: o worker leva ~10–12 ms por subpasso com 63 mechas; acima disso a simulação fica mais lenta que o tempo real (sem acumular atraso).
 - A conferência visual (lista no fim do relatório da sessão) é do usuário.
 - Olhos com 32.640 triângulos (subdivisão dupla do globo para a íris por cor de vértice): fora do escopo deste plano; candidato a revisão de orçamento.
 - O validador não verifica as imagens (o GLB do Node não tem texturas); cores e texturas são conferidas no navegador.

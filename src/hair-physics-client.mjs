@@ -11,8 +11,13 @@ function bodyPacket(context) {
   };
 }
 
-/** One numeric request in flight. Definitions supersede poses immediately;
- * elapsed time is accumulated, not hidden or discarded by the bridge. */
+/** One numeric request in flight. Definitions supersede poses immediately.
+ * Elapsed time is accumulated and each request hands it to the worker, whose
+ * HairDynamics steps it at the fixed rate, at most one display frame (1/60 s,
+ * two fixed steps) per request ("Fix Your Timestep": capping the steps per
+ * frame, a slow solve runs slower than real time instead of falling ever
+ * further behind, and the pose keeps updating every frame or two). */
+const FRAME = 1 / 60;
 export class HairPhysicsClient {
   constructor(context, { onResult = () => {}, onError = error => console.error(error) } = {}) {
     this.onResult = onResult; this.onError = onError;
@@ -71,7 +76,7 @@ export class HairPhysicsClient {
     if (!on) { if (this._on) this.pause(); return false; }
     this._on = true;
     this._strength = Number.isFinite(strength) ? Math.max(0, Math.min(1, strength)) : 1;
-    if (Number.isFinite(dt) && dt > 0) this._elapsed += dt;
+    if (Number.isFinite(dt) && dt > 0) this._elapsed = Math.min(FRAME, this._elapsed + dt);
     this._flush();
     return Boolean(this._busy);
   }
@@ -82,11 +87,9 @@ export class HairPhysicsClient {
       message = this._pending; this._pending = null;
       if (!this._contextSent) { message.context = this._body; this._contextSent = true; }
     } else if (this._on && this._activeEpoch === this.epoch && this._elapsed >= 1 / 120) {
-      // Publish after one fixed tick, keeping accumulated wall time explicit.
-      // A slow solve must not turn the next request into a many-second batch
-      // or silently discard elapsed time at HairDynamics' admission limit.
-      const dt = 1 / 120;
-      this._elapsed -= dt;
+      // The accumulated time, at most one display frame.
+      const dt = this._elapsed;
+      this._elapsed = 0;
       message = { type: 'advance', epoch: this.epoch, definition: this.definition, dt, options: { on: true, strength: this._strength } };
     } else return;
     message.request = ++this._request;

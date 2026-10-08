@@ -178,6 +178,10 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .tool { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 0 6px; border: 1px solid transparent; border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 11px; }
 .tool:hover { color: var(--text); background: var(--surface-hover); }
 .tool.on { color: var(--accent); border-color: #f0894c66; background: var(--accent-soft); }
+/* Hair tools: a small caption over each row of tools of one purpose, and the active tool's options below. */
+.tool-label { margin: 0 0 4px; font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.tool-label + .tool-row { margin-bottom: 10px; }
+.tool-options { margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 
 /* Popovers from the top bar and the viewport toolbar. */
 .menu-anchor { position: relative; }

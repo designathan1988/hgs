@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { loadHumanData } from './parametric.mjs';
-import { lockSurface, prepareLocks } from './locks.mjs';
+import { prepareLocks } from './locks.mjs';
 import { hairMaskAt } from './hair-fusion.mjs';
 import { HairDynamics } from './hair-dynamics.mjs';
 
@@ -31,7 +31,7 @@ self.onmessage = async ({ data: message }) => {
       // prepareLocks loads CURRENT p and design q. Never invoke the static
       // grooming operator: replacing or pausing must not reset p to q.
       dynamics = new HairDynamics(state, {
-        surface: lockSurface, fixedStep: 1 / 120, iterations: 20,
+        fixedStep: 1 / 120, iterations: 20,
         maskAt: (lock, point) => hairMaskAt(state, point, lock.group ?? 'main'),
       });
       dynamics.pause();
