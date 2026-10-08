@@ -14,14 +14,27 @@ Plano executado: correção de rig, roupas, cabelo, materiais e exportação (ap
 | 7 | Materiais dentro da faixa do glTF | feito |
 | 8 | Exportação válida e validação Khronos | feito |
 
+Plano executado: redesenho da interface e controlador global de estado e eventos (2026-10-08, commits `4faca55`, `5e5be43`, `6b6bc7b`).
+
+| Passo | Conteúdo | Estado |
+| --- | --- | --- |
+| 1 | `store.mjs` (estado, eventos, operações, histórico) e `ui-kit.mjs` | feito |
+| 2 | UI sobre o store; rail de ferramentas, cartão de opções, popover Exportar, paleta nova | feito |
+| 3 | Fundo neutro do 3D | feito |
+| 4 | Editor de moldes nas classes do app | feito |
+| 5 | Documentação | feito |
+
 ## Ativo no app
 
-- Editor de mechas, painel: grupos Penteado, Ferramentas (Criar · Dar forma · Selecionar e mover; Volume só na representação Volume) com as opções só da ferramenta ativa, Ajustar mechas, Gravidade, Representação, Exibição, Arquivo.
+- Estado global: `store.mjs` é a fonte única (personagem + interface); a UI reage ao evento `change`. Desfazer/refazer único no topo e em Ctrl+Z/Y para Personagem, Corpo, Rosto, Roupas, Esculpir e Animação (expressões); no Cabelo vai para o histórico do editor de mechas e a visita inteira vira um passo. Status e Cancelar vêm das operações registradas (geração, exportação, cabelo, multidão). Personagem autosalvo (`hgs.autosave`) e restaurado ao abrir; grupos abertos, opções de exportação e cartão recolhido lembrados (`hgs.ui`).
+- Layout: rail de seções (7: Personagem, Corpo, Rosto, Cabelo, Roupas, Esculpir, Animação) → rail de ferramentas da seção (Cabelo; pincéis de Esculpir; Roupas sob medida), duas colunas, `role=toolbar` com setas/Home/End → 3D com o cartão de opções da ferramenta ativa (canto superior esquerdo, recolhível), vistas/luz/captura/desempenho (superior direito), zoom (inferior direito), dica e avisos (embaixo) → inspetor com o conteúdo da seção. Exportar é um popover do topo com opções e resumo; "Criar pessoa" e "Criação guiada" saíram (o rail já é a sequência).
+- Cores: grafite neutro, acento único `#f27a2e` (o da seleção no 3D); trilhos e chaves ≥ 3:1, texto ≥ 4,5:1. Fundo do 3D em degradê cinza neutro, igual em todas as iluminações, piso e grade que somem na névoa.
+- Editor de mechas, inspetor: Penteado (estilos + cor), Prendedores (sempre que houver), Ajustar mechas, Gravidade, Representação, Exibição, Arquivo. Cartão da ferramenta: Espelhar e Círculo (comuns) e as opções próprias da ferramenta.
 - Pentear: como um pente real — agarra cada mecha tocada (raiz, meio ou ponta) num dente que acompanha o cursor e puxa a mecha inteira; se ela não alcança, o pente desliza para a ponta e a solta lá; nunca estica (FABRIK até o dente, FTL depois). Alcance Pincel, Selecionadas ou Todo o cabelo.
 - Prender: Elástico (junta a seleção ou o círculo num feixe de raio ½·√Σespessura²), Grampo (prende rente à cabeça as mechas sob o clique), Fivela (junta encostado na cabeça), Arco/Tiara (de orelha a orelha, prende quem passa por baixo), Gel (fixa a forma; aspecto molhado no editor), Pino. Cada prendedor segura um ponto por mecha (pino com `holder`), é salvo com o penteado (`accessories`), aparece no personagem final e no GLB (malha `HairAccessories`, osso `head`) e tem "×" na lista.
 - Preencher: raízes numa rede de Fibonacci da cabeça (espaçamento = Distância entre mechas), plantadas onde o círculo passa; forma pela direção e comprimento médios das vizinhas que já existiam (Add do Blender), senão penteada para o lado e para trás. Adensar respeita a "Distância entre mechas" (Distance Min do Blender).
-- Seleção por pintura (Shift soma, Ctrl tira). "Criação guiada" só na guia inicial.
-- Interface (todas as guias): sliders numa linha (legenda | barra | valor); escolhas na linha do rótulo, em ícones onde a opção é visual (pontas, forma, alcance, representação); paletas de ferramentas só com ícones e o nome da ferramenta ativa como título; ações em linhas de ícones com nome no tooltip; chaves com legendas curtas.
+- Seleção por pintura (Shift soma, Ctrl tira).
+- Interface (todas as guias): sliders numa linha (legenda | barra preenchida | valor); escolhas na linha do rótulo, em ícones onde a opção é visual; ferramentas só com ícones no rail e o nome da ativa no cartão; ações em linhas de ícones com nome no tooltip; foco do teclado preservado quando o painel se refaz.
 - constrainLockPose não estica nunca: ponto preso parado mantém a pose anterior do trecho; ponto em movimento fica o mais perto possível.
 - Gravidade (editor): contato com pele/roupa por partícula com a mesma folga do penteado estático (PBD), folículo fixo e restrição de forma local do TressFX liberada pela rampa da Firmeza (`gravityWeight`, a mesma do penteado estático); mecha‑mecha por campo de densidade (Müller et al. 2012 §3.5). Só desliga sozinha por estiramento ou ponto preso dentro do corpo. O worker recebe no máximo um quadro (1/60 s) por pedido; `fx` (fixa) é gravado também no formato v1.
 - Esqueleto: ossos orientados pela cabeça→cauda + roll do rig MPFB (+Y ao longo do osso); clipes convertidos para esse repouso; pesos de todas as malhas saneados (4 influências, soma 1, índice 0 onde peso 0); `auditCharacter` disponível.
@@ -36,6 +49,7 @@ Plano executado: correção de rig, roupas, cabelo, materiais e exportação (ap
 
 - Testes automáticos: na revisão do modo cabelo (pedido do usuário) rodaram `tests/hair-dynamics.test.mjs`, `tests/hair-interaction.test.mjs` e `tests/locks.test.mjs`: 30 de 30 passam. Os demais não foram executados.
 - Gravidade do editor: o worker leva ~10–12 ms por subpasso com 63 mechas; acima disso a simulação fica mais lenta que o tempo real (sem acumular atraso).
-- A conferência visual (lista no fim do relatório da sessão) é do usuário.
+- A conferência visual (lista no fim do relatório da sessão) é do usuário. O redesenho da interface foi verificado só por leitura do código e `node --check` (sem navegador, pela regra do projeto).
+- Ferramentas ainda sem atalho de teclado próprio (só F, G, P, Delete, +/−, Ctrl+Z/Y).
 - Olhos com 32.640 triângulos (subdivisão dupla do globo para a íris por cor de vértice): fora do escopo deste plano; candidato a revisão de orçamento.
 - O validador não verifica as imagens (o GLB do Node não tem texturas); cores e texturas são conferidas no navegador.

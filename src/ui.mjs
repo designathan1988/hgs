@@ -509,7 +509,8 @@ export class StudioUI {
   setCrowd(count) { this.store.dispatch({ type: 'ui/set', changes: { crowd: count }, live: true }); }
   applyCrowd(count) {
     if (count) this.store.begin('crowd', { label: 'Montando multidão…', cancellable: false });
-    if (this.renderer) this.renderer.setCrowdCount(count, message => { if (message) this.store.progress('crowd', message); else this.store.end('crowd'); });
+    // The operation ends when this request settles, also when a rebuild supersedes it.
+    if (this.renderer) this.renderer.setCrowdCount(count, message => { if (message) this.store.progress('crowd', message); }).finally(() => this.store.end('crowd'));
     else this.store.end('crowd');
     this.chooseView(count ? 'crowd' : 'body');
     this.updateMeta();

@@ -22,7 +22,7 @@ Criador de pessoas 3D para jogos, no navegador. Gera corpo, rosto, roupas e cabe
 
 | Sistema | Arquivos |
 | --- | --- |
-| Entrada e interface | `index.html`, `styles.css`, `src/main.mjs`, `src/ui.mjs`, `src/state.mjs`, `src/icons.mjs` |
+| Entrada e interface | `index.html`, `styles.css`, `src/main.mjs`, `src/store.mjs` (estado e eventos globais), `src/ui.mjs`, `src/ui-kit.mjs` (controles, barra de ferramentas, popovers), `src/state.mjs`, `src/icons.mjs` |
 | Renderer, publicação, transporte | `src/renderer-three.mjs`, `src/generation.mjs`, `src/generation-worker.mjs`, `src/texture-cache.mjs` |
 | Corpo e morphs | `src/parametric.mjs`, `src/parametric-core.mjs`, `src/macro.mjs`, `src/sculpt.mjs` |
 | Esqueleto, pele, montagem, GLB | `src/human-three.mjs`, `src/skin.mjs`, `src/motion.mjs`, `src/lod.mjs` |
@@ -44,7 +44,7 @@ Criador de pessoas 3D para jogos, no navegador. Gera corpo, rosto, roupas e cabe
 
 ## Fluxo de criação de um personagem
 
-1. Interface → `ui.update` → `queueCharacter` (debounce) → `Renderer.setCharacter` → `studioSpec`.
+1. Interface → ação no store (`store.dispatch`, `person/patch`) → evento `change` → `StudioUI.onChange`: campos de apresentação → `setPresentation`; demais → `queueCharacter` (debounce) → `Renderer.setCharacter` → `studioSpec`. Seção e ferramenta ativa → `applyMode` (editor de mechas, escultura, ferramentas de roupa).
 2. Worker → `createHuman` (`human-three.mjs`).
 3. Morphs (`shapeHuman`/`Morpher.shape`) → escultura do corpo (`applyOffsets`).
 4. Esqueleto (`makeSkeleton`): cabeça e cauda de cada osso pelas estratégias do rig sobre a malha atual (cubos morfados + deslocamento da escultura), orientação pelo eixo e roll do rig MPFB; bind calcula as matrizes inversas.

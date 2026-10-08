@@ -8,7 +8,8 @@ Leitura integral dos 40 arquivos originais de `src/` em 7–8 de outubro de 2026
 
 ```text
 DOM / ponteiro / teclado
-  → main.mjs → StudioUI (ui.mjs)
+  → main.mjs → StudioUI (ui.mjs) → store.dispatch (store.mjs, redutor puro)
+  → evento change → StudioUI.onChange (render em lote, efeitos, applyMode)
   → normalizeCharacter (state.mjs)
   → studioSpec (renderer-three.mjs)
   → geração em Worker → createHuman (human-three.mjs)
@@ -23,14 +24,16 @@ DOM / ponteiro / teclado
 
 No Node, a geração continua chamando `createHuman` diretamente. Os testes não precisam de navegador ou DOM para construir geometria. No navegador, o Worker executa os cálculos que podem bloquear eventos, inclusive XPBD e construção de superfícies; a textura e o canvas ficam na página.
 
-O estado editável é separado do objeto renderizado. `StudioUI.person` guarda a especificação normalizada; a malha representa a última reconstrução publicada. Apresentação (luz, expressão, animação e velocidade) pode mudar sem reconstrução. Proporções, idade, altura, roupas e escultura exigem reconstrução. Os controles possuem debounce; a geração anterior deve permanecer visível até a nova ser concluída e aceita.
+O estado editável é separado do objeto renderizado. O store global (`store.mjs`, uma `EventTarget`) é a fonte única: `state.person` guarda a especificação normalizada e `state.ui` a seção, as ferramentas ativas, a peça de roupa, a vista, a multidão, as opções de exportação e os grupos abertos. O estado só muda por ação despachada; o redutor é puro e mantém as referências do que não mudou, então a UI descobre o que mudou comparando referências. O store também guarda as operações em andamento (geração, exportação, cabelo, multidão: status e Cancelar), um barramento de avisos e um histórico único de desfazer (grupos de 500 ms, 100 passos) que, no modo cabelo, é roteado para o histórico do editor de mechas; a visita ao cabelo inteira vira um passo. Parâmetros das ferramentas (raio, força) ficam nos motores (`LockEditor.settings`, `SculptSession.settings`). A malha representa a última reconstrução publicada. Apresentação (luz, expressão, animação e velocidade) pode mudar sem reconstrução. Proporções, idade, altura, roupas e escultura exigem reconstrução. Os controles possuem debounce; a geração anterior deve permanecer visível até a nova ser concluída e aceita.
 
 ## Responsabilidade de todos os arquivos originais
 
 | Arquivo | Responsabilidade e condição |
 | --- | --- |
-| `main.mjs` | Entrada ativa; cria renderer e UI, roteia ponteiro/teclas entre câmera, cabelo, roupa e escultura e mantém o loop de quadros. |
-| `ui.mjs` | Oito seções, controles, histórico de escultura/roupa, arquivos JSON, localStorage, criação/reconstrução, exportação e feedback. |
+| `main.mjs` | Entrada ativa; cria store (com a sessão autosalva), renderer e UI, roteia ponteiro/teclas entre câmera, cabelo, roupa e escultura (Ctrl+Z/Y pelo store) e mantém o loop de quadros. |
+| `store.mjs` | Estado global (personagem e interface), redutor puro, evento `change`, `select`, barramento, operações em andamento e histórico de desfazer roteável. |
+| `ui.mjs` | Sete seções, rail de ferramentas e cartão de opções, reação ao store (render, reconstrução, modos do viewport), arquivos JSON, localStorage, autosalvamento, popovers de personagens e exportação, avisos. |
+| `ui-kit.mjs` | Construtor de elementos, controles que se atualizam sozinhos, foco preservado entre renders, barra de ferramentas com tabindex itinerante, popovers com Esc. |
 | `state.mjs` | Defaults, normalização, compatibilidade de presets, paletas, referência de altura por idade, geração aleatória determinística e JSON de personagem. |
 | `icons.mjs` | SVG de interface e pictogramas de cabelo; depende de `document`. |
 | `renderer-three.mjs` | Pipeline ativo: especificação do estúdio, câmera, publicação, modos de edição, luz, animação, multidão, picking e exportação por LOD. |
