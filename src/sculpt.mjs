@@ -94,7 +94,8 @@ class EditTarget {
     const geometry = mesh.geometry, position = geometry.getAttribute('position');
     this.position = position;
     this.unitOf = units ?? Int32Array.from({ length: position.count }, (_, i) => i);
-    const unitCount = Math.max(...this.unitOf) + 1;
+    let unitCount = 0;
+    for (const unit of this.unitOf) unitCount = Math.max(unitCount, unit + 1);
     this.corners = Array.from({ length: unitCount }, () => []);
     this.unitOf.forEach((unit, i) => this.corners[unit].push(i));
     this.points = new Float32Array(unitCount * 3);
@@ -165,8 +166,30 @@ class EditTarget {
   changes() {
     const out = new Map();
     for (let u = 0; u < Math.min(this.stored, this.unitCount); u++) {
+      if (this.keys && this.keys[u] < 0) continue;
       const dx = this.points[u * 3] - this.built[u * 3], dy = this.points[u * 3 + 1] - this.built[u * 3 + 1], dz = this.points[u * 3 + 2] - this.built[u * 3 + 2];
       if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e-7) out.set(this.keys ? this.keys[u] : u, [dx / this.height, dy / this.height, dz / this.height]);
+    }
+    return out;
+  }
+  /** Spatial authoring samples on a pattern's metre coordinates, independent of vertex/layer ordering. */
+  patternChanges() {
+    const sources = this.mesh.geometry.userData.patternSources, out = [];
+    if (!sources) return out;
+    for (let u = 0; u < this.unitCount; u++) {
+      const source = sources[this.corners[u][0]];
+      if (!source) continue;
+      const delta = [0, 1, 2].map(k => (this.points[u * 3 + k] - this.built[u * 3 + k]) / this.height);
+      if (delta.every(value => Math.abs(value) < 1e-7)) continue;
+      let nearest = Infinity;
+      for (const neighbour of this.neighbours[u]) {
+        const other = sources[this.corners[neighbour][0]];
+        if (other?.panel === source.panel && other.garment === source.garment) {
+          const distance = Math.hypot(source.uv[0] - other.uv[0], source.uv[1] - other.uv[1]);
+          if (distance > 1e-6) nearest = Math.min(nearest, distance);
+        }
+      }
+      out.push({ garment: source.garment, pattern: source.pattern, panel: source.panel, center: [...source.uv], radius: Math.max(0.002, Number.isFinite(nearest) ? nearest * 0.4 : 0.02), delta });
     }
     return out;
   }

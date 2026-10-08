@@ -11,6 +11,8 @@ import { LockEditor } from './lock-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
 import { hairPresetData } from './hair-presets.mjs';
 import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPalette } from './state.mjs';
+import { buildHumanInWorker } from './generation.mjs';
+import { hydrateHumanAppearance } from './appearance.mjs';
 
 const femaleOutfits = ['female_casualsuit01', 'female_casualsuit02', 'female_elegantsuit01', 'female_sportsuit01'];
 const maleOutfits = ['male_casualsuit01', 'male_casualsuit02', 'male_elegantsuit01', 'male_worksuit01'];
@@ -160,15 +162,25 @@ export class Renderer {
     this.clothEditor = new ClothEditor(this);
     this.pivotRay = new Raycaster();
   }
-  async setCharacter(person) {
+  cancelBuild() { this.buildController?.abort(); this.token++; }
+  async buildCharacter(spec, options = {}) {
+    if (typeof Worker === 'undefined') return createHuman(spec, options);
+    const human = await buildHumanInWorker(spec, options);
+    try { await hydrateHumanAppearance(human, spec, options); return human; }
+    catch (error) { human.dispose(); throw error; }
+  }
+  async setCharacter(person, { onProgress, getLatest } = {}) {
+    this.buildController?.abort();
+    const controller = new AbortController(); this.buildController = controller;
     const token = ++this.token;
     try {
       const spec = studioSpec(person, { undressed: this.sculptMode && this.undressed });
-      const human = await createHuman(spec);
-      this.hairColor = spec.hairColor;
+      const human = await this.buildCharacter(spec, { signal: controller.signal, onProgress });
       if (token !== this.token) { human.dispose(); return false; }
+      person = getLatest?.() ?? person;
+      this.hairColor = studioSpec(person).hairColor;
       const previous = this.current;
-      if (previous) { this.scene.remove(previous.group); previous.dispose(); }
+      if (previous) { this.scene.remove(previous.group); }
       const crowdSeed = this.person?.seed;
       this.person = person;
       this.current = human; this.scene.add(human.group);
@@ -182,8 +194,12 @@ export class Renderer {
       if (crowdSeed !== person.seed || this.crowdBuiltFor !== this.requestedCrowd) this.setCrowdCount(this.requestedCrowd);
       if (this.sculptMode) this.freezeForSculpt();
       if (this.locksMode) this.beginLocks();
+      previous?.dispose();
       return true;
-    } catch (error) { this.onError(error.message); console.error(error); return false; }
+    } catch (error) {
+      if (error.name !== 'AbortError') { this.onError(error.message); console.error(error); }
+      return false;
+    } finally { if (token === this.token) this.buildController = null; }
   }
   /** Animation, playback speed and lighting change without rebuilding the mesh. */
   setPresentation(person) {
@@ -304,13 +320,13 @@ export class Renderer {
     onProgress(null);
   }
   /** Export at the chosen detail level; lower levels are built on demand. */
-  async exportGLB({ lod = 'high', groom = 'strands', ...options } = {}) {
+  async exportGLB({ lod = 'high', groom = 'strands', person = this.person, signal, onProgress, ...options } = {}) {
     if (!this.current || !this.person) throw new Error('No human is ready to export');
-    if (lod === 'high' && groom === 'strands' && !this.frozen && !this.undressed) {
+    if (person === this.person && lod === 'high' && groom === 'strands' && !this.frozen && !this.undressed) {
       applyFaceWeights(this.current.faceMeshes, this.faceBase ?? {});
       return exportHumanGLB(this.current, options);
     }
-    const human = await createHuman({ ...studioSpec(this.person), lod, groom });
+    const human = await this.buildCharacter({ ...studioSpec(person), lod, groom }, { signal, onProgress });
     try { return await exportHumanGLB(human, options); } finally { human.dispose(); }
   }
   /** The point of the character (body, clothes, hair) under the cursor, or null. */
@@ -336,7 +352,10 @@ export class Renderer {
     this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (!this.frozen) this.mixer?.update(dt);
-    if (this.locksMode && this.lockEditor.active) this.lockEditor.step(dt || 1 / 60);
+    if (this.locksMode && this.lockEditor.active) {
+      this.lockEditor.tickPhysics(dt || 1 / 60);
+      this.lockEditor.step();
+    }
     // Clips animate blinks and the jaw; keep the chosen expression underneath.
     for (const mesh of this.frozen ? [] : this.current?.faceMeshes ?? []) {
       for (const [name, value] of Object.entries(this.faceBase ?? {})) {

@@ -14,6 +14,7 @@
       <div class="brand"><svg viewBox="0 0 24 32" aria-hidden="true"><circle cx="12" cy="4" r="3"/><path d="M8 9h8l3 9-2.2.7-2.4-5.3V21l-1 10h-2.6l-.8-8-.8 8H7.6l-1-10v-7.6l-2.4 5.3L2 18l3-9h3Z"/></svg><span>Human <b>Studio</b></span></div>
       <div class="character"><span id="characterName">Personagem</span><small id="characterMeta"></small></div>
       <div class="spacer"></div>
+      <button id="createButton" class="button" type="button">Criar pessoa</button>
       <button id="randomButton" class="button ghost" type="button" title="Gerar uma pessoa aleatória"><span class="icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01"/></svg></span>Aleatório</button>
       <div class="menu-anchor">
         <button id="charactersButton" class="button ghost" type="button" title="Salvar e carregar personagens"><span class="icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3.3 2.8-5 5.5-5s4.9 1.7 5.5 5"/><circle cx="16.5" cy="9" r="2.5"/><path d="M15.5 14.2c2.3-.3 4.3 1.1 5 4.3"/></svg></span>Personagens</button>
@@ -42,13 +43,13 @@
         <button id="fitButton" class="icon-button" type="button" aria-label="Enquadrar o corpo" title="Enquadrar o corpo"><span class="icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></span></button>
       </div>
       <p class="viewport-hint" id="viewportHint"></p>
-      <div id="errorPanel" class="error-panel" hidden><h2>Visualização 3D indisponível</h2><p id="errorText"></p><button id="retryButton" class="button primary" type="button">Tentar de novo</button></div>
+      <div id="errorPanel" class="error-panel" hidden><h2>Não foi possível concluir a operação</h2><p id="errorText"></p><button id="restoreCharacter" class="button" type="button">Manter personagem anterior</button><button id="retryButton" class="button primary" type="button">Tentar de novo</button></div>
     </main>
     <aside class="inspector" aria-labelledby="sectionTitle">
       <div class="inspector-head"><h1 id="sectionTitle">Personagem</h1><div class="head-actions" id="sectionActions"></div></div>
       <div id="inspectorBody" class="inspector-body"></div>
     </aside>
-    <footer class="statusbar"><span class="status"><i class="status-dot"></i><span id="readyLabel">Iniciando</span></span><span class="spacer"></span><span id="triangles"></span><span id="fps"></span></footer>
+    <footer class="statusbar"><span class="status"><i class="status-dot"></i><span id="readyLabel" role="status" aria-live="polite">Iniciando</span></span><button id="cancelOperation" type="button" class="button" hidden>Cancelar operação</button><span class="spacer"></span><span id="triangles"></span><span id="fps"></span></footer>
   </div>
   <script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
   <script type="module" src="./src/main.mjs"></script>

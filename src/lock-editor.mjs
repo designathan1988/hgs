@@ -5,10 +5,13 @@ import {
 import {
   LOCK_POINTS as N, arcLengthAt, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface,
   locksScalpColors, locksUnderlayGeometry, makeLock, normalizeLocks, prepareLocks, resamplePolyline, rootFromHit,
-  serializeLocks, setLockLength, underlayMaterial, updateGeometry, combLock, rootFrame,
+  serializeLocks, setLockLength, setLockShape, constrainLockPose, bendLock, underlayMaterial, updateGeometry, combLock, rootFrame,
 } from './locks.mjs';
+import { applyHairBrush, fusedHairSurface, hairBrushFalloff, hairBrushTools, hairFusionGroups, hairMaskAt, normalizeHairFusion } from './hair-fusion.mjs';
+import { prepareWorkerModule } from './generation.mjs';
+import { HairDynamics } from './hair-dynamics.mjs';
 
-export const lockTools = ['brush', 'comb', 'pull', 'move', 'select', 'grow', 'cut', 'pin'];
+export const lockTools = ['brush', 'comb', 'pull', 'move', 'select', 'grow', 'cut', 'pin', ...hairBrushTools];
 const SLOT_PREFIX = 'hgs.locks.';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const storage = {
@@ -29,10 +32,14 @@ export class LockEditor {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: true, pinOnRelease: false, fixOnRelease: false, showMidline: true, combRadius: 0.14, combStrength: 1, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
+    this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: false, pinOnRelease: false, fixOnRelease: false, showMidline: false, combRadius: 0.14, combStrength: 1, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
+    Object.assign(this.settings, { width: .025, volume: .24, taper: .9, curl: 0, turns: 2, twist: 0, brushRadius: .045, brushStrength: .5, brushFalloff: 'smooth', activeGroup: 'main', brushInvert: false, densitySpacing: .018, brushCreation: 'stroke', hairRepresentation: 'lock', combScope: 'brush', tipShape: 'point', autoSettle: false });
     this.state = null; this.undoStack = []; this.redoStack = [];
+    this.bendBaselines = new WeakMap();
     this.onChange = () => {};
+    this.onBusy = () => {}; this.onProgress = () => {};
+    this.onPhysics = () => {}; this.physicsDefinition = 0;
   }
   get active() { return Boolean(this.state); }
   get locks() { return this.state?.locks ?? []; }
@@ -41,8 +48,9 @@ export class LockEditor {
     this.end();
     this.human = human; this.context = human.context; this.color = color;
     this.state = prepareLocks(this.context, data);
-    // Free locks hang on this body and its clothes, as in the finished character.
-    this.state.sim.apply({ force: this.settings.gravity });
+    this.settings.hairRepresentation = this.state.fusion?.representation ?? 'lock';
+    // Live dynamics starts from the current saved pose, never from q/design.
+    this.state.fusion ??= normalizeHairFusion();
     this.selected.clear();
     for (const name of ['Hair', 'ScalpUnderlay']) { const mesh = human.group.getObjectByName(name); if (mesh) mesh.visible = false; }
     const scene = this.renderer.scene;
@@ -68,7 +76,13 @@ export class LockEditor {
   }
   end() {
     if (!this.state) return null;
+    // Intermediate gravity poses roll back; authored fusion definitions remain
+    // valid even when their derived preview worker has not finished yet.
+    this.cancelGravity();
+    this.physicsClient?.dispose(); this.physicsClient = null; this.physics = null; this.physicsDefinition++;
     const result = this.serialize();
+    this.cancelFusion();
+    this.fusionMeshes = [];
     this.group?.traverse(object => { object.geometry?.dispose(); });
     this.group?.removeFromParent();
     for (const material of Object.values(this.materials ?? {})) material.dispose();
@@ -84,26 +98,37 @@ export class LockEditor {
    */
   relax(only = null) {
     if (!this.state) return;
-    // A lock being pulled to be kept as shaped (F held, or "keep shape on release") does not fall meanwhile.
-    const still = this.drag?.tool === 'grab' && (this.fixHeld || this.settings.fixOnRelease) ? new Set([this.drag.lock]) : null;
-    this.state.sim.apply({ only, force: this.settings.gravityOn ? this.settings.gravity : 0, still });
+    for (const lock of only ?? this.locks) {
+      if (!lock.grab) continue;
+      const reference = Float32Array.from(lock.x), point = lock.grab.point.clone(), max = lock.seg * lock.grab.index * .999;
+      if (point.distanceTo(lock.rootP) > max) point.sub(lock.rootP).setLength(max).add(lock.rootP);
+      lock.x.set(point.toArray(), lock.grab.index * 3);
+      constrainLockPose(lock, this.state, { reference, protectedPoints: new Map([[lock.grab.index, point]]) });
+    }
+    this.invalidatePhysics();
+    this.fusionDirty = true;
     this.dirty = true;
   }
 
   // ----------------------------------------------------------- history
   checkpoint() {
+    this.invalidatePhysics();
     this.revision = (this.revision ?? 0) + 1;
     this.undoStack.push(JSON.stringify(this.serialize()));
     if (this.undoStack.length > 80) this.undoStack.shift();
     this.redoStack = [];
   }
   restore(json, keepSelection = false) {
+    this.cancelOperation();
+    this.physicsClient?.dispose(); this.physicsClient=null; this.physicsKey=null;this.physicsDefinition++;
     const data = JSON.parse(json);
     const selection = [...this.selected];
     // A loaded or restored hairstyle: free locks hang by gravity from their
     // saved shapes (the same result as when it was saved), set shapes as saved.
     this.state = prepareLocks(this.context, data);
-    this.state.sim.apply({ force: this.settings.gravity });
+    this.settings.hairRepresentation = this.state.fusion?.representation ?? 'lock';
+    if (this.state.fusion && !this.state.fusion.groups.some(g => g.id === this.settings.activeGroup)) this.settings.activeGroup = 'main';
+    this.physics = null; this.physicsDefinition++;
     this.selected = new Set(keepSelection ? selection.filter(i => i < this.locks.length) : []);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange();
   }
@@ -162,20 +187,101 @@ export class LockEditor {
       const mesh = this.meshes[n];
       mesh.userData.index = n;
       mesh.material = this.selected.has(n) ? this.materials.selected : this.materials.normal;
-      const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist}`;
+      if (this.state.fusion) { lock.group ??= 'main'; lock.id ??= this.nextLockId(); }
+      const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1},${lock.tipShape ?? 'round'},${lock.ribbonNormal ?? ''},${lock.rootTaper}`;
       if (!all && lock.built && key === lock.builtKey && !moved(lock.built, lock.x)) return;
       lock.built = Float32Array.from(lock.x); lock.builtKey = key;
       const part = lockSurface(lock, this.state);
       if (!updateGeometry(mesh.geometry, part)) { mesh.geometry.dispose(); mesh.geometry = geometryFrom([part]); }
+      this.fusionDirty = true;
     });
+    this.syncFusion(all);
+  }
+  nextLockId() {
+    const ids = new Set(this.locks.map(l => l.id));
+    let id = 0;
+    while (ids.has(`lock-${id}`)) id++;
+    return `lock-${id}`;
+  }
+  /** Source meshes remain available to existing guide tools and ray picking. */
+  syncFusion(all = false) {
+    this.fusionMeshes ??= [];
+    const groups = hairFusionGroups(this.state), sourceDrag = this.gravityRunning || this.physicsLive || (this.drag && !hairBrushTools.includes(this.drag.tool));
+    const fused = new Set(groups.flatMap(g => g.locks));
+    const ready = new Set(this.fusionMeshes.flatMap(m => m.userData.hairGroups ?? [m.userData.hairGroup]));
+    this.meshes.forEach((mesh, i) => { mesh.visible = (this.locks[i]?.density ?? 1) > 0 && (!fused.has(this.locks[i]) || !ready.has(this.locks[i]?.group ?? 'main') || Boolean(sourceDrag)); });
+    for (const mesh of this.fusionMeshes) mesh.visible = !sourceDrag && this.state.fusion?.enabled;
+    if (this.drag || this.gravityRunning || this.physicsLive || (!all && !this.fusionDirty)) return;
+    clearTimeout(this.fusionTimer); this.fusionTimer = null;
+    if (typeof Worker !== 'undefined' && groups.length) { this.launchFusion(); return; }
+    this.cancelFusion();
+    this.installFusion(groups.map(group => ({ id: group.id, ids: group.ids, part: fusedHairSurface(this.state, group.locks, lockSurface, { showMask: true }) })));
+  }
+  installFusion(parts) {
+    for (const mesh of this.fusionMeshes ?? []) { mesh.geometry.dispose(); mesh.removeFromParent(); }
+    this.fusionMeshes = [];
+    for (const { id, ids, part } of parts) {
+      const mesh = new Mesh(geometryFrom([part]), this.materials.normal);
+      mesh.name = `HairFusion-${id}`; mesh.userData.hairGroup = id; mesh.userData.hairGroups = ids; mesh.userData.fusionStats = part.stats; mesh.frustumCulled = false;
+      this.group.add(mesh); this.fusionMeshes.push(mesh);
+    }
+    this.fusionDirty = false;
+    this.syncFusion();
+  }
+  cancelFusion() {
+    clearTimeout(this.fusionTimer); this.fusionTimer = null;
+    this.fusionController?.abort(); this.fusionController = null;
+    this.fusionWorker?.terminate(); this.fusionWorker = null;
+    this.fusionRequest = (this.fusionRequest ?? 0) + 1;
+    this.fusionDirty = false; this.fusionBusy = false;
+    this.onBusy(Boolean(this.gravityRunning));
+  }
+  async launchFusion() {
+    this.cancelFusion();
+    const id = this.fusionRequest, revision = this.revision, state = this.state;
+    const controller = new AbortController(); this.fusionController = controller;
+    const hairstyle = this.serialize(), { data, positions, skeleton, outfitSurface } = this.context;
+    const context = { data, positions, outfitSurface, skeleton: { heads: skeleton.heads.map(p => p.toArray()), byName: [...skeleton.byName] } };
+    this.fusionBusy = true; this.fusionError = null; this.onBusy(true); this.onProgress('Preparando fusão do cabelo');
+    try {
+      const url = await prepareWorkerModule(new URL('./hair-fusion-worker.mjs', import.meta.url).href, { signal: controller.signal });
+      if (controller.signal.aborted || state !== this.state || id !== this.fusionRequest) return;
+      const worker = new Worker(url, { type: 'module' }); this.fusionWorker = worker;
+      const finish = () => { worker.terminate(); if (this.fusionWorker === worker) this.fusionWorker = null; this.fusionBusy = false; this.onBusy(Boolean(this.gravityRunning)); };
+      worker.onmessage = ({ data: message }) => {
+        if (id !== this.fusionRequest || state !== this.state) return;
+        if (message.type === 'progress') { this.onProgress(message.stage); return; }
+        if (message.type === 'error') { this.fusionError = message.message; finish(); this.onChange(); return; }
+        if (message.type !== 'result') return;
+        finish();
+        if (revision !== this.revision || this.drag) { this.fusionDirty = true; if (!this.drag) this.scheduleFusion(); return; }
+        this.installFusion(message.parts); this.onChange();
+      };
+      worker.onerror = event => { if (id !== this.fusionRequest || state !== this.state) return; this.fusionError = event.message || 'Falha ao calcular fusão do cabelo'; finish(); this.onChange(); };
+      worker.onmessageerror = () => { if (id !== this.fusionRequest || state !== this.state) return; this.fusionError = 'Não foi possível receber a geometria fundida'; finish(); this.onChange(); };
+      worker.postMessage({ id, context, hairstyle });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      this.fusionError = error.message; this.fusionBusy = false; this.onBusy(Boolean(this.gravityRunning)); this.onChange();
+    }
+  }
+  scheduleFusion() {
+    this.fusionDirty = true;
+    if (this.drag || this.fusionTimer) return;
+    const state = this.state;
+    this.fusionTimer = setTimeout(() => {
+      this.fusionTimer = null;
+      if (state !== this.state || this.drag) return;
+      this.syncFusion(); this.onChange();
+    }, 30);
   }
   updateHelpers() {
     if (!this.handles) return;
     const m = new Matrix4(), k = this.state.frame.R / 0.11;
     let h = 0, p = 0;
     this.locks.forEach((lock, n) => {
-      if (this.selected.has(n)) for (let i = 2; i < N && h < 400; i++) {
-        const s = 0.0042 * k;
+      if (this.selected.has(n) && ['select', 'pull', 'pin', 'move', 'grow'].includes(this.settings.tool)) for (let i = 2; i < N && h < 400; i++) {
+        const s = 0.0028 * k;
         m.makeScale(s, s, s).setPosition(lock.x[i * 3], lock.x[i * 3 + 1], lock.x[i * 3 + 2]);
         this.handles.setMatrixAt(h++, m);
       }
@@ -208,6 +314,24 @@ export class LockEditor {
     this.raycaster.setFromCamera(ndc, camera);
     const [hit] = this.raycaster.intersectObjects(this.meshes, false);
     return hit ? { index: hit.object.userData.index, point: hit.point.clone(), distance: hit.distance } : null;
+  }
+  pickHair(ndc, camera) {
+    this.raycaster.setFromCamera(ndc, camera);
+    const visible = [...(this.fusionMeshes ?? []), ...this.meshes].filter(m => m.visible);
+    const [hit] = this.raycaster.intersectObjects(visible, false);
+    if (!hit) return null;
+    const [bodyHit] = this.raycaster.intersectObject(this.probe(), false);
+    if (bodyHit && bodyHit.distance + .0015 < hit.distance) return null;
+    let index = hit.object.userData.index, arc = hit.uv?.y;
+    let group = this.locks[hit.object.userData.index]?.group ?? 'main';
+    if (hit.object.userData.hairGroups) {
+      let nearest = Infinity;
+      for (const lock of this.locks) if (hit.object.userData.hairGroups.includes(lock.group ?? 'main')) for (let i = 0; i < N; i++) {
+        const distance = hit.point.distanceToSquared(new Vector3().fromArray(lock.x, i * 3));
+        if (distance < nearest) { nearest = distance; group = lock.group ?? 'main'; index = this.locks.indexOf(lock); arc = arcLengthAt(lock, hit.point) / lockLength(lock); }
+      }
+    }
+    return { point: hit.point.clone(), group, distance: hit.distance, index, arc };
   }
   pickScalp(ndc, camera) {
     this.raycaster.setFromCamera(ndc, camera);
@@ -274,6 +398,18 @@ export class LockEditor {
   pointerDown(ndc, camera, { shift = false, ctrl = false } = {}) {
     if (!this.state) return false;
     const tool = this.settings.tool;
+    if (hairBrushTools.includes(tool)) {
+      const hit = tool === 'density' ? this.pickScalp(ndc, camera) : this.pickHair(ndc, camera);
+      if (!hit || (tool === 'density' && !hit.root)) return false;
+      this.checkpoint();
+      if (['smooth', 'volume', 'mask'].includes(tool) && !this.state.fusion?.enabled) {
+        this.state.fusion ??= normalizeHairFusion(); this.state.fusion.enabled = true; this.syncMeshes(true);
+      }
+      const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), hit.point);
+      this.drag = { tool, plane, lastPoint: hit.point.clone(), invert: ctrl || this.settings.brushInvert, group: this.settings.activeGroup };
+      this.brushAt(hit.point, { tool, invert: this.drag.invert, record: false });
+      return true;
+    }
     const lockHit = this.pickLock(ndc, camera);
     if (tool === 'select') {
       if (!lockHit) { if (!shift && !ctrl) this.clearSelection(); return true; }
@@ -283,6 +419,7 @@ export class LockEditor {
     if (tool === 'brush') {
       const scalpHit = this.pickScalp(ndc, camera);
       if (!scalpHit?.root) return false;
+      if (this.settings.brushCreation === 'stroke') return this.beginStroke(scalpHit, camera, { shift, ndc });
       this.checkpoint();
       if (!shift) this.selected.clear();
       this.drag = { tool, last: scalpHit.point.clone(), lastNdc: { x: ndc.x, y: ndc.y }, made: 0 };
@@ -298,6 +435,8 @@ export class LockEditor {
     }
     if (tool === 'comb') {
       // Comb (Blender's hair Comb brush): drag over the hair to pull every lock under the brush.
+      const hit = this.settings.combScope === 'all' ? null : this.pickHair(ndc, camera);
+      if (this.settings.combScope !== 'all' && !hit) return false;
       this.checkpoint();
       this.drag = { tool, last: { x: ndc.x, y: ndc.y } };
       return true;
@@ -349,9 +488,38 @@ export class LockEditor {
     this.syncMeshes(); this.updateHelpers(); this.onChange();
   }
   /** Pull a new lock out of the scalp: it grows from the root to the cursor. */
+  creationParams() { return { width: this.settings.width, volume: this.settings.volume, taper: this.settings.taper, curl: this.settings.curl ?? 0, turns: this.settings.turns ?? 2, twist: this.settings.twist ?? 0, tipShape: this.settings.tipShape, group: this.settings.activeGroup }; }
+  beginStroke(hit, camera, { shift = false, ndc = { x: 0, y: 0 } } = {}) {
+    if (this.locks.length >= 400) return false;
+    this.checkpoint(); this.state.fusion ??= normalizeHairFusion();
+    const lock = makeLock(this.state, hit.root, null, { ...this.creationParams(), ribbonNormal: camera.getWorldDirection(new Vector3()).negate().toArray() }); this.locks.push(lock);
+    if (!shift) this.selected.clear(); this.selected.add(this.locks.length - 1);
+    const twinRoot = !this.settings.mirror ? null : this.onMidline(lock) ? lock.root : this.mirrorRoot(lock);
+    const twin = twinRoot && this.locks.length < 400 ? makeLock(this.state, twinRoot, null, this.creationParams()) : null;
+    if (twin) twin.ribbonNormal = [-lock.ribbonNormal[0], lock.ribbonNormal[1], lock.ribbonNormal[2]];
+    if (twin) { this.locks.push(twin); this.selected.add(this.locks.length - 1); }
+    const lifted = lock.rootP.clone().addScaledVector(lock.rootN, Math.max(.002, lock.width * lock.volume * .55));
+    const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), lifted);
+    this.drag = { tool: 'stroke', lock, twin, plane, path: [lock.rootP.clone(), lifted], lastNdc: { x: ndc.x, y: ndc.y }, created: new Set([lock, twin].filter(Boolean)) };
+    this.updateStrokeShape(); this.syncMeshes(); this.updateHelpers(); this.onChange();
+    return true;
+  }
+  updateStrokeShape() {
+    const { lock, twin, path } = this.drag, center = this.state.frame.C;
+    for (const target of [lock, twin].filter(Boolean)) {
+      const points = new Float32Array(path.length * 3);
+      path.forEach((p, i) => points.set(target === twin ? [2 * center.x - p.x, p.y, p.z] : p.toArray(), i * 3));
+      points.set(target.rootP.toArray(), 0); setLockShape(target, points);
+      constrainLockPose(target, this.state);
+      target.rest.set(target.x); target.hold = Float32Array.from(target.x);
+    }
+    this.dirty = true;
+  }
   sprout(hit, camera, { shift = false } = {}) {
+    if (this.locks.length >= 400) return false;
     this.checkpoint();
-    const lock = makeLock(this.state, hit.root, null, { width: this.settings.width, volume: this.settings.volume, taper: this.settings.taper });
+    this.state.fusion ??= normalizeHairFusion();
+    const lock = makeLock(this.state, hit.root, null, { ...this.creationParams(), ribbonNormal: camera.getWorldDirection(new Vector3()).negate().toArray() });
     this.locks.push(lock);
     const n = this.locks.length - 1;
     if (!shift) this.selected.clear();
@@ -360,8 +528,9 @@ export class LockEditor {
     // Mirror: the same lock on the other side of the head (the body is symmetric in x).
     const twinRoot = !this.settings.mirror ? null : this.onMidline(lock) ? lock.root : this.mirrorRoot(lock);
     let twin = null;
-    if (twinRoot) {
-      twin = makeLock(this.state, twinRoot, null, { width: lock.width, volume: lock.volume, taper: lock.taper });
+    if (twinRoot && this.locks.length < 400) {
+      twin = makeLock(this.state, twinRoot, null, this.creationParams());
+      twin.ribbonNormal = [-lock.ribbonNormal[0], lock.ribbonNormal[1], lock.ribbonNormal[2]];
       this.locks.push(twin);
       this.selected.add(this.locks.length - 1);
     }
@@ -383,33 +552,54 @@ export class LockEditor {
     drag.last = { x: ndc.x, y: ndc.y };
     if (!dx && !dy) return;
     const r = this.settings.combRadius, k = this.settings.combStrength, aspect = camera.aspect;
+    const scope = this.settings.combScope ?? 'brush';
+    const hit = scope === 'all' ? null : this.pickHair(ndc, camera);
+    if (scope !== 'all' && !hit) return;
+    const center = hit?.point, projected = center?.clone().project(camera);
+    const edge = projected ? new Vector3(projected.x, projected.y + r, projected.z).unproject(camera) : null;
+    const worldRadius = edge ? edge.distanceTo(center) : 0;
     const p = new Vector3(), s = new Vector3(), q = new Vector3(), move = new Vector3(), touched = new Set();
-    const weight = (v) => { const d = Math.hypot((v.x - ndc.x) * aspect, v.y - ndc.y) / r; return v.z > 1 || d >= 1 ? 0 : (1 - d * d) ** 2 * k; };
     const shift = (v, w) => q.set(v.x + dx * w, v.y + dy * w, v.z).unproject(camera);
-    for (const lock of this.locks) {
+    const targets = scope === 'selected' ? [...this.selected].map(i => this.locks[i]).filter(Boolean) : this.locks;
+    for (const lock of targets) {
+      const reference = Float32Array.from(lock.x), protectedPoints = new Map();
+      const influence = new Float32Array(N);
+      if (scope !== 'all') {
+        const mesh = this.meshes[this.locks.indexOf(lock)], position = mesh?.geometry.getAttribute('position'), uv = mesh?.geometry.getAttribute('uv');
+        if (position && uv) for (let v = 0; v < position.count; v++) {
+          p.fromBufferAttribute(position, v); const d = p.distanceTo(center), w = hairBrushFalloff(d, worldRadius, this.settings.brushFalloff) * k;
+          if (!w) continue;
+          const f = clamp(uv.getY(v), 0, 1) * (N - 1), i = Math.min(N - 2, Math.floor(f)); influence[i] = Math.max(influence[i], w); influence[i + 1] = Math.max(influence[i + 1], w);
+        }
+        if (hit.index === this.locks.indexOf(lock)) { const i = Math.max(2, Math.min(N - 2, Math.floor((hit.arc ?? .5) * (N - 1)))); influence[i] = k; influence[i + 1] = k; }
+      }
       let moved = false;
       for (let i = 2; i < N; i++) {
         p.fromArray(lock.x, i * 3); move.set(0, 0, 0);
-        const w = weight(s.copy(p).project(camera));
+        const mask = hairMaskAt(this.state, p, lock.group ?? 'main');
+        if (mask >= 1 - 1e-6) protectedPoints.set(i, p.clone());
+        if (lock.pins.has(i) || mask >= 1 - 1e-6) continue;
+        const localWeight = scope === 'all' ? k : Math.max(influence[i], hairBrushFalloff(p.distanceTo(center), worldRadius, this.settings.brushFalloff) * k);
+        const along = i / (N - 1) * (1 - mask), w = localWeight * along;
+        s.copy(p).project(camera);
         if (w > 0) move.add(shift(s, w).sub(p));
-        if (this.settings.mirror) {
+        if (this.settings.mirror && scope === 'all') move.x *= p.x < this.state.frame.C.x ? -1 : 1;
+        if (this.settings.mirror && scope !== 'all') {
           const m = p.clone(); m.x = -m.x;
-          const wm = weight(s.copy(m).project(camera));
+          const wm = hairBrushFalloff(m.distanceTo(center), worldRadius, this.settings.brushFalloff) * k * along;
+          s.copy(m).project(camera);
           if (wm > 0) { const d = shift(s, wm).sub(m); move.x -= d.x; move.y += d.y; move.z += d.z; }
         }
         if (move.lengthSq() < 1e-14) continue;
-        for (const a of lock.styled ? [lock.rest, lock.x] : [lock.rest]) { a[i * 3] += move.x; a[i * 3 + 1] += move.y; a[i * 3 + 2] += move.z; }
+        lock.x[i * 3] += move.x; lock.x[i * 3 + 1] += move.y; lock.x[i * 3 + 2] += move.z;
         moved = true;
       }
       if (!moved) continue;
-      // Lengths from the root (follow-the-leader), so the lock is never stretched.
-      for (const a of lock.styled ? [lock.rest, lock.x] : [lock.rest]) for (let i = 2; i < N; i++) {
-        const o = i * 3, ex = a[o] - a[o - 3], ey = a[o + 1] - a[o - 2], ez = a[o + 2] - a[o - 1], l = Math.hypot(ex, ey, ez) || 1, f = lock.seg / l;
-        a[o] = a[o - 3] + ex * f; a[o + 1] = a[o - 2] + ey * f; a[o + 2] = a[o - 1] + ez * f;
-      }
+      constrainLockPose(lock, this.state, { reference, protectedPoints });
+      lock.rest.set(lock.x); lock.styled = true;
       touched.add(lock);
     }
-    if (touched.size) { this.relax(touched); this.step(); }
+    if (touched.size) { this.invalidatePhysics(); this.dirty = true; this.fusionDirty = true; this.step(); }
   }
   /**
    * Put a lock's root at another place on the scalp: its shape (drawn and
@@ -423,6 +613,7 @@ export class LockEditor {
       a[i * 3] = v.x; a[i * 3 + 1] = v.y; a[i * 3 + 2] = v.z;
     }
     for (const pin of lock.pins.values()) pin.sub(lock.rootP).applyQuaternion(turn).add(p);
+    if (lock.ribbonNormal) lock.ribbonNormal = new Vector3(...lock.ribbonNormal).applyQuaternion(turn).toArray();
     lock.root = { v: [...root.v], w: [...root.w] }; lock.rootP = p; lock.rootN = n;
   }
   /**
@@ -477,10 +668,41 @@ export class LockEditor {
     this.relax(this.drag.cut);
     this.onChange();
   }
-  pointerMove(ndc, camera) {
+  pointerMove(ndc, camera, { alt = false } = {}) {
     const drag = this.drag;
     if (!drag || !this.state) return;
     this.raycaster.setFromCamera(ndc, camera);
+    if (drag.tool === 'stroke') {
+      if (alt) {
+        drag.widthBase ??= { value: this.settings.width, x: drag.lastNdc.x };
+        this.setCreationWidth(drag.widthBase.value + (ndc.x - drag.widthBase.x) * this.state.frame.R * 2);
+        return;
+      }
+      drag.widthBase = null;
+      const scalpHit = this.pickScalp(ndc, camera);
+      let point;
+      if (scalpHit?.root) {
+        const normal = rootFrame(this.state, scalpHit.root).n;
+        point = scalpHit.point.clone().addScaledVector(normal, Math.max(.0015, drag.lock.width * drag.lock.volume * .55));
+      } else {
+        this.raycaster.setFromCamera(ndc, camera);
+        point = this.raycaster.ray.intersectPlane(drag.plane, new Vector3());
+      }
+      if (!point || point.distanceTo(drag.path.at(-1)) < .001 * this.state.frame.R / .11) return;
+      if (drag.path.length < 1024) drag.path.push(point);
+      drag.lastNdc = { x: ndc.x, y: ndc.y }; this.updateStrokeShape(); this.step(); this.onChange();
+      return;
+    }
+    if (hairBrushTools.includes(drag.tool)) {
+      const hit = drag.tool === 'density' ? this.pickScalp(ndc, camera) : this.pickHair(ndc, camera);
+      const point = hit?.point ?? (drag.tool === 'density' ? null : this.raycaster.ray.intersectPlane(drag.plane, new Vector3()));
+      if (!point || point.distanceTo(drag.lastPoint) < this.settings.brushRadius * .15) return;
+      const distance = point.distanceTo(drag.lastPoint), steps = Math.min(32, Math.max(1, Math.ceil(distance / (this.settings.brushRadius * .3))));
+      const from = drag.lastPoint.clone();
+      for (let i = 1; i <= steps; i++) this.brushAt(from.clone().lerp(point, i / steps), { tool: drag.tool, invert: drag.invert, record: false });
+      drag.lastPoint.copy(point);
+      return;
+    }
     if (drag.tool === 'sprout' || drag.tool === 'grab') {
       const point = this.raycaster.ray.intersectPlane(drag.plane, new Vector3());
       if (!point) return;
@@ -500,9 +722,10 @@ export class LockEditor {
       // The stroke is followed on screen in small steps, so a fast move
       // still plants locks all along it.
       const from = drag.lastNdc ?? { x: ndc.x, y: ndc.y }, n = Math.max(1, Math.ceil(Math.hypot(ndc.x - from.x, ndc.y - from.y) / 0.004));
-      const params = { width: this.settings.width, volume: this.settings.volume, taper: this.settings.taper };
+      const params = this.creationParams();
       drag.created ??= new Set();
       for (let k = 1; k <= n; k++) {
+        if (this.locks.length >= 400) break;
         const hit = this.pickScalp({ x: from.x + (ndc.x - from.x) * k / n, y: from.y + (ndc.y - from.y) * k / n }, camera);
         if (!hit?.root) continue;
         const step = hit.point.clone().sub(drag.last);
@@ -518,7 +741,7 @@ export class LockEditor {
         const lock = combLock(this.state, hit.root, comb, this.settings.brushLength, params);
         this.locks.push(lock); this.selected.add(this.locks.length - 1); drag.created.add(lock);
         const twinRoot = !this.settings.mirror ? null : this.onMidline(lock) ? lock.root : this.mirrorRoot(lock);
-        if (twinRoot) {
+        if (twinRoot && this.locks.length < 400) {
           const twin = combLock(this.state, twinRoot, twinComb, this.settings.brushLength, params);
           this.locks.push(twin); this.selected.add(this.locks.length - 1); drag.created.add(twin);
         }
@@ -567,10 +790,17 @@ export class LockEditor {
     this.revision = (this.revision ?? 0) + 1;
     this.drag = null;
     if (!drag || !this.state) return;
+    if (hairBrushTools.includes(drag.tool)) {
+      this.scheduleFusion(); this.updateUnderlay(); this.updateHelpers(); this.onChange();
+      return;
+    }
     const lock = drag.lock;
+    if (drag.tool === 'stroke') {
+      for (const l of [lock, drag.twin].filter(Boolean)) { l.hold = null; l.rest.set(l.x); l.styled = fix || this.settings.fixOnRelease || !this.settings.autoSettle; l.fixed = Boolean(fix || this.settings.fixOnRelease); if (pin || this.settings.pinOnRelease) l.pins.set(N - 1, new Vector3().fromArray(l.x, (N - 1) * 3)); }
+    }
     if (drag.tool === 'sprout') {
       // The drawn curve is the lock's design; gravity hangs it from there.
-      for (const l of [lock, drag.twin].filter(Boolean)) { l.hold = null; l.rest.set(l.x); if (fix || this.settings.fixOnRelease) l.styled = true; }
+      for (const l of [lock, drag.twin].filter(Boolean)) { l.hold = null; l.rest.set(l.x); l.styled = fix || this.settings.fixOnRelease || !this.settings.autoSettle; l.fixed = Boolean(fix || this.settings.fixOnRelease); }
     }
     if (drag.tool === 'grab') {
       // The pulled shape becomes the lock's design; let go, it hangs from the
@@ -579,7 +809,8 @@ export class LockEditor {
       if (pin || this.settings.pinOnRelease) lock.pins.set(index, new Vector3().fromArray(lock.x, index * 3));
       lock.rest.set(lock.x);
       // Kept as released (F held or "keep shape on release"): gravity no longer moves it.
-      if (fix || this.settings.fixOnRelease) lock.styled = true;
+      if (fix || this.settings.fixOnRelease) { lock.styled = true; lock.fixed = true; }
+      else if (!this.settings.autoSettle) lock.styled = true;
       lock.grab = null;
     }
     // Locks laid after the edited ones (higher layers) settle on them again.
@@ -588,6 +819,282 @@ export class LockEditor {
   }
 
   // ------------------------------------------------------- operations
+  invalidatePhysics() {
+    this.physicsDefinition = (this.physicsDefinition ?? 0) + 1;
+    this.physics?.pause();
+    if (this.state) this.physicsClient?.pause(this.serialize());
+    this.physicsKey = null;
+  }
+  physicsSourceKey() {
+    const saved = this.serialize();
+    if (!saved) return '';
+    for (const lock of saved.locks) { delete lock.p; delete lock.sy; }
+    return JSON.stringify(saved);
+  }
+  tickPhysics(delta) {
+    if (!this.state) return false;
+    this.physicsLive = this.settings.gravityOn && !this.drag && !this.gravityRunning;
+    if (!this.physicsLive) { this.physics?.pause(); return false; }
+    const state = this.state;
+    if (typeof Worker === 'undefined') {
+      const previous=this.locks.map(lock=>({lock,x:Float32Array.from(lock.x),rootTaper:lock.rootTaper,styled:lock.styled}));
+      this.physics ??= new HairDynamics(state, { surface: lockSurface, maskAt: (lock, p) => hairMaskAt(state, p, lock.group ?? 'main') });
+      const changed = this.physics.advance(delta, { on: true, strength: this.settings.gravity });
+      if(changed&&this.physics.stats.validPose===false){for(const p of previous){p.lock.x.set(p.x);p.lock.rootTaper=p.rootTaper;p.lock.styled=p.styled;}this.physicsError=`${this.physics.stats.error} A pose anterior foi preservada.`;this.physicsStats={...this.physics.stats,error:this.physicsError};this.settings.gravityOn=false;this.physicsLive=false;this.onPhysics(this.physicsStats);this.onChange();return false;}
+      if (changed) { this.physicsStats = this.physics.stats; for (const lock of this.locks) lock.styled = true; this.dirty = true; }
+      return changed;
+    }
+    if (!this.physicsClient && !this.physicsLoading) {
+      this.physicsLoading = true;
+      import('./hair-physics-client.mjs').then(({ HairPhysicsClient }) => {
+        if (state !== this.state) return;
+        this.physicsClient = new HairPhysicsClient(this.context, {
+          onResult: packet => {
+            if (state !== this.state || !this.physicsLive || this.drag || packet.definition !== this.physicsDefinition) return;
+            if(packet.stats.validPose===false){this.physicsError=`${packet.stats.error} A pose anterior foi preservada.`;this.physicsStats={...packet.stats,error:this.physicsError};this.settings.gravityOn=false;this.physicsLive=false;this.physicsClient?.pause(this.serialize());this.onPhysics(this.physicsStats);this.onChange();return;}
+            if(packet.poses.length!==this.locks.length||packet.poses.some(p=>!this.locks[p.index]||(p.id&&p.id!==this.locks[p.index].id)||p.x.length!==this.locks[p.index].x.length))return;
+            for (const pose of packet.poses) { const lock = this.locks[pose.index]; if (!lock || (pose.id && pose.id !== lock.id)) return; lock.x.set(pose.x); lock.rootTaper = true; lock.styled = true; }
+            this.physicsError = null; this.physicsStats = packet.stats; this.dirty = true;
+            const now = performance.now(); if (!this.lastPhysicsReport || now - this.lastPhysicsReport > 450) { this.lastPhysicsReport = now; this.onPhysics(packet.stats); }
+          },
+          onError: error => { this.physicsError = error.message ?? String(error); this.settings.gravityOn=false;this.physicsLive=false;this.physicsClient?.pause(this.serialize());this.onPhysics({ error: this.physicsError });this.onChange(); },
+        });
+        this.physicsKey = null;
+      }).catch(error => { this.physicsError = error.message; this.onPhysics({ error: error.message }); }).finally(() => { this.physicsLoading = false; });
+      return false;
+    }
+    if (!this.physicsClient) return false;
+    const key = this.physicsSourceKey();
+    if (key !== this.physicsKey) {
+      this.physicsDefinition++;
+      this.physicsError=null;
+      this.physicsKey = key;
+      this.physicsClient.replace(this.serialize(), this.physicsDefinition).catch(error => { this.physicsError = error.message; this.onPhysics({ error: error.message }); });
+    }
+    this.physicsClient.advance(delta, { on: true, strength: this.settings.gravity });
+    return false;
+  }
+  setCreationWidth(value) {
+    if (!Number.isFinite(Number(value))) return false;
+    this.settings.width = clamp(Number(value), ...lockLimits.width);
+    if (this.drag?.tool === 'stroke') for (const lock of [this.drag.lock, this.drag.twin].filter(Boolean)) lock.width = this.settings.width;
+    this.dirty = true; this.step(); this.onChange();
+  }
+  setRepresentation(mode, { all = true } = {}) {
+    if (!['strand', 'lock', 'volume'].includes(mode) || !this.state) return;
+    this.checkpoint(); this.state.fusion ??= normalizeHairFusion();
+    this.settings.hairRepresentation = mode; this.state.fusion.representation = mode; this.state.fusion.enabled = mode === 'volume';
+    const preset = mode === 'strand' ? { width: .0018, volume: .95, taper: .96 } : mode === 'lock' ? { width: .025, volume: .24, taper: .9 } : { width: .045, volume: .65, taper: .82 };
+    Object.assign(this.settings, preset);
+    for (const lock of this.targets(all)) Object.assign(lock, preset);
+    this.fusionDirty = true; this.syncMeshes(); this.updateHelpers(); this.onChange();
+  }
+  setCurlPreset(kind, { all = true } = {}) {
+    const preset = kind === 'straight' ? { curl: 0, turns: 2, twist: 0 } : kind === 'wavy' ? { curl: .35, turns: 2, twist: .3 } : kind === 'curl' ? { curl: .8, turns: 5, twist: .1 } : null;
+    if (!preset || !this.state) return;
+    this.checkpoint(); Object.assign(this.settings, preset); for (const lock of this.targets(all)) Object.assign(lock, preset);
+    this.dirty = true; this.step(); this.onChange();
+  }
+  setTipShape(shape, { all = true } = {}) {
+    if (!['round', 'point', 'flat'].includes(shape) || !this.state) return;
+    this.checkpoint(); this.state.fusion ??= normalizeHairFusion(); this.settings.tipShape = shape;
+    for (const lock of this.targets(all)) lock.tipShape = shape;
+    this.dirty = true; this.step(); this.onChange();
+  }
+  /** Explicit gravity frees styled poses but respects explicit shape locks.
+   * Each stage uses the existing root/pin/length/collision operator against
+   * the unchanged design; the final pose is saved separately from that design.
+   * Browser stages yield a frame so the progression is visible and cancellable.
+   */
+  settleGravity({ strength = this.settings.gravity, steps = 6, all = true } = {}) {
+    if (!this.state) return false;
+    this.cancelGravity(); this.gravityCancelled = false;
+    const list = this.targets(all).filter(lock => !lock.fixed);
+    if (!list.length) return false;
+    const snapshot = { state: this.state, fusion: this.state.fusion, undo: [...this.undoStack], redo: [...this.redoStack], locks: this.locks.map(lock => ({ lock, x: Float32Array.from(lock.x), rest: Float32Array.from(lock.rest), styled: lock.styled, fixed: lock.fixed, id: lock.id, group: lock.group })) };
+    this.checkpoint(); snapshot.revision = this.revision; this.gravitySnapshot = snapshot; this.state.fusion ??= normalizeHairFusion();
+    const state = this.state, revision = this.revision, generation = this.gravityGeneration, only = new Set(list), count = Number.isFinite(steps) ? Math.round(clamp(steps, 1, 24)) : 6;
+    strength = Number.isFinite(strength) ? clamp(strength, 0, 1) : 1; this.settings.gravity = strength; this.gravityRunning = true; this.gravityCancelled = false;
+    const stage = i => {
+      if (generation !== this.gravityGeneration || !this.gravityRunning) return false;
+      if (state !== this.state || revision !== this.revision) { this.cancelGravity(); return false; }
+      for (const lock of list) lock.styled = false;
+      try { state.sim.apply({ only, force: strength * i / count }); }
+      finally { for (const lock of list) lock.styled = true; }
+      this.dirty = true; this.fusionDirty = true; this.step(); this.onProgress(`Assentando cabelo ${Math.round(i / count * 100)}%`);
+      return true;
+    };
+    const finish = () => { this.gravitySnapshot = null; this.gravityRunning = false; this.onBusy(Boolean(this.fusionBusy)); this.dirty = true; this.fusionDirty = true; this.step(); this.updateUnderlay(); this.onChange(); return true; };
+    if (typeof window === 'undefined') {
+      try { for (let i = 1; i <= count; i++) if (!stage(i)) return false; return finish(); }
+      catch (error) { this.cancelGravity(); throw error; }
+    }
+    this.onBusy(true);
+    return (async () => {
+      try {
+        for (let i = 1; i <= count; i++) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          if (!stage(i)) return false;
+        }
+        return finish();
+      } catch (error) { this.cancelGravity(); throw error; }
+    })();
+  }
+  cancelGravity() {
+    this.gravityGeneration = (this.gravityGeneration ?? 0) + 1;
+    if (!this.gravityRunning) return;
+    const snapshot = this.gravitySnapshot; this.gravitySnapshot = null; this.gravityRunning = false; this.gravityCancelled = true;
+    if (snapshot && snapshot.state === this.state && snapshot.revision === this.revision) {
+      this.state.fusion = snapshot.fusion;
+      for (const item of snapshot.locks) { item.lock.x.set(item.x); item.lock.rest.set(item.rest); Object.assign(item.lock, { styled: item.styled, fixed: item.fixed, id: item.id, group: item.group }); }
+      this.undoStack = snapshot.undo; this.redoStack = snapshot.redo;
+      // Refresh source geometry while keeping the previous completed union.
+      // Suppress a fresh worker launch during rollback, then restore visibility.
+      this.gravityRunning = true;
+      try { this.syncMeshes(true); this.updateHelpers(); this.updateUnderlay(); }
+      finally { this.gravityRunning = false; this.fusionDirty = false; }
+      this.syncFusion(); this.onChange();
+    }
+    this.onBusy(Boolean(this.fusionBusy));
+  }
+  cancelOperation() { this.cancelGravity(); this.cancelFusion(); }
+  createGroup(name = 'Grupo') {
+    if (!this.state) return null;
+    this.checkpoint(); this.state.fusion ??= normalizeHairFusion();
+    if (this.state.fusion.groups.length >= 64) return null;
+    let n = 1;
+    while (this.state.fusion.groups.some(g => g.id === `group-${n}`)) n++;
+    const group = { id: `group-${n}`, name: String(name).trim().slice(0, 64) || 'Grupo', fuse: true };
+    this.state.fusion.groups.push(group); this.settings.activeGroup = group.id; this.onChange();
+    return group.id;
+  }
+  assignGroup(id) {
+    if (!this.state?.fusion?.groups.some(g => g.id === id) || !this.selected.size) return false;
+    this.checkpoint();
+    for (const lock of this.targets()) lock.group = id;
+    this.settings.activeGroup = id; this.fusionDirty = true; this.syncMeshes(); this.onChange();
+    return true;
+  }
+  setGroupFusion(id, on) {
+    const group = this.state?.fusion?.groups.find(g => g.id === id);
+    if (!group) return false;
+    this.checkpoint(); group.fuse = Boolean(on); this.fusionDirty = true; this.syncMeshes(); this.onChange();
+    return true;
+  }
+  setFusionEnabled(on) {
+    if (!this.state) return;
+    this.checkpoint(); this.state.fusion ??= normalizeHairFusion(); this.state.fusion.enabled = Boolean(on);
+    this.fusionDirty = true; this.syncMeshes(); this.onChange();
+  }
+  setFusionSettings(value, record = true) {
+    if (!this.state) return;
+    if (record) this.checkpoint();
+    this.state.fusion = normalizeHairFusion({ ...(this.state.fusion ?? {}), ...value });
+    this.scheduleFusion(); if (record) this.onChange();
+  }
+  clearMask() {
+    if (!this.state?.fusion) return;
+    if (this.state.fusion.strokes.length >= 2048) return;
+    this.checkpoint();
+    // A reset at this point in the stroke history releases the mask without
+    // changing protection already applied to previous sculpt strokes.
+    this.state.fusion.strokes.push({ tool: 'mask', center: [0, 0, 0], radius: 8, strength: 1, falloff: 'constant', symmetry: false, group: null, invert: true, clear: true });
+    this.scheduleFusion(); this.onChange();
+  }
+  brushAt(point, options = {}) {
+    if (!this.state) return false;
+    if (options.record !== false) this.checkpoint();
+    const tool = options.tool ?? this.settings.tool;
+    const brush = { tool, radius: this.settings.brushRadius, strength: this.settings.brushStrength, falloff: this.settings.brushFalloff, symmetry: this.settings.mirror, group: this.settings.activeGroup, invert: this.settings.brushInvert, ...options };
+    const before = tool === 'clump' || tool === 'density' ? this.locks.map(lock => ({ lock, x: Float32Array.from(lock.x), density: lock.density ?? 1 })) : null;
+    if (!applyHairBrush(this.state, point, brush)) return false;
+    if (tool === 'density' && !brush.invert) this.addDensityGuides(point, brush);
+    if (tool === 'clump' || tool === 'density') { this.relax(); this.syncMeshes(); this.previewGuideChanges(before, brush); }
+    else {
+      // Spatial sculpt affects the implicit surface; enable its view on first
+      // use, retaining the underlying mechas and group inclusion choices.
+      this.state.fusion.enabled = true;
+      this.previewHairBrush(point, brush);
+    }
+    this.scheduleFusion(); this.updateHelpers(); this.onChange();
+    return true;
+  }
+  previewGuideChanges(before, brush) {
+    const changed = before.filter(({ lock, x, density }) => (lock.group ?? 'main') === brush.group && (density !== (lock.density ?? 1) || moved(x, lock.x)));
+    if (!changed.length) return;
+    for (const mesh of this.fusionMeshes ?? []) {
+      if (!(mesh.userData.hairGroups ?? [mesh.userData.hairGroup]).includes(brush.group)) continue;
+      const position = mesh.geometry.getAttribute('position');
+      for (let v = 0; v < position.count; v++) {
+        const px = position.getX(v), py = position.getY(v), pz = position.getZ(v);
+        let nearest = null, distance = Infinity;
+        for (const entry of changed) for (let i = 2; i < N; i++) {
+          const o = i * 3, x = entry.x[o], y = entry.x[o + 1], z = entry.x[o + 2], d = (x - px) ** 2 + (y - py) ** 2 + (z - pz) ** 2;
+          if (d < distance) { distance = d; nearest = { entry, o }; }
+        }
+        if (!nearest || distance > Math.max(.002, nearest.entry.lock.width ** 2 * 2)) continue;
+        const { entry, o } = nearest, densityScale = Math.sqrt((entry.lock.density ?? 1) / Math.max(1e-5, entry.density));
+        position.setXYZ(v, entry.lock.x[o] + (px - entry.x[o]) * densityScale, entry.lock.x[o + 1] + (py - entry.x[o + 1]) * densityScale, entry.lock.x[o + 2] + (pz - entry.x[o + 2]) * densityScale);
+        this.state.collider?.resolve(position.array, v * 3, .0008);
+      }
+      position.needsUpdate = true; mesh.geometry.computeBoundingSphere();
+    }
+  }
+  addDensityGuides(point, brush) {
+    if (hairMaskAt(this.state, point, brush.group) >= 1 || this.locks.length >= 400) return;
+    const donor = this.locks.filter(l => (l.group ?? 'main') === brush.group).reduce((best, l) => !best || l.rootP.distanceTo(point) < best.rootP.distanceTo(point) ? l : best, null);
+    if (!donor) return;
+    const normal = point.clone().sub(this.state.frame.C).normalize(), tangent = new Vector3(1, 0, 0).addScaledVector(normal, -normal.x).normalize(), bitangent = new Vector3().crossVectors(normal, tangent);
+    const spacing = Math.max(.004, this.settings.densitySpacing / Math.max(.2, brush.strength));
+    for (let i = 0; i < 8 && this.locks.length < 400; i++) {
+      const angle = i * Math.PI / 4, position = point.clone().addScaledVector(tangent, Math.cos(angle) * brush.radius * .55).addScaledVector(bitangent, Math.sin(angle) * brush.radius * .55);
+      const d = position.sub(this.state.frame.C).normalize();
+      const hit = this.midlineHit(this.state.frame.C.clone().addScaledVector(d, .5), d.negate());
+      if (!hit?.root || hit.point.distanceTo(point) > brush.radius || hairMaskAt(this.state, hit.point, brush.group) >= 1 || this.locks.some(l => (l.density ?? 1) > 0 && l.rootP.distanceTo(hit.point) < spacing)) continue;
+      const lock = makeLock(this.state, donor.root, donor.x, Object.fromEntries(Object.keys(lockLimits).filter(k => k !== 'length').map(k => [k, donor[k]])));
+      lock.rest.set(donor.rest); lock.seg = donor.seg; lock.styled = donor.styled; lock.group = brush.group; lock.density = brush.strength;
+      this.moveRoot(lock, hit.root); this.locks.push(lock);
+    }
+  }
+  previewHairBrush(point, brush) {
+    if (!['volume', 'mask', 'smooth'].includes(brush.tool)) return;
+    const center = point.clone(), mirrored = point.clone(); mirrored.x = 2 * this.state.frame.C.x - mirrored.x;
+    const p = new Vector3(), n = new Vector3();
+    for (const mesh of this.fusionMeshes ?? []) {
+      if (brush.group != null && !(mesh.userData.hairGroups ?? [mesh.userData.hairGroup]).includes(brush.group)) continue;
+      const positions = mesh.geometry.getAttribute('position'), normals = mesh.geometry.getAttribute('normal'), colors = mesh.geometry.getAttribute('color');
+      if (brush.tool === 'smooth') {
+        // Weld only the preview's neighbor lookup, leaving extracted topology
+        // untouched. Duplicated triangle corners move together, avoiding cracks.
+        const map = new Map(), unique = [], vertexIds = [];
+        for (let i = 0; i < positions.count; i++) {
+          const key = `${Math.round(positions.getX(i) * 1e6)},${Math.round(positions.getY(i) * 1e6)},${Math.round(positions.getZ(i) * 1e6)}`;
+          if (!map.has(key)) { map.set(key, unique.length); unique.push({ point: new Vector3().fromBufferAttribute(positions, i), neighbors: new Set(), vertices: [] }); }
+          const id = map.get(key); vertexIds.push(id); unique[id].vertices.push(i);
+        }
+        for (let i = 0; i < vertexIds.length; i += 3) for (const a of [i, i + 1, i + 2]) for (const b of [i, i + 1, i + 2]) if (vertexIds[a] !== vertexIds[b]) unique[vertexIds[a]].neighbors.add(vertexIds[b]);
+        const updated = unique.map(item => {
+          const amount = hairBrushFalloff(Math.min(item.point.distanceTo(center), brush.symmetry ? item.point.distanceTo(mirrored) : Infinity), brush.radius, brush.falloff) * brush.strength * (1 - hairMaskAt(this.state, item.point, brush.group));
+          const average = new Vector3();
+          for (const id of item.neighbors) average.add(unique[id].point);
+          if (item.neighbors.size) average.divideScalar(item.neighbors.size); else average.copy(item.point);
+          return item.point.clone().lerp(average, amount * .5);
+        });
+        unique.forEach((item, id) => { for (const i of item.vertices) { const q = updated[id]; positions.setXYZ(i, q.x, q.y, q.z); this.state.collider?.resolve(positions.array, i * 3, .0008); } });
+        positions.needsUpdate = true; mesh.geometry.computeBoundingSphere();
+        continue;
+      }
+      for (let i = 0; i < positions.count; i++) {
+        p.fromBufferAttribute(positions, i);
+        const weight = hairBrushFalloff(Math.min(p.distanceTo(center), brush.symmetry ? p.distanceTo(mirrored) : Infinity), brush.radius, brush.falloff) * brush.strength;
+        if (!weight) continue;
+        const mask = hairMaskAt(this.state, p, brush.group);
+        if (brush.tool === 'mask') colors.setXYZ(i, 1, 1 - mask * .5, 1 - mask * .45);
+        else { n.fromBufferAttribute(normals, i); p.addScaledVector(n, weight * (1 - mask) * brush.radius * .22 * (brush.invert ? -1 : 1)); positions.setXYZ(i, p.x, p.y, p.z); this.state.collider?.resolve(positions.array, i * 3, .0008); }
+      }
+      positions.needsUpdate = true; colors.needsUpdate = true; mesh.geometry.computeBoundingSphere();
+    }
+  }
   /** The selected locks (or every lock when `all`). */
   targets(all = false) { return all || !this.selected.size ? this.locks : [...this.selected].map(n => this.locks[n]).filter(Boolean); }
   edit(fn, { all = false, record = true } = {}) {
@@ -599,14 +1106,53 @@ export class LockEditor {
     this.relax();
     this.step(); this.onChange();
   }
-  setParam(key, value, record = false) { this.edit(lock => { lock[key] = clamp(value, ...lockLimits[key]); }, { record }); }
-  scaleParam(key, factor) { this.edit(lock => { lock[key] = clamp(lock[key] * factor, ...lockLimits[key]); }); }
+  /** The parameter transaction keeps an immutable curve baseline. Exact
+   * comparisons with its last output also invalidate it when a source is
+   * pulled, combed or resized without starting a different checkpoint.
+   */
+  authorBend(lock, value) {
+    const equal = (a, b) => a?.length === b.length && a.every((v, i) => v === b[i]);
+    let base = this.bendBaselines.get(lock);
+    if (!base || base.revision !== this.revision || base.seg !== lock.seg || base.lastValue !== lock.bend || !equal(base.lastX, lock.x) || !equal(base.lastRest, lock.rest)) {
+      base = { revision: this.revision, seg: lock.seg, value: lock.bend, embedded: Boolean(lock.bendEmbedded), x: Float32Array.from(lock.x), rest: Float32Array.from(lock.rest) };
+      this.bendBaselines.set(lock, base);
+    }
+    this.state.fusion ??= normalizeHairFusion();
+    bendLock(lock, base, value - base.value, this.state.frame);
+    // Legacy be-only curves have an unbent design plus a post-gravity bend.
+    // On authoring, migrate that design once to coordinates containing the
+    // complete requested bend; the posed curve uses the relative change above.
+    if (!base.embedded) {
+      const design = { x: Float32Array.from(base.rest), rest: Float32Array.from(base.rest) };
+      bendLock(design, { x: base.rest, rest: base.rest }, value, this.state.frame);
+      lock.rest.set(design.rest);
+    }
+    const protectedPose = new Map(), protectedDesign = new Map();
+    for (let i = 2; i < N; i++) {
+      const pose = new Vector3().fromArray(base.x, i * 3), mask = hairMaskAt(this.state, pose, lock.group ?? 'main');
+      if (!mask) continue;
+      for (let k = 0; k < 3; k++) { lock.x[i * 3 + k] = base.x[i * 3 + k] + (lock.x[i * 3 + k] - base.x[i * 3 + k]) * (1 - mask); lock.rest[i * 3 + k] = base.rest[i * 3 + k] + (lock.rest[i * 3 + k] - base.rest[i * 3 + k]) * (1 - mask); }
+      if (mask >= 1 - 1e-6) { protectedPose.set(i, pose); protectedDesign.set(i, new Vector3().fromArray(base.rest, i * 3)); }
+    }
+    if (value !== base.value) constrainLockPose(lock, this.state, { reference: base.x, protectedPoints: protectedPose });
+    // Constrain the authored design independently, keeping the same public
+    // source arrays and pin coordinates after the synchronous projection.
+    if (value !== base.value || (!base.embedded && base.value !== 0)) {
+      const pose = lock.x; lock.x = lock.rest;
+      try { constrainLockPose(lock, this.state, { reference: base.rest, protectedPoints: protectedDesign }); }
+      finally { lock.x = pose; }
+    }
+    lock.bend = value; lock.bendEmbedded = true; lock.styled = true;
+    base.lastValue = value; base.lastX = Float32Array.from(lock.x); base.lastRest = Float32Array.from(lock.rest);
+  }
+  setParam(key, value, record = false) { this.edit(lock => { const next = clamp(value, ...lockLimits[key]); if (key === 'bend') this.authorBend(lock, next); else lock[key] = next; }, { record }); }
+  scaleParam(key, factor) { this.edit(lock => { const next = clamp(lock[key] * factor, ...lockLimits[key]); if (key === 'bend') this.authorBend(lock, next); else lock[key] = next; }); }
   setLength(value, record = false) { this.edit(lock => setLockLength(lock, value), { record }); }
   scaleLength(factor) { this.edit(lock => setLockLength(lock, lockLength(lock) * factor)); }
   /** The current shape becomes the styled shape (held against gravity). */
-  setRest() { this.edit(lock => { lock.rest.set(lock.x); lock.styled = true; }, { all: !this.selected.size }); }
+  setRest() { this.edit(lock => { lock.rest.set(lock.x); lock.styled = true; lock.fixed = true; }, { all: !this.selected.size }); }
   /** Back to a free lock: gravity hangs it again from its shape. */
-  releaseRest() { this.edit(lock => { lock.styled = false; }); }
+  releaseRest() { this.edit(lock => { lock.styled = false; lock.fixed = false; }); }
   unpin() { this.edit(lock => lock.pins.clear()); }
   pinTip() { this.edit(lock => lock.pins.set(N - 1, new Vector3().fromArray(lock.x, (N - 1) * 3))); }
   deleteSelected() {
@@ -625,7 +1171,7 @@ export class LockEditor {
   /** Gravity strength (0: the locks keep their drawn shapes). */
   setGravity(force) { this.settings.gravity = clamp(force, 0, 1); this.relax(); this.step(); this.onChange(); }
   /** Gravity on or off (off: locks keep the shapes they are pulled into). */
-  setGravityOn(on) { this.checkpoint(); this.settings.gravityOn = on; this.relax(); this.step(); this.updateUnderlay(); this.onChange(); }
+  setGravityOn(on) { this.settings.gravityOn = Boolean(on); this.physicsLive = Boolean(on); this.invalidatePhysics(); if(on){this.physicsError=null;if(this.physicsStats)this.physicsStats={...this.physicsStats,error:null};} this.onChange(); }
   /** Set the selected locks' current shapes (nothing selected: nothing happens). */
   fixSelected() { if (this.selected.size) this.setRest(); }
   /** Hang every free lock again (gives the same hair when nothing changed). */
@@ -655,6 +1201,9 @@ export class LockEditor {
     return {
       count: locks.length, selected: this.selected.size, pins: locks.reduce((n, l) => n + l.pins.size, 0),
       styled: locks.filter(l => l.styled).length, first: sel[0] ?? null, gravityOn: this.settings.gravityOn,
+      fixed: locks.filter(l => l.fixed).length,
+      fusion: this.state?.fusion ?? null, fusionStats: (this.fusionMeshes ?? []).map(m => m.userData.fusionStats), activeGroup: this.settings.activeGroup,
+      fusionBusy: Boolean(this.fusionBusy), fusionError: this.fusionError ?? null,
     };
   }
 }

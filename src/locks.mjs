@@ -3,6 +3,7 @@ import {
   SkinnedMesh, Triangle, Uint16BufferAttribute, Uint32BufferAttribute, Vector2, Vector3,
 } from 'three';
 import { defaultHairline, hairCollider, hairWeights, headFrame, scalpField, vertexNormals } from './scalp.mjs';
+import { fusedHairSurface, hairFusionGroups, normalizeHairFusion } from './hair-fusion.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -33,7 +34,7 @@ const round = (v, digits = 1e5) => Math.round(v * digits) / digits;
 
 export const lockDefaults = Object.freeze({ width: 0.05, volume: 0.18, taper: 0.85, curl: 0, turns: 4, twist: 0, stiffness: 0.35, bend: 0 });
 export const lockLimits = Object.freeze({
-  width: [0.006, 0.09], volume: [0.12, 1], taper: [0, 1], curl: [0, 1], turns: [0.5, 14], twist: [-TAU * 1.5, TAU * 1.5], stiffness: [0, 1], bend: [-1, 1],
+  width: [0.001, 0.09], volume: [0.12, 1], taper: [0, 1], curl: [0, 1], turns: [0.5, 14], twist: [-TAU * 1.5, TAU * 1.5], stiffness: [0, 1], bend: [-1, 1],
   length: [0.015, 1.1],
 });
 
@@ -46,6 +47,7 @@ export function normalizeLocks(value) {
   const finite = (x, a, b, fallback) => Number.isFinite(x) ? clamp(x, a, b) : fallback;
   result.R = finite(value.R, 0.03, 0.4, 0.11);
   result.scalp = value.scalp === 0 || value.scalp === false ? 0 : 1;
+  if (value.v >= 2 || value.fusion) { result.v = 2; result.fusion = normalizeHairFusion(value.fusion); }
   if (!Array.isArray(value.locks)) return result;
   for (const lock of value.locks.slice(0, 400)) {
     if (!lock || typeof lock !== 'object') continue;
@@ -69,6 +71,16 @@ export function normalizeLocks(value) {
     for (const [key, short] of [['width', 'w'], ['volume', 'vo'], ['taper', 'ta'], ['curl', 'cu'], ['turns', 'tu'], ['twist', 'tw'], ['stiffness', 'st'], ['bend', 'be']]) {
       out[short] = round(finite(lock[short], ...lockLimits[key], lockDefaults[key]), 1e4);
     }
+    if (result.v >= 2) {
+      out.id = typeof lock.id === 'string' && lock.id ? lock.id.slice(0, 64) : `lock-${result.locks.length}`;
+      out.g = typeof lock.g === 'string' && result.fusion.groups.some(g => g.id === lock.g) ? lock.g : 'main';
+      out.dn = finite(lock.dn, 0, 1, 1);
+      out.ti = ['round', 'point', 'flat'].includes(lock.ti) ? lock.ti : 'round';
+      out.fx = Boolean(lock.fx);
+      out.bi = Boolean(lock.bi);
+      out.rt = Boolean(lock.rt);
+      out.rn = Array.isArray(lock.rn) && lock.rn.length === 3 && lock.rn.every(Number.isFinite) && Math.hypot(...lock.rn) > .000001 ? lock.rn.map(v => round(clamp(v, -1, 1), 1e6)) : null;
+    }
     result.locks.push(out);
   }
   return result;
@@ -82,8 +94,9 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
   const normals = vertexNormals(data, positions, frame);
   const field = scalpField(frame, positions, defaultHairline());
   const collider = hairCollider(data, positions, normals, frame, context.skeleton, outfit ? context.outfitSurface ?? null : null);
-  const state = { frame, normals, field, collider, data, positions, locks: [], scalp: saved.scalp, sim: null };
+  const state = { frame, normals, field, collider, data, positions, locks: [], scalp: saved.scalp, sim: null, fusion: saved.fusion ? normalizeHairFusion(saved.fusion) : null };
   const scale = frame.R / saved.R;
+  if (state.fusion) { state.fusion.smoothness *= scale; state.fusion.resolution *= scale; }
   for (const item of saved.locks) {
     if (item.r.v.some(v => v * 3 + 2 >= positions.length)) continue;
     const lock = makeLock(state, item.r, null, {
@@ -99,6 +112,8 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
     if (item.sg) lock.seg = item.sg * scale;
     else { lock.seg = segmentOf(lock.x); fitLengths(lock.rest, lock.seg); }
     lock.styled = Boolean(item.sy);
+    if (saved.v >= 2) { lock.id = item.id; lock.group = item.g; lock.density = item.dn; lock.tipShape = item.ti; lock.fixed = item.fx; lock.bendEmbedded = item.bi; lock.rootTaper = item.rt; lock.ribbonNormal = item.rn ? [...item.rn] : null; }
+    else lock.fixed = lock.styled;
     for (const [i, x, y, z] of item.pins) lock.pins.set(i, new Vector3(x, y, z).multiplyScalar(scale).add(root));
     state.locks.push(lock);
   }
@@ -109,13 +124,15 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
 export function serializeLocks(state) {
   const R = state.frame.R;
   return normalizeLocks({
-    format: 'hgs-locks', v: 1, R, scalp: state.scalp,
+    format: 'hgs-locks', v: state.fusion ? 2 : 1, R, scalp: state.scalp,
+    ...(state.fusion ? { fusion: state.fusion } : {}),
     locks: state.locks.map(lock => {
       const root = lock.rootP, rel = a => Array.from(a, (x, j) => x - root.getComponent(j % 3));
       return {
         r: { v: [...lock.root.v], w: [...lock.root.w] }, p: rel(lock.x), q: rel(lock.rest), sg: lock.seg, sy: lock.styled ? 1 : 0,
         w: lock.width, vo: lock.volume, ta: lock.taper, cu: lock.curl, tu: lock.turns, tw: lock.twist, st: lock.stiffness, be: lock.bend,
         pins: [...lock.pins].map(([i, p]) => [i, p.x - root.x, p.y - root.y, p.z - root.z]),
+        ...(state.fusion ? { id: lock.id, g: lock.group ?? 'main', dn: lock.density ?? 1, ti: lock.tipShape ?? 'round', fx: Boolean(lock.fixed), bi: Boolean(lock.bendEmbedded), rt: Boolean(lock.rootTaper), rn: lock.ribbonNormal ? [...lock.ribbonNormal] : null } : {}),
       };
     }),
   });
@@ -151,7 +168,7 @@ export function makeLock(state, root, points, params = {}) {
   const lock = {
     root: { v: [...root.v], w: [...root.w] }, rootP: p, rootN: n,
     x: new Float32Array(N * 3), rest: new Float32Array(N * 3),
-    seg: 0.002, styled: false, pins: new Map(), grab: null, hold: null, facing: new Float32Array(N * 3),
+    seg: 0.002, styled: false, fixed: false, tipShape: 'round', pins: new Map(), grab: null, hold: null, facing: new Float32Array(N * 3),
     ...lockDefaults, ...params,
   };
   if (points) lock.x.set(points);
@@ -214,6 +231,57 @@ export function setLockLength(lock, length) {
     const i = Math.round(s / lock.seg);
     if (i >= 2 && i < N) lock.pins.set(i, p);
   }
+}
+
+/** Author a complete drawn path while retaining one root and LOCK_POINTS.
+ * Arc resampling follows Blender's Snake Hook Curves model; root-led length
+ * projection is the static FTL construction in Müller et al. (2012), §3.1.
+ */
+export function setLockShape(lock, points) {
+  if (!points || points.length < 6 || points.length % 3 || !Array.from(points).every(Number.isFinite)) return false;
+  const path = Float32Array.from(points); path.set(lock.rootP.toArray(), 0);
+  let length = 0;
+  for (let i = 3; i < path.length; i += 3) length += Math.hypot(path[i] - path[i - 3], path[i + 1] - path[i - 2], path[i + 2] - path[i - 1]);
+  length = clamp(length, ...lockLimits.length);
+  const sampled = resamplePolyline(path, length);
+  lock.seg = length / (N - 1); fitLengths(sampled, lock.seg); lock.x.set(sampled); lock.rest.set(sampled);
+  return true;
+}
+
+/** Project an edited pose onto root/pin/protected-point and length constraints.
+ * FABRIK (Aristidou & Lasenby 2011) for intervals bounded at both ends, static
+ * FTL (Müller et al. 2012) for the free tail; existing turnOut resolves contact
+ * on each segment's length sphere. An infeasible edit leaves its constrained
+ * interval at the previous valid pose instead of stretching or moving anchors.
+ */
+export function constrainLockPose(lock, state, { reference = Float32Array.from(lock.x), protectedPoints = new Map(), fixFollicle = true } = {}) {
+  const fixed = new Map([[0, lock.rootP], ...(fixFollicle ? [[1, new Vector3().fromArray(reference, 3)]] : []), ...lock.pins, ...protectedPoints]);
+  const anchors = [...fixed.keys()].filter(i => i >= 0 && i < N).sort((a, b) => a - b);
+  const target = i => fixed.get(i).toArray();
+  for (const i of anchors) lock.x.set(target(i), i * 3);
+  const contact = i => { if (state?.sim) for (let pass = 0; pass < 3 && state.sim.turnOut(lock, i); pass++); };
+  for (let k = 1; k < anchors.length; k++) {
+    const a = anchors[k - 1], b = anchors[k], first = fixed.get(a), last = fixed.get(b), reach = (b - a) * lock.seg;
+    if (b - a <= 1) continue;
+    const distance = first.distanceTo(last);
+    if (distance >= reach * (1 - 1e-6)) {
+      for (let i = a + 1; i < b; i++) lock.x.set(first.clone().lerp(last, (i - a) / (b - a)).toArray(), i * 3);
+      continue;
+    }
+    let error = Infinity;
+    for (let pass = 0; pass < 32; pass++) {
+      lock.x.set(target(b), b * 3);
+      for (let i = b - 1; i > a; i--) place(lock.x, i, i + 1, lock.seg);
+      lock.x.set(target(a), a * 3);
+      for (let i = a + 1; i <= b; i++) { place(lock.x, i, i - 1, lock.seg); if (i < b) contact(i); }
+      error = new Vector3().fromArray(lock.x, b * 3).distanceTo(last);
+      if (error < lock.seg * 1e-4) break;
+    }
+    if (error > lock.seg * .001) lock.x.set(reference.subarray(a * 3, (b + 1) * 3), a * 3);
+    lock.x.set(target(b), b * 3);
+  }
+  for (let i = anchors.at(-1) + 1; i < N; i++) { place(lock.x, i, i - 1, lock.seg); contact(i); }
+  return lock;
 }
 
 /** Arc length from the root to the chain position nearest `point`. */
@@ -397,7 +465,7 @@ export class LockShaper {
         if (axis.lengthSq() > 1e-12) d.applyAxisAngle(axis.normalize(), w * Math.acos(c));
       }
       // Bend: turn about the lock's width axis (positive curls under, towards the head).
-      if (lock.bend && i >= 2) {
+      if (lock.bend && !lock.bendEmbedded && i >= 2) {
         bend += lock.bend * 2.6 / (N - 2);
         out.set(x[i * 3 - 3] - C.x, x[i * 3 - 2] - C.y, x[i * 3 - 1] - C.z).normalize();
         axis.crossVectors(d, out);
@@ -575,14 +643,14 @@ function sectionVolume(lock, u) {
 
 /** Radius profile along a lock (0 at the tip): slight root narrowing, taper to a soft point, rounded tip. */
 const TAPER = 0.93;
-function tipCap(lock, length) { return Math.max(0.5 * lock.width * (1 - lock.taper * TAPER) * 1.2, 0.002, 0.02 * length); }
+function tipCap(lock, length) { return lock.tipShape === 'point' ? Math.max(.001, length * .065) : lock.tipShape === 'flat' ? .001 : Math.max(0.5 * lock.width * (1 - lock.taper * TAPER) * 1.2, 0.002, 0.02 * length); }
 function profile(lock, s, length) {
   const u = clamp(s / length, 0, 1);
   const taper = 1 - lock.taper * TAPER * Math.pow(u, 1.25);
   const cap = tipCap(lock, length), d = length - s;
-  const tip = d >= cap ? 1 : Math.sqrt(Math.max(0, 1 - (1 - d / cap) ** 2));
+  const tip = lock.tipShape === 'flat' ? 1 : d >= cap ? 1 : lock.tipShape === 'point' ? Math.max(0, d / cap) : Math.sqrt(Math.max(0, 1 - (1 - d / cap) ** 2));
   // A lock emerges thin from the scalp and reaches full width a few centimetres on.
-  const root = 0.5 + 0.5 * smooth(-0.002, Math.min(0.04, length * 0.3), s);
+  const root = lock.rootTaper ? smooth(0, Math.min(.04, length * .3), s) : 0.5 + 0.5 * smooth(-0.002, Math.min(0.04, length * 0.3), s);
   return taper * tip * root;
 }
 /**
@@ -596,14 +664,15 @@ function curlRadius(lock, u) {
 
 /**
  * Surface direction each chain point lies against: the nearest skin/clothing
- * normal, else away from the head centre. Cached; a point is re-queried only
- * once it has moved 3 mm.
+ * normal, else away from the head centre. Reuse only the identical point:
+ * approximate position caching makes collision, display and reopened meshes
+ * disagree even when their current control points are exactly the same.
  */
 function facings(lock, state) {
   const out = lock.facing, at = lock.facingAt ??= new Float32Array(N * 3).fill(Infinity), hit = {}, layers = state.collider?.head, C = state.frame.C;
   for (let i = 0; i < N; i++) {
     const o = i * 3, x = lock.x[o], y = lock.x[o + 1], z = lock.x[o + 2];
-    if ((x - at[o]) ** 2 + (y - at[o + 1]) ** 2 + (z - at[o + 2]) ** 2 < 9e-6) continue;
+    if (x === at[o] && y === at[o + 1] && z === at[o + 2]) continue;
     at[o] = x; at[o + 1] = y; at[o + 2] = z;
     if (i === 0) { out[0] = lock.rootN.x; out[1] = lock.rootN.y; out[2] = lock.rootN.z; continue; }
     let fx = x - C.x, fy = y - C.y, fz = z - C.z;
@@ -625,10 +694,11 @@ const SIDES = 12;
  * weights). uv: u around the lock, v root → tip.
  */
 export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = null } = {}) {
+  if ((lock.density ?? 1) < 1) lock = { ...lock, width: lock.width * Math.sqrt(Math.max(0, lock.density)) };
   const length = lockLength(lock), w = lock.width;
-  const sink = Math.max(0.002, 0.5 * w * lock.volume * 0.9);
+  const sink = lock.rootTaper ? 0 : Math.max(0.002, 0.5 * w * lock.volume * 0.9);
   const ctrl = [lock.rootP.clone().addScaledVector(lock.rootN, -sink)];
-  for (let i = 0; i < N; i++) ctrl.push(new Vector3().fromArray(lock.x, i * 3));
+  for (let i = lock.rootTaper ? 1 : 0; i < N; i++) ctrl.push(new Vector3().fromArray(lock.x, i * 3));
   // Centripetal Catmull-Rom, tabulated densely; arc length is read from the table.
   const curve = new CatmullRomCurve3(ctrl, false, 'centripetal');
   const T = (N + 1) * 7, table = new Float32Array((T + 1) * 3), cum = new Float32Array(T + 1), q = new Vector3();
@@ -636,7 +706,7 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
     curve.getPoint(k / T, q); table[k * 3] = q.x; table[k * 3 + 1] = q.y; table[k * 3 + 2] = q.z;
     if (k) cum[k] = cum[k - 1] + Math.hypot(q.x - table[k * 3 - 3], q.y - table[k * 3 - 2], q.z - table[k * 3 - 1]);
   }
-  const total = cum[T], sinkLen = Math.max(1e-5, total - length);
+  const total = cum[T], sinkLen = lock.rootTaper ? 0 : Math.max(1e-5, total - length);
   let cursor = 1;
   const pointAt = (arc, out, o) => {
     arc = clamp(arc, 0, total);
@@ -652,7 +722,11 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
   for (let s = 0; s < length - cap - h * 0.5; s += h) ss.push(s);
   for (let k = 0; k <= 8; k++) ss.push(length - cap + cap * Math.sin(k / 8 * Math.PI / 2));
   const M = ss.length;
-  const facing = facings(lock, state);
+  // New drawn ribbons retain their creation-view broadside. The stored vector
+  // is the thickness axis in the head's rest frame; projection onto each local
+  // tangent plane and existing rotation-minimising transport keep a solid
+  // elliptical sweep. Presets without this optional v2 field keep scalp frames.
+  const facing = lock.ribbonNormal ? Float32Array.from({ length: N * 3 }, (_, i) => lock.ribbonNormal[i % 3]) : facings(lock, state);
   const line = new Float32Array(M * 3), tan = new Float32Array(M * 3), rr = new Float32Array(M * 3), want = new Float32Array(M * 3);
   for (let j = 0; j < M; j++) {
     pointAt(ss[j] + sinkLen, line, j * 3);
@@ -709,7 +783,7 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
     }
     tangents(); frames(nudge);
   }
-  const ring = sides + 1, count = M * ring + 1;
+  const flatTip = lock.tipShape === 'flat', ring = sides + 1, count = M * ring + 1 + (flatTip ? 1 : 0);
   const pos = new Float32Array(count * 3), normal = new Float32Array(count * 3), uv = new Float32Array(count * 2), color = new Float32Array(count * 3);
   // Curls narrow the lock from where they start (ringlets are slimmer than a flat lock).
   const radii = ss.map(s => 0.5 * (turns ? w + (curlWidth(lock) - w) * curlIn(lock, Math.max(0, s) / length) : w) * profile(lock, Math.max(0, s), length));
@@ -774,13 +848,18 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
   // Close the sunken root end.
   pos.set(line.subarray(0, 3), v * 3); normal.set([-tan[0], -tan[1], -tan[2]], v * 3); uv.set([0.5, 0], v * 2); color.set([0.78, 0.78, 0.78], v * 3);
   vertex?.(line[0], line[1], line[2]);
-  const index = new Uint32Array((M - 1) * sides * 6 + sides * 3);
+  if (flatTip) {
+    pos.set(line.subarray((M - 1) * 3, M * 3), (v + 1) * 3); normal.set(tan.subarray((M - 1) * 3, M * 3), (v + 1) * 3); uv.set([.5, 1], (v + 1) * 2); color.set([1, 1, 1], (v + 1) * 3);
+    vertex?.(line[(M - 1) * 3], line[(M - 1) * 3 + 1], line[(M - 1) * 3 + 2]);
+  }
+  const index = new Uint32Array((M - 1) * sides * 6 + sides * 3 + (flatTip ? sides * 3 : 0));
   let n = 0;
   for (let j = 0; j + 1 < M; j++) for (let k = 0; k < sides; k++) {
     const a = j * ring + k, b = a + 1, c = a + ring, d = c + 1;
     index[n++] = a; index[n++] = c; index[n++] = b; index[n++] = b; index[n++] = c; index[n++] = d;
   }
   for (let k = 0; k < sides; k++) { index[n++] = v; index[n++] = k; index[n++] = k + 1; }
+  if (flatTip) for (let k = 0; k < sides; k++) { index[n++] = v + 1; index[n++] = (M - 1) * ring + k + 1; index[n++] = (M - 1) * ring + k; }
   return { pos, normal, uv, color, index };
 }
 
@@ -858,14 +937,23 @@ export function lockMaterial(color, { highlight = false } = {}) {
 export function locksMesh(context, state, color) {
   const weightsFor = hairWeights(context.data, context.skeleton);
   const joints = [], weights = [], point = new Vector3();
-  const parts = state.locks.map(lock => lockSurface(lock, state, {
+  const groups = hairFusionGroups(state), fused = new Set(groups.flatMap(g => g.locks));
+  const parts = state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockSurface(lock, state, {
     detail: context.lod === 'low' ? 0.45 : context.lod === 'medium' ? 0.65 : 0.85, sides: context.lod === 'low' ? 8 : context.lod === 'medium' ? 10 : SIDES,
     vertex: (x, y, z) => { const [j, w] = weightsFor(point.set(x, y, z)); joints.push(...j); weights.push(...w); },
   }));
+  for (const group of groups) {
+    const part = fusedHairSurface(state, group.locks, lockSurface, { group: group.id });
+    // Official Three.js SkinnedMesh contract: four joint indices and weights
+    // for every extracted vertex, including newly generated fusion topology.
+    for (let i = 0; i < part.pos.length; i += 3) { const [j, w] = weightsFor(point.fromArray(part.pos, i)); joints.push(...j); weights.push(...w); }
+    parts.push(part);
+  }
   const geometry = geometryFrom(parts, { skinIndex: new Uint16BufferAttribute(joints, 4), skinWeight: new Float32BufferAttribute(weights, 4) });
   const mesh = new SkinnedMesh(geometry, lockMaterial(color));
   mesh.name = 'Hair';
   mesh.userData.style = 'locks';
+  if (state.fusion?.enabled) mesh.userData.fusion = { groups: groups.flatMap(g => g.ids), surfaces: parts.filter(p => p.stats).map(p => p.stats) };
   return mesh;
 }
 
@@ -875,7 +963,7 @@ export function locksMesh(context, state, color) {
  * never reaches the forehead, brows or face).
  */
 export function locksScalpColors(state) {
-  const { positions, frame, field } = state, roots = state.locks.map(l => l.rootP);
+  const { positions, frame, field } = state, roots = state.locks.filter(l => (l.density ?? 1) > 0).map(l => l.rootP);
   const alpha = new Float32Array(positions.length / 3);
   if (!roots.length || !state.scalp) return alpha;
   for (let v = 0; v < alpha.length; v++) {

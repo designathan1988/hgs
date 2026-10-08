@@ -24,6 +24,21 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
 button, select, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.switch .track { pointer-events: none; }
+.guide-steps { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 10px; }
+.guide-step { border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--muted); padding: 7px; font-size: 11px; }
+.guide-step.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.app.pattern-mode { grid-template-columns: 76px minmax(0, 1fr) min(490px, 43vw); }
+.pattern-host { min-width: 0; }
+#cancelOperation { height: 22px; font-size: 11px; }
+.hair-fusion-controls { display: grid; gap: 9px; }
+.hair-fusion-controls label { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.hair-fusion-controls input[type=range] { flex: 1; min-width: 100px; }
+.hair-fusion-controls input[type=text], .hair-fusion-controls select { min-width: 0; max-width: 100%; background: var(--surface); border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px; }
+.hair-fusion-controls button { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 6px; padding: 7px; }
+.hair-group-actions { display: flex; gap: 5px; }
+@media (max-width: 760px) { .app.pattern-mode { grid-template-columns: 56px minmax(0, 1fr); } .pattern-mode .inspector { width: min(440px, calc(100vw - 56px)); } }
 .icon { display: inline-flex; flex: none; }
 .spacer { flex: 1; }
 .muted { color: var(--muted); margin: 0 0 10px; font-size: 12px; }
@@ -129,7 +144,7 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .chip.on { background: var(--accent-soft); border-color: #f0894c66; color: var(--accent); }
 
 .switch { position: relative; display: flex; align-items: center; gap: 10px; margin: 0 0 9px; font-size: 12.5px; color: #d7d4cf; cursor: pointer; }
-.switch input { position: absolute; opacity: 0; pointer-events: none; }
+.switch input { position: absolute; opacity: 0; pointer-events: auto; width: 28px; height: 16px; margin: 0; left: 0; top: 0; z-index: 1; }
 .switch .track { flex: none; width: 28px; height: 16px; border-radius: 999px; background: #ffffff22; transition: background .15s; position: relative; }
 .switch .track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #d9d6d2; transition: transform .15s; }
 .switch input:checked + .track { background: var(--accent); }

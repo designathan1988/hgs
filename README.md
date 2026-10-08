@@ -21,7 +21,7 @@ Use Edge ou Chrome recentes, com WebGL 2 e aceleração gráfica. Para parar o s
 - **Mechas**: modelagem de cabelo em malha, no estilo The Sims. Cada mecha é um tubo liso e fechado (sem transparência), preso por uma raiz ao couro cabeludo.
   - Ferramentas: **Puxar** (clique no couro cabeludo e arraste para criar uma mecha; arraste uma mecha existente para movê-la), **Selecionar** (Shift soma, Ctrl alterna), **Alongar** (clique numa mecha e arraste no sentido da ponta), **Cortar** (passe a tesoura sobre as mechas) e **Prender / soltar** (fixa um ponto onde ele está). "Espelhar" cria a mecha simétrica do outro lado; "Prender o ponto puxado ao soltar" (ou segurar P) deixa a mecha presa no ar.
   - Controles da seleção: comprimento, largura, volume (espessura), afunilamento, curvar, enrolar, voltas, torcer e firmeza. Teclas + e − alongam ou encurtam; Delete apaga; Ctrl+Z / Ctrl+Y desfazem e refazem; Espaço pausa.
-  - Física: gravidade, colisão com a pele e a roupa usando a espessura real da mecha, contato entre mechas em camadas, comprimento constante (Follow-The-Leader dinâmico) e repouso automático. Pause, ajuste à mão e use **Fixar forma (repouso)**: o resultado vira a forma do penteado e se mantém com a gravidade. **Soltar forma** deixa cair de novo.
+  - Caimento: **Gravidade (G)** controla a simulação contínua no editor; desligar congela a pose exibida. **Fixar forma (F)** protege a forma; **Soltar forma** libera. O novo solver preserva o desenho fonte e calcula contatos com corpo, roupa e outras mechas em Worker. **Ainda em desenvolvimento:** penteados completos apresentam interpenetrações e instabilidade; a física não está validada para uso final nem para acompanhar animações.
   - Salvar e carregar no navegador ou em arquivo `.mechas.json` (geometria, raízes e configurações). **Concluir** monta uma única malha de jogo presa ao rig da cabeça, guardada com o personagem e no preset.
 - **Sculpt**: pincéis Draw, Inflate, Grab, Smooth, Flatten e Pinch, com simetria em X, raio, força e inversão (Ctrl). Valem para corpo e rosto, cabelo e roupas. No cabelo há ainda Pin/Unpin (prende regiões) e Cut (corta como tesoura). Desfazer e refazer com Ctrl+Z / Ctrl+Y. As edições ficam salvas no preset e no GLB, e roupa e cabelo continuam fora da pele depois de esculpir.
 - **Expression**: 12 humores e 32 blendshapes com nomes ARKit (`eyeBlinkLeft`, `jawOpen`, `mouthSmileLeft`…), ajustáveis um a um, com boca, dentes e língua.
@@ -30,6 +30,34 @@ Use Edge ou Chrome recentes, com WebGL 2 e aceleração gráfica. Para parar o s
 - **Performance**: teste de multidão com 1 a 1000 pessoas e LOD.
 
 Preset salva tudo (inclusive escultura, roupas sob medida e cores) no armazenamento local do navegador. O botão de lixeira apaga o preset selecionado.
+
+## Criação guiada e edição autoral
+
+**Criar pessoa** abre cinco etapas: pessoa inicial, corpo e rosto, cabelo, roupas e revisão/exportação. Em **Preservar nas variações**, marque corpo, rosto, cabelo ou roupa antes de gerar uma variação. Os grupos preservados incluem suas cores e edições autorais. Você pode alternar as etapas ou usar edição livre.
+
+A geração numérica e a fusão de cabelo rodam em Workers locais, mantendo o personagem anterior visível. O rodapé mostra a etapa e permite **Cancelar operação**. Nome, iluminação e expressão alterados durante uma geração são preservados. Nenhum serviço de IA ou dependência adicional é usado.
+
+### Desenhar cabelo
+
+- Em **Desenhar e dar forma**, alterne **Fios**, **Mechas** e **Volume** usando as mesmas curvas editáveis. Largura e espessura ficam acessíveis no início do painel. Sem seleção, ajustam todo o penteado; com seleção, só a parte selecionada. Fios de jogo começam em 1 mm de largura, não representam cada fibra microscópica do cabelo real.
+- **Desenhar traço** começa no couro cabeludo e acompanha o cursor para fora da cabeça; **Preencher raízes** distribui mechas sobre a superfície. **Puxar** continua disponível para criar e remodelar curvas existentes.
+- **Pentear** atua onde o cursor toca o cabelo, nas mechas dentro do raio do pincel. **Seleção sob o pincel** limita o gesto às mechas selecionadas que também estão nessa região. Raízes, pinos e máscaras protegem as regiões ancoradas. Pontas arredondadas, afinadas ou retas e formas lisa, ondulada ou cacheada permanecem editáveis.
+- Os pincéis de suavidade, volume, densidade, agrupamento e máscara têm raio, força, suavidade e simetria. Grupos marcados para fusão participam de uma única superfície volumétrica; os demais mantêm mechas separadas. A escultura fica em coordenadas relativas à cabeça e pode ser reaplicada quando a malha muda.
+- **Gravidade (G)** liga ou desliga a simulação; não há botão para reaplicar a queda. O processamento usa passos fixos e descarta respostas antigas após edição ou pausa. O editor inicia com gravidade desligada; se a separação não convergir, rejeita a pose calculada, preserva a edição anterior, pausa e informa a falha. A convergência dos contatos entre todas as mechas continua pendente.
+
+A fusão usa um campo de distância aproximado e uma grade limitada a 300 mil células. A interface informa quando a resolução solicitada foi adaptada. Detalhes menores que a resolução efetiva podem desaparecer; a prévia interativa aproxima o resultado até o Worker concluir. O arquivo `.mechas.json` mantém curvas, grupos, máscaras e parâmetros de construção.
+
+### Roupas por moldes
+
+Em **Sob medida → Construção**, escolha **Corte no corpo** ou **Moldes 2D**. Alternar mantém o molde salvo. Pintura de cobertura, arraste de bordas e sliders de manga/decote/comprimento pertencem ao corte no corpo; no modo de moldes, edite os contornos SVG e use escultura/fixação 3D.
+
+O editor SVG permite desenhar painéis e furos, recortar, arrastar pontos/alças Bézier, duplicar, espelhar, medir, posicionar componentes e associar bordas externas ou de furos para costuras, pences e aberturas. Há moldes para as categorias de roupa existentes e componentes de manga, gola, capuz, bolso e punho. Cada painel tem posição, material, espessura, rigidez, elasticidade, cores e estampa.
+
+**Esculpir**, **Fixar** e **Soltar** atuam no personagem 3D. Escultura e fixação usam coordenadas do painel, mantendo as edições ao regenerar a malha ou reordenar peças. Os arquivos de roupa incluem o molde, as costuras e as edições. O caimento usa XPBD e contato discreto entre partículas/triângulos; não inclui detecção contínua de colisão nem contato exato entre todas as arestas. Moldes são destinados a personagens de jogos, sem certificação para fabricação.
+
+Presets e arquivos antigos continuam carregando, sem regravação automática. As novas extensões usam formatos versionados. O GLB contém o resultado de cabelo e roupa com rig, materiais e animações; JSON guarda a construção editável.
+
+Pesquisa, adaptações e verificação: [registro de implementação](docs/IMPLEMENTATION.md) e [auditoria de arquitetura](docs/ARCHITECTURE.md). `AGENTS.md` exige fontes oficiais e análise do fluxo completo antes de novas alterações.
 
 ## API em código
 

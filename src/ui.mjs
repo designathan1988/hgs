@@ -3,11 +3,14 @@ import { LockEditor, lockTools } from './lock-editor.mjs';
 import { lockLength } from './locks.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
 import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment } from './tailor.mjs';
+import { PatternEditor } from './pattern-editor.mjs';
+import { createPatternTemplate } from './patterns.mjs';
+import { renderHairTools } from './hair-tools-ui.mjs';
 
 const OUTFIT_PREFIX = 'hgs.outfit.';
 import { icon, hairPictogram } from './icons.mjs';
 import {
-  defaultCharacter, randomCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
+  defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames,
 } from './state.mjs';
 
@@ -30,8 +33,8 @@ const sections = [
 const hints = {
   default: 'Roda: zoom no cursor · botão direito: girar no ponto do cursor · botão do meio: mover',
   esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão direito: girar',
-  brush: 'Pinte sobre o couro cabeludo: o traço cria mechas penteadas na direção do movimento',
-  comb: 'Arraste sobre o cabelo: todas as mechas dentro do círculo seguem o movimento (G desliga a gravidade, F fixa a forma)',
+  brush: 'Comece no couro cabeludo e desenhe a curva para fora da cabeça · Alt ao arrastar ajusta a largura · escolha preencher raízes para distribuir mechas',
+  comb: 'Passe o pente sobre o cabelo: as mechas atingidas pelo círculo acompanham o gesto · pinos e máscaras ficam protegidos',
   move: 'Arraste uma mecha para mudar o lugar dela no couro cabeludo; ela vai inteira, com a mesma forma',
   pull: 'Arraste do couro cabeludo para criar uma mecha · arraste um ponto da mecha para movê-la · segure F ao soltar para manter a forma, P para prender o ponto · G liga/desliga a gravidade',
   select: 'Clique para selecionar · Shift soma · Ctrl alterna',
@@ -43,15 +46,19 @@ const hints = {
 const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
 const toolNames = { brush: 'Pincel', comb: 'Pentear', pull: 'Puxar', move: 'Mover', select: 'Selecionar', grow: 'Alongar', cut: 'Cortar', pin: 'Prender' };
+Object.assign(toolNames, { smooth: 'Suavizar', volume: 'Volume', density: 'Densidade', clump: 'Agrupar', mask: 'Máscara' });
+Object.assign(hints, { smooth: 'Suavize a superfície sob o pincel', volume: 'Adicione volume · Ctrl inverte', density: 'Ajuste a densidade · Ctrl reduz', clump: 'Aproxime as mechas sob o pincel', mask: 'Proteja regiões da escultura · Ctrl desprotege' });
 // Made-to-measure clothes tools: [tool, name, icon].
-const clothTools = [[null, 'Girar', 'resume'], ['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar', 'sculpt'], ['clothErase', 'Apagar', 'cut']];
+const clothTools = [[null, 'Girar', 'resume'], ['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar', 'sculpt'], ['clothErase', 'Apagar', 'cut'], ['clothSculpt', 'Esculpir', 'sculpt'], ['clothPin', 'Fixar', 'pin'], ['clothUnpin', 'Soltar', 'unlock']];
 const clothHints = {
   look: 'Roda: zoom no cursor · botão direito: girar · botão do meio: mover',
   edges: 'Arraste a barra, a manga, o decote, a cintura ou a perna da peça para cima ou para baixo · Ctrl+Z desfaz',
   clothAdd: 'Pinte no corpo onde a peça deve cobrir · Ctrl+Z desfaz',
   clothErase: 'Pinte no corpo onde a peça não deve cobrir · Ctrl+Z desfaz',
 };
+Object.assign(clothHints, { clothSculpt: 'Esculpa a roupa; as edições ficam nas coordenadas do molde · Ctrl+Z desfaz', clothPin: 'Clique na roupa para fixar a região do molde', clothUnpin: 'Clique numa região fixada para liberá-la' });
 const toolIcons = { brush: 'sculpt', comb: 'hair', pull: 'pull', move: 'move', select: 'select', grow: 'grow', cut: 'cut', pin: 'pin' };
+Object.assign(toolIcons, { smooth: 'sculpt', volume: 'grow', density: 'plus', clump: 'hair', mask: 'lock' });
 const patternNames = { solid: 'Liso', stripes: 'Listras', pinstripe: 'Risca de giz', checks: 'Xadrez', gradient: 'Degradê' };
 const brushNames = { draw: 'Desenhar', inflate: 'Inflar', grab: 'Arrastar', smooth: 'Suavizar', flatten: 'Achatar', pinch: 'Pinçar' };
 const PRESET_PREFIX = 'hgs.preset.';
@@ -85,6 +92,7 @@ export class StudioUI {
     this.undo = []; this.redo = [];
     this.undressBody = true; this.renderer = null; this.crowdCount = 0; this.stats = null;
     this.openGroups = new Map(); this.uid = 0;
+    this.guided = true; this.buildRevision = 0;
     this.body = document.getElementById('inspectorBody');
     this.nav = document.getElementById('sectionNav');
     this.buildNav(); this.bindChrome(); this.render();
@@ -100,9 +108,20 @@ export class StudioUI {
   fail(message) { this.ready('Erro no 3D', true); document.getElementById('errorText').textContent = message; document.getElementById('errorPanel').hidden = false; }
   queueCharacter() {
     clearTimeout(this.rebuildTimer);
+    this.renderer?.lockEditor.cancelGravity?.();
+    this.renderer?.cancelBuild();
+    const revision = ++this.buildRevision;
     this.ready('Gerando…');
+    this.showOperation(true);
     this.rebuildTimer = setTimeout(async () => {
-      if (await this.renderer?.setCharacter(this.person)) {
+      this.rebuildTimer = null;
+      const person = this.snapshotPerson();
+      const success = await this.renderer?.setCharacter(person, { getLatest: () => this.snapshotPerson(), onProgress: stage => { if (revision === this.buildRevision) this.ready(`Gerando · ${stage}`); } });
+      if (revision !== this.buildRevision) return;
+      this.showOperation(Boolean(this.renderer?.lockEditor.fusionBusy) || Boolean(this.exporting));
+      if (success) {
+        this.person = this.renderer.person;
+        document.getElementById('errorPanel').hidden = true;
         this.ready('Pronto'); this.updateMeta();
         if (this.section === 'cabelo' || this.section === 'exportar') this.render();
         // The edge lines follow the rebuilt garment.
@@ -110,6 +129,23 @@ export class StudioUI {
       }
     }, 80);
   }
+  snapshotPerson() {
+    return normalizeCharacter({ ...this.person, ...(this.renderer?.lockEditor.active ? { locks: this.renderer.lockEditor.serialize() } : {}) });
+  }
+  showOperation(on) { const button = document.getElementById('cancelOperation'); if (button) button.hidden = !on; }
+  cancelOperation({ restoreCharacter = false } = {}) {
+    const restore = restoreCharacter || Boolean(this.rebuildTimer) || Boolean(this.renderer?.buildController);
+    clearTimeout(this.rebuildTimer); clearTimeout(this.garmentTimer); clearTimeout(this.sculptTimer);
+    this.rebuildTimer = null;
+    this.buildRevision++; this.renderer?.cancelBuild(); this.renderer?.lockEditor.cancelOperation?.(); this.exportController?.abort();
+    if (restore && this.renderer?.person) {
+      const presentation = Object.fromEntries(['name', 'animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity', 'faceShapes', 'creation'].map(key => [key, this.person[key]]));
+      this.person = normalizeCharacter({ ...this.renderer.person, ...presentation });
+      this.renderer.person = this.person; this.renderer.setPresentation(this.person);
+    }
+    this.showOperation(false); this.ready(this.renderer?.current ? 'Cancelado · última prévia mantida' : 'Geração cancelada'); this.render();
+  }
+  generateVariation() { this.setPerson(varyCharacter(this.snapshotPerson())); }
   updateMeta() {
     const measured = this.renderer?.current?.metrics.height ?? this.person.heightMeters;
     document.getElementById('characterName').textContent = this.person.name;
@@ -138,7 +174,10 @@ export class StudioUI {
   }
   bindChrome() {
     const $ = id => document.getElementById(id);
-    $('randomButton').addEventListener('click', () => this.setPerson(randomCharacter()));
+    $('randomButton').addEventListener('click', () => this.generateVariation());
+    $('createButton').addEventListener('click', () => { this.guided = true; this.setSection('personagem'); });
+    $('cancelOperation').addEventListener('click', () => this.cancelOperation());
+    $('restoreCharacter').addEventListener('click', () => { this.cancelOperation({ restoreCharacter: true }); $('errorPanel').hidden = true; });
     $('exportButton').addEventListener('click', () => this.exportGLB());
     $('screenshotButton').addEventListener('click', () => this.screenshot());
     $('retryButton').addEventListener('click', () => location.reload());
@@ -226,6 +265,7 @@ export class StudioUI {
   }
   render(fresh = false) {
     const scroll = fresh ? 0 : this.body.scrollTop;
+    this.patternEditor?.destroy(); this.patternEditor = null;
     this.body.replaceChildren();
     const section = sections.find(s => s.id === this.section);
     document.getElementById('sectionTitle').textContent = section.name;
@@ -237,12 +277,37 @@ export class StudioUI {
     });
     this.setHint(hints.default);
     this.updateMeta();
+    if (this.guided) this.renderCreationGuide();
+    document.querySelector('.app').classList.toggle('pattern-mode', this.section === 'roupas' && this.person.outfit === 4);
     ({
       personagem: () => this.renderCharacter(), corpo: () => this.renderBody(), rosto: () => this.renderFace(),
       cabelo: () => this.renderHair(actions), roupas: () => this.renderClothes(), esculpir: () => this.renderSculpt(actions),
       animacao: () => this.renderAnimation(), exportar: () => this.renderExport(),
     })[this.section]();
     this.body.scrollTop = scroll;
+  }
+  renderCreationGuide() {
+    const steps = [['personagem', 'Pessoa inicial'], ['corpo', 'Corpo e rosto'], ['cabelo', 'Cabelo'], ['roupas', 'Roupas'], ['exportar', 'Revisar e exportar']];
+    const step = this.section === 'rosto' ? 1 : Math.max(0, steps.findIndex(([id]) => id === this.section));
+    const guide = this.group('Criação guiada');
+    guide.append(h('div', { class: 'guide-steps', 'aria-label': 'Etapas de criação' }, steps.map(([id, label], index) => h('button', {
+      type: 'button', class: `guide-step${index === step ? ' on' : ''}`, 'aria-current': index === step ? 'step' : undefined,
+      onclick: () => this.setSection(id), text: `${index + 1}. ${label}`,
+    }))));
+    if (step === 1) guide.append(h('div', { class: 'button-grid' },
+      h('button', { type: 'button', class: 'button', onclick: () => this.setSection('corpo') }, 'Ajustar corpo'),
+      h('button', { type: 'button', class: 'button', onclick: () => this.setSection('rosto') }, 'Ajustar rosto')));
+    guide.append(h('div', { class: 'button-grid' },
+      h('button', { type: 'button', class: 'button', disabled: step === 0, onclick: () => this.setSection(steps[step - 1][0]) }, 'Voltar'),
+      h('button', { type: 'button', class: 'button primary', onclick: () => step === 4 ? this.exportGLB() : this.setSection(steps[step + 1][0]) }, step === 4 ? 'Exportar personagem' : 'Avançar')),
+      h('button', { type: 'button', class: 'button ghost wide', onclick: () => { this.guided = false; this.render(); } }, 'Usar edição livre'));
+    if (this.section === 'personagem') {
+      const preserve = this.group('Preservar nas variações');
+      for (const [key, label] of [['body', 'Corpo e pele'], ['face', 'Rosto e olhos'], ['hair', 'Cabelo editado'], ['clothes', 'Roupa editada']]) this.toggle(preserve, label, this.person.creation.locks[key], on => {
+        this.person = normalizeCharacter({ ...this.person, creation: { locks: { ...this.person.creation.locks, [key]: on } } });
+      });
+      preserve.append(h('button', { type: 'button', class: 'button primary wide', onclick: () => this.generateVariation() }, 'Gerar variação'));
+    }
   }
   renderCharacter() {
     const id = this.group('Identidade');
@@ -256,7 +321,7 @@ export class StudioUI {
     this.swatches(id, 'skin', 'Pele', skinPalette, 'skin');
     const gen = this.group('Gerar');
     gen.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button primary', onclick: () => this.setPerson(randomCharacter()) }, icon('dice', 16), 'Pessoa'),
+      h('button', { type: 'button', class: 'button primary', onclick: () => this.generateVariation() }, icon('dice', 16), 'Pessoa'),
       h('button', { type: 'button', class: 'button', onclick: () => this.randomFace() }, 'Rosto'),
       h('button', { type: 'button', class: 'button', onclick: () => this.randomBody() }, 'Corpo'),
       h('button', { type: 'button', class: 'button', onclick: () => { const r = randomCharacter(); this.setPerson({ ...this.person, outfit: r.outfit, topColor: r.topColor, bottomColor: r.bottomColor }); } }, 'Roupa')));
@@ -292,8 +357,27 @@ export class StudioUI {
   /** The hair section edits the character's locks live (animation frozen). */
   startLocks() {
     if (!this.renderer) return;
+    this.renderer.lockEditor.onPhysics = stats => this.updateHairPhysics(stats);
     this.renderer.lockEditor.onChange = () => this.locksChanged();
+    this.renderer.lockEditor.onBusy = busy => {
+      this.showOperation(busy || Boolean(this.renderer.lockEditor.fusionBusy) || Boolean(this.renderer.lockEditor.gravityRunning) || Boolean(this.renderer.buildController) || Boolean(this.exporting));
+      if (!busy && this.renderer.lockEditor.fusionError) this.fail(this.renderer.lockEditor.fusionError);
+      else if (!busy && !this.renderer.lockEditor.gravityRunning && !this.renderer.lockEditor.fusionBusy && !this.renderer.buildController && !this.exporting) this.ready('Pronto');
+    };
+    this.renderer.lockEditor.onProgress = stage => this.ready(stage);
     this.renderer.setLocksMode(true);
+  }
+  updateHairPhysics(stats = this.renderer?.lockEditor.physicsStats) {
+    const node = document.getElementById('hairPhysicsStatus'), editor = this.renderer?.lockEditor;
+    if (!node || !editor) return;
+    const gravitySwitch = document.getElementById('hairGravitySwitch');
+    if (gravitySwitch) gravitySwitch.checked = Boolean(editor.settings.gravityOn);
+    if (stats?.error || editor.physicsError) node.textContent = `Falha na simulação: ${stats?.error ?? editor.physicsError}`;
+    else if (!editor.settings.gravityOn) node.textContent = 'Gravidade desligada: pose congelada';
+    else if (!stats) node.textContent = 'Preparando simulação contínua';
+    else if (stats.infeasibleContacts) node.textContent = 'Há contatos incompatíveis com as fixações atuais. Solte uma fixação ou ajuste a forma.';
+    else if (stats.penetrating) node.textContent = `Contato ainda não resolvido entre mechas (${(stats.maxPenetration * 1000).toFixed(1)} mm). Física em desenvolvimento.`;
+    else node.textContent = 'Simulação contínua ativada';
   }
   /** Leaving: the locks are stored with the character and built as one game mesh. */
   finishLocks() {
@@ -316,7 +400,7 @@ export class StudioUI {
     const node = document.getElementById('lockStatus'), editor = this.renderer?.lockEditor;
     if (!node || !editor?.active) return;
     const s = editor.summary();
-    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''}${s.styled ? ` · ${s.styled} com forma fixa` : ''}${s.gravityOn ? '' : ' · gravidade desligada'}`;
+    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''}${s.fixed ? ` · ${s.fixed} fixadas` : ''}${s.styled > s.fixed ? ` · ${s.styled - s.fixed} formas preservadas` : ''}${s.gravityOn ? '' : ' · gravidade desligada'}`;
     const undo = document.getElementById('lockUndo'), redo = document.getElementById('lockRedo');
     if (undo) undo.disabled = !editor.undoStack.length;
     if (redo) redo.disabled = !editor.redoStack.length;
@@ -345,6 +429,25 @@ export class StudioUI {
     actions.append(
       this.iconButton('undo', 'Desfazer (Ctrl+Z)', () => editor.undo(), 'lockUndo'),
       this.iconButton('redo', 'Refazer (Ctrl+Y)', () => editor.redo(), 'lockRedo'));
+    const design = this.group('Desenhar e dar forma');
+    design.append(h('div', { class: 'button-grid' },
+      h('button', { type: 'button', id: 'hairDraw', class: 'button primary', onclick: () => { settings.brushCreation = 'stroke'; editor.setTool('brush'); this.render(); } }, 'Desenhar cabelo'),
+      h('button', { type: 'button', id: 'hairComb', class: 'button', onclick: () => { settings.combScope = 'brush'; editor.setTool('comb'); this.render(); } }, 'Pentear cabelo')));
+    this.toggle(design, 'Gravidade (G)', settings.gravityOn, on => { editor.setGravityOn(on); this.render(); }, 'Ligada: simula continuamente. Desligada: congela a pose atual.');
+    design.querySelector('[role="switch"]').id = 'hairGravitySwitch';
+    this.slide(design, { label: 'Força da gravidade', value: settings.gravity, min: 0, max: 1, onInput: value => { settings.gravity = value; } });
+    design.append(h('p', { class: 'muted', id: 'hairPhysicsStatus', text: typeof editor.tickPhysics === 'function' ? (settings.gravityOn ? 'Simulação ativada' : 'Pose congelada') : 'Preparando o novo motor de simulação' }));
+    this.updateHairPhysics();
+    const representation = editor.state.fusion?.enabled ? 'volume' : editor.state.fusion?.representation ?? settings.hairRepresentation ?? 'lock';
+    this.segmented(design, 'Representação', ['Fios', 'Mechas', 'Volume'], ['strand', 'lock', 'volume'].indexOf(representation), index => editor.setRepresentation(['strand', 'lock', 'volume'][index]));
+    this.segmented(design, 'Pincel de criação', ['Desenhar traço', 'Preencher raízes'], settings.brushCreation === 'fill' ? 1 : 0, index => { settings.brushCreation = index ? 'fill' : 'stroke'; editor.setTool('brush'); });
+    const selectedLock = editor.selected.size ? editor.summary().first : null;
+    this.slide(design, { label: 'Largura', value: selectedLock?.width ?? settings.width, min: 0.001, max: 0.09, step: 0.001, scale: 1000, unit: 'mm', onStart: () => editor.checkpoint(), onInput: value => { editor.setCreationWidth(value); editor.setParam('width', value); } });
+    this.slide(design, { label: 'Comprimento', value: editor.summary().first ? lockLength(editor.summary().first) : settings.brushLength, min: 0.015, max: 1.1, step: 0.005, scale: 100, unit: 'cm', onStart: () => editor.checkpoint(), onInput: value => { settings.brushLength = value; editor.setLength(value); } });
+    this.slide(design, { label: 'Espessura da mecha', value: selectedLock?.volume ?? settings.volume, min: 0.12, max: 1, onStart: () => editor.checkpoint(), onInput: value => { settings.volume = value; editor.setParam('volume', value); } });
+    this.segmented(design, 'Pontas', ['Arredondadas', 'Afinadas', 'Retas'], ['round', 'point', 'flat'].indexOf(settings.tipShape ?? 'round'), index => editor.setTipShape(['round', 'point', 'flat'][index]));
+    this.segmented(design, 'Forma', ['Lisa', 'Ondulada', 'Cacheada'], settings.curl > 0.6 ? 2 : settings.curl > 0 ? 1 : 0, index => editor.setCurlPreset(['straight', 'wavy', 'curl'][index]));
+    design.append(h('p', { class: 'muted', text: 'Comece na cabeça e desenhe para fora dela. Sem seleção, comprimento, largura e espessura ajustam o penteado inteiro; selecione para editar só uma parte.' }));
     // Styles: a gallery, like a character creator's hair library.
     const styles = this.group('Estilo');
     const tint = this.person.colors.hair ?? hairPalette[this.person.hairColor];
@@ -367,6 +470,8 @@ export class StudioUI {
       onclick: () => { editor.setTool(tool); this.render(); },
     }, icon(toolIcons[tool], 20), h('span', { text: toolNames[tool] })))));
     if (settings.tool === 'comb') {
+      if (settings.combScope === 'all') settings.combScope = 'brush';
+      this.segmented(tools, 'Pentear', ['Sob o pincel', 'Seleção sob o pincel'], settings.combScope === 'selected' ? 1 : 0, index => { settings.combScope = index ? 'selected' : 'brush'; });
       this.slide(tools, { label: 'Tamanho do pente', value: settings.combRadius, min: 0.03, max: 0.4, step: 0.005, onInput: v => { settings.combRadius = v; } });
       this.slide(tools, { label: 'Força do pente', value: settings.combStrength, min: 0.1, max: 1, step: 0.05, onInput: v => { settings.combStrength = v; } });
     }
@@ -374,6 +479,15 @@ export class StudioUI {
       this.slide(tools, { label: 'Comprimento das mechas', value: settings.brushLength, min: 0.04, max: 0.8, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushLength = v; } });
       this.slide(tools, { label: 'Distância entre mechas', value: settings.brushSpacing, min: 0.008, max: 0.06, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.brushSpacing = v; } });
     }
+    if (['smooth', 'volume', 'density', 'clump', 'mask'].includes(settings.tool)) {
+      this.slide(tools, { label: 'Raio do pincel', value: settings.brushRadius, min: 0.005, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushRadius = v; } });
+      this.slide(tools, { label: 'Força', value: settings.brushStrength, min: 0.05, max: 1, onInput: v => { settings.brushStrength = v; } });
+      const falloff = h('select', { 'aria-label': 'Suavidade do pincel' }, [['smooth', 'Suave'], ['linear', 'Linear'], ['constant', 'Constante']].map(([value, text]) => h('option', { value, text })));
+      falloff.value = settings.brushFalloff; falloff.addEventListener('change', () => { settings.brushFalloff = falloff.value; }); tools.append(this.row('Suavidade', falloff));
+    }
+    const fusion = this.group('Superfície fundida');
+    const fusionControls = h('div', { class: 'hair-fusion-controls' }); fusion.append(fusionControls);
+    renderHairTools(fusionControls, editor, { onChange: () => this.render() });
     this.toggle(tools, 'Espelhar no outro lado', settings.mirror, on => { settings.mirror = on; }, 'Cada mecha nova nasce também do lado oposto');
     this.toggle(tools, 'Prender ao soltar', settings.pinOnRelease, on => { settings.pinOnRelease = on; }, 'O ponto puxado fica preso onde você soltar (ou segure P)');
     this.toggle(tools, 'Manter forma ao soltar', settings.fixOnRelease, on => { settings.fixOnRelease = on; }, 'A mecha puxada fica na forma em que você soltar, sem cair (ou segure F ao soltar)');
@@ -385,7 +499,7 @@ export class StudioUI {
     if (count && lock) {
       const shape = this.group(count > 1 ? `${count} mechas selecionadas` : 'Mecha selecionada');
       this.slide(shape, { label: 'Comprimento', value: lockLength(lock), min: 0.015, max: 1.1, step: 0.005, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setLength(v) });
-      this.slide(shape, { label: 'Largura', value: lock.width, min: 0.006, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setParam('width', v) });
+      this.slide(shape, { label: 'Largura', value: lock.width, min: 0.001, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setParam('width', v) });
       this.slide(shape, { label: 'Volume', value: lock.volume, min: 0.12, max: 1, onStart: record, onInput: v => editor.setParam('volume', v), title: 'Espessura em relação à largura' });
       this.slide(shape, { label: 'Afunilar', value: lock.taper, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('taper', v), title: 'Quanto a mecha afina até a ponta' });
       this.slide(shape, { label: 'Curvar', value: lock.bend, min: -1, max: 1, onStart: record, onInput: v => editor.setParam('bend', v), title: 'Pontas para dentro (+) ou para fora (−)' });
@@ -400,18 +514,15 @@ export class StudioUI {
         h('button', { type: 'button', class: 'button', onclick: () => editor.clearSelection() }, 'Limpar seleção')));
     } else {
       const fresh = this.group('Novas mechas', { open: false });
-      this.slide(fresh, { label: 'Largura', value: settings.width, min: 0.006, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.width = v; } });
+      this.slide(fresh, { label: 'Largura', value: settings.width, min: 0.001, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.width = v; } });
       this.slide(fresh, { label: 'Volume', value: settings.volume, min: 0.12, max: 1, onInput: v => { settings.volume = v; } });
       this.slide(fresh, { label: 'Afunilar', value: settings.taper, min: 0, max: 1, onInput: v => { settings.taper = v; } });
       fresh.append(h('button', { type: 'button', class: 'button wide', onclick: () => editor.selectAll() }, 'Selecionar todas as mechas'));
     }
     // Gravity: an operation applied after each edit; nothing runs by itself.
-    const physics = this.group('Gravidade');
+    const physics = this.group('Fixação');
     physics.append(h('p', { class: 'status-line', id: 'lockStatus' }));
-    this.toggle(physics, 'Gravidade ligada (G)', settings.gravityOn, on => { editor.setGravityOn(on); this.render(); }, 'Desligada, as mechas ficam na forma em que você as puxar');
-    this.slide(physics, { label: 'Força da gravidade', value: settings.gravity, min: 0, max: 1, onStart: record, onInput: v => editor.setGravity(v), title: '0: as mechas mantêm o formato desenhado' });
     physics.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', id: 'lockGravity', onclick: () => editor.applyGravity(), title: 'Assenta as mechas soltas pela gravidade' }, icon('settle', 16), 'Aplicar gravidade'),
       h('button', { type: 'button', class: 'button primary', id: 'lockSetRest', onclick: () => editor.setRest(), title: 'O formato atual das mechas selecionadas (ou de todas) vira a forma do penteado e resiste à gravidade · tecla F' }, icon('lock', 16), 'Fixar forma (F)'),
       h('button', { type: 'button', class: 'button', onclick: () => editor.releaseRest(), title: 'As mechas voltam a cair com a gravidade' }, icon('unlock', 16), 'Soltar forma')));
     // Files.
@@ -441,13 +552,14 @@ export class StudioUI {
   // ------------------------------------------------------------ outfit files
   /** Saved made-to-measure outfits (all pieces, cut, fabric and painting). */
   static outfitSlots() { return storage.keys().filter(k => k.startsWith(OUTFIT_PREFIX)).map(k => k.slice(OUTFIT_PREFIX.length)).sort((a, b) => a.localeCompare(b)); }
-  outfitData() { return { format: 'hgs-outfit', v: 1, garments: this.person.garments }; }
+  outfitData() { return { format: 'hgs-outfit', v: 2, garments: this.person.garments, sculpt: this.person.sculpt.outfit }; }
   /** Load an outfit (JSON text); false if it is not one. */
   loadOutfit(json) {
     let data;
     try { data = JSON.parse(json); } catch { return false; }
     if (!data || data.format !== 'hgs-outfit' || !Array.isArray(data.garments)) return false;
     this.setGarments(data.garments.slice(0, 8).map(normalizeGarment), 0);
+    if (data.sculpt) { this.person = normalizeCharacter({ ...this.person, sculpt: { ...this.person.sculpt, outfit: data.sculpt } }); this.queueCharacter(); }
     return true;
   }
   renderOutfitFiles() {
@@ -483,7 +595,7 @@ export class StudioUI {
   }
 
   // ------------------------------------------------------------ clothes
-  get sculpting() { return Boolean(this.renderer) && (this.section === 'esculpir' || (this.section === 'roupas' && Boolean(this.clothBrush))); }
+  get sculpting() { return Boolean(this.renderer) && (this.section === 'esculpir' || (this.section === 'roupas' && (Boolean(this.clothBrush) || this.clothTool === 'clothSculpt'))); }
   /** Made-to-measure clothes are being edited (undo/redo applies to them). */
   get dressing() { return Boolean(this.renderer) && this.section === 'roupas' && this.person.outfit === 4; }
   /** The edge tool is on: the left button drags the garment's edges. */
@@ -494,10 +606,22 @@ export class StudioUI {
     if (tool === 'clothAdd' || tool === 'clothErase') { this.setClothBrush(tool); this.renderer?.clothEditor.hide(); }
     else {
       this.setClothBrush(null);
+      if (tool === 'clothSculpt') { this.renderer.sculpt.settings.target = 'outfit'; this.renderer.setSculptMode(true); }
       if (tool === 'edges') { this.renderer?.setSculptMode(true); this.renderer?.clothEditor.show(this.person.garments[this.garmentIndex ?? 0] ?? null); }
       else this.renderer?.clothEditor.hide();
+      if (tool === 'clothPin' || tool === 'clothUnpin') {
+        this.renderer.setSculptMode(true);
+        this.renderer.clothEditor.garment = this.person.garments[this.garmentIndex ?? 0] ?? null;
+      }
     }
     this.setHint(clothHints[tool ?? 'look']);
+  }
+  pinCloth(ndc, camera) {
+    const index = this.renderer.clothEditor.garmentAt(ndc, camera);
+    if (index >= 0) this.garmentIndex = index;
+    this.renderer.clothEditor.garment = this.person.garments[this.garmentIndex ?? 0] ?? null;
+    const garment = this.renderer.clothEditor.pinAt(ndc, camera, this.clothTool === 'clothPin', this.renderer.sculpt.settings.radius);
+    if (garment) { this.garmentCheckpoint(); this.updateGarment(garment, 0); this.render(); }
   }
   // Undo/redo of the made-to-measure outfit (every change is a whole-outfit snapshot).
   garmentCheckpoint() {
@@ -568,16 +692,38 @@ export class StudioUI {
     }
     const garments = this.person.garments;
     this.garmentIndex = Math.max(0, Math.min(garments.length - 1, this.garmentIndex ?? 0));
+    const currentGarment = garments[this.garmentIndex];
+    const drafted = currentGarment?.authoringMode === 'pattern' && Boolean(currentGarment.patternData?.panels.length);
+    if (drafted && ['edges', 'clothAdd', 'clothErase'].includes(this.clothTool)) this.setClothTool(null);
+    if (currentGarment) {
+      const method = this.group('Construção');
+      this.segmented(method, 'Criar por', ['Corte no corpo', 'Moldes 2D'], drafted ? 1 : 0, index => {
+        this.garmentCheckpoint();
+        this.updateGarment({ authoringMode: index ? 'pattern' : 'surface', ...(index && !currentGarment.patternData ? { patternData: createPatternTemplate(currentGarment.type, currentGarment) } : {}) }, 0);
+      });
+      method.append(h('p', { class: 'muted', text: drafted ? 'Desenhe contornos e costuras no molde; ajuste a forma e a fixação em 3D.' : 'Pinte a cobertura ou arraste as bordas sobre o corpo. Os moldes salvos ficam preservados ao alternar.' }));
+    }
     // Tools in the viewport, as in the hair editor.
     const tools = this.group('Ferramentas');
     tools.append(h('div', { class: 'tool-row', role: 'group', 'aria-label': 'Ferramenta de roupa' }, clothTools.map(([tool, name, glyph]) => h('button', {
-      type: 'button', class: `tool${(this.clothTool ?? null) === tool ? ' on' : ''}`, 'data-cloth-tool': tool ?? 'look', title: `${name} — ${clothHints[tool ?? 'look']}`, 'aria-pressed': String((this.clothTool ?? null) === tool),
+      type: 'button', class: `tool${(this.clothTool ?? null) === tool ? ' on' : ''}`, disabled: (drafted && ['edges', 'clothAdd', 'clothErase'].includes(tool)) || (!drafted && ['clothPin', 'clothUnpin'].includes(tool)), 'data-cloth-tool': tool ?? 'look', title: `${name} — ${clothHints[tool ?? 'look']}`, 'aria-pressed': String((this.clothTool ?? null) === tool),
       onclick: () => { this.setClothTool(tool); this.render(); },
     }, icon(glyph, 20), h('span', { text: name })))));
     if (this.clothBrush) {
       const settings = this.renderer.sculpt.settings;
       this.slide(tools, { label: 'Tamanho do pincel', value: settings.radius, min: 0.01, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.radius = v; } });
       this.toggle(tools, 'Espelhar no corpo', settings.symmetry, on => { settings.symmetry = on; });
+    }
+    if (this.clothTool === 'clothSculpt') {
+      const settings = this.renderer.sculpt.settings;
+      tools.append(h('div', { class: 'chips' }, Object.entries(brushNames).map(([brush, label]) => h('button', {
+        type: 'button', class: `chip${settings.brush === brush ? ' on' : ''}`, text: label,
+        onclick: () => { settings.brush = brush; this.render(); },
+      }))));
+      this.slide(tools, { label: 'Raio', value: settings.radius, min: 0.005, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.radius = v; } });
+      this.slide(tools, { label: 'Força', value: settings.strength, min: 0.05, max: 1, onInput: v => { settings.strength = v; } });
+      this.toggle(tools, 'Espelhar escultura', settings.symmetry, on => { settings.symmetry = on; });
+      this.toggle(tools, 'Inverter pincel', settings.invert, on => { settings.invert = on; });
     }
     this.setHint(clothHints[this.clothTool ?? 'look']);
     if (this.clothTool === 'edges') this.renderer?.clothEditor.show(garments[this.garmentIndex] ?? null);
@@ -593,12 +739,17 @@ export class StudioUI {
       h('button', { type: 'button', class: 'button', disabled: this.garmentIndex >= garments.length - 1, title: 'Mais por fora', onclick: () => { const g = [...garments], i = this.garmentIndex; [g[i + 1], g[i]] = [g[i], g[i + 1]]; this.setGarments(g, i + 1); } }, 'Para fora')));
     const garment = garments[this.garmentIndex];
     if (!garment) return;
+    const pattern = this.group('Moldes 2D e costura');
+    const canvas = h('div', { class: 'pattern-host' }); pattern.append(canvas);
+    this.patternEditor = new PatternEditor(canvas, { garment, onChange: value => {
+        this.garmentCheckpoint(); this.updateGarment({ ...value, authoringMode: 'pattern' }, 0);
+    } });
     const cut = this.group('Modelagem');
     const typeSelect = h('select', { 'aria-label': 'Tipo' }, garmentTypes.map(type => h('option', { value: type, text: garmentLabels[type] })));
     typeSelect.value = garment.type;
-    typeSelect.addEventListener('change', () => { this.garmentCheckpoint(); this.updateGarment({ ...newGarment(typeSelect.value), paint: garment.paint, color: garment.color, color2: garment.color2, pattern: garment.pattern }); this.render(); });
+    typeSelect.addEventListener('change', () => { this.garmentCheckpoint(); const value = { ...newGarment(typeSelect.value), paint: garment.paint, color: garment.color, color2: garment.color2, pattern: garment.pattern }; if (drafted) { value.authoringMode = 'pattern'; value.patternData = createPatternTemplate(value.type, value); } this.updateGarment(value); this.render(); });
     cut.append(this.row('Tipo', typeSelect));
-    const field = (key, label) => this.slide(cut, { label, value: garment[key], min: 0, max: 1, onStart: () => this.garmentCheckpoint(), onInput: v => this.updateGarment({ [key]: v }, 250) });
+    const field = (key, label) => { if (!drafted || key === 'fit') this.slide(cut, { label, value: garment[key], min: 0, max: 1, onStart: () => this.garmentCheckpoint(), onInput: v => this.updateGarment({ [key]: v }, 250) }); };
     const t = garment.type;
     if (['tshirt', 'longsleeve', 'tank', 'hoodie', 'dress'].includes(t)) { field('sleeve', 'Manga'); field('neckline', 'Decote'); }
     if (['tshirt', 'longsleeve', 'tank', 'hoodie', 'skirt', 'dress'].includes(t)) field('length', t === 'skirt' || t === 'dress' ? 'Barra' : 'Comprimento');
@@ -606,6 +757,7 @@ export class StudioUI {
     if (['pants', 'shorts', 'skirt'].includes(t)) field('rise', 'Cintura');
     if (['skirt', 'dress'].includes(t)) field('flare', 'Rodado');
     field('fit', 'Folga');
+    if (drafted) { this.renderOutfitFiles(); return; }
     const fabric = this.group('Tecido');
     const patternSelect = h('select', { 'aria-label': 'Padrão' }, garmentPatterns.map(name => h('option', { value: name, text: patternNames[name] ?? name })));
     patternSelect.value = garment.pattern;
@@ -628,21 +780,34 @@ export class StudioUI {
     if (!target) return;
     if (target.paint) { this.commitClothPaint(target.paint); return; }
     const changes = target.changes();
-    if (!changes.size) return;
-    this.undo.push(JSON.stringify(this.person.sculpt)); this.redo = [];
-    if (this.undo.length > 60) this.undo.shift();
+    const spatial = target.patternChanges();
+    if (!changes.size && !spatial.length) return;
     const sculpt = structuredClone(this.person.sculpt);
     const store = target.kind === 'body' ? sculpt.body : (sculpt[target.kind][target.style] ??= {});
     for (const [unit, delta] of changes) { const old = store[unit] ?? [0, 0, 0]; store[unit] = old.map((value, k) => value + delta[k]); }
+    let garments;
+    try { garments = this.person.garments.map((garment, index) => {
+      const edits = spatial.filter(edit => edit.garment === index && edit.pattern === garment.patternData?.id).map(({ garment: _garment, pattern: _pattern, ...edit }) => edit);
+      if (!edits.length) return garment;
+      const combined = [...garment.patternData.edits, ...edits];
+      if (combined.length > 20000) throw new Error('Limite de escultura deste molde atingido. Salve uma cópia e desfaça ou redefina a escultura para continuar.');
+      return { ...garment, patternData: { ...garment.patternData, edits: combined } };
+    }); } catch (error) {
+      target.points.set(target.built); target.write(Array.from({ length: target.unitCount }, (_, index) => index)); target.finish();
+      this.fail(error.message); return;
+    }
+    this.undo.push(JSON.stringify({ sculpt: this.person.sculpt, garments: this.person.garments })); this.redo = [];
+    if (this.undo.length > 60) this.undo.shift();
+    if (spatial.length && this.section === 'roupas') { this.garmentUndo ??= []; this.garmentUndo.push(JSON.stringify(this.person.garments)); this.garmentRedo = []; }
     target.built.set(target.points);
-    this.person = normalizeCharacter({ ...this.person, sculpt });
+    this.person = normalizeCharacter({ ...this.person, sculpt, garments });
     this.updateSculptButtons();
     clearTimeout(this.sculptTimer);
     this.sculptTimer = setTimeout(() => this.queueCharacter(), target.kind === 'body' ? 350 : 900);
   }
-  restoreSculpt(json) { this.person = normalizeCharacter({ ...this.person, sculpt: JSON.parse(json) }); this.updateSculptButtons(); this.queueCharacter(); }
-  undoSculpt() { if (this.undo.length) { this.redo.push(JSON.stringify(this.person.sculpt)); this.restoreSculpt(this.undo.pop()); } }
-  redoSculpt() { if (this.redo.length) { this.undo.push(JSON.stringify(this.person.sculpt)); this.restoreSculpt(this.redo.pop()); } }
+  restoreSculpt(json) { const saved = JSON.parse(json); this.person = normalizeCharacter({ ...this.person, ...(saved.sculpt ? saved : { sculpt: saved }) }); this.updateSculptButtons(); this.queueCharacter(); }
+  undoSculpt() { if (this.undo.length) { this.redo.push(JSON.stringify({ sculpt: this.person.sculpt, garments: this.person.garments })); this.restoreSculpt(this.undo.pop()); } }
+  redoSculpt() { if (this.redo.length) { this.undo.push(JSON.stringify({ sculpt: this.person.sculpt, garments: this.person.garments })); this.restoreSculpt(this.redo.pop()); } }
   updateSculptButtons() {
     const undo = document.getElementById('sculptUndo'), redo = document.getElementById('sculptRedo');
     if (undo) undo.disabled = !this.undo.length;
@@ -673,16 +838,21 @@ export class StudioUI {
       const undress = on && settings.target === 'body';
       if (this.renderer.undressed !== undress) { this.renderer.undressed = undress; this.queueCharacter(); }
     });
-    const reset = this.group('Redefinir', { open: false });
     const { body, outfit } = this.person.sculpt;
-    const count = Object.keys(body).length + Object.values(outfit).reduce((m, edits) => m + Object.keys(edits).length, 0);
-    reset.append(h('p', { class: 'muted', text: `${count.toLocaleString('pt-BR')} vértices esculpidos` }), h('div', { class: 'button-grid' },
+    const count = Object.keys(body).length + Object.values(outfit).reduce((m, edits) => m + Object.keys(edits).length, 0) + this.person.garments.reduce((total, garment) => total + (garment.patternData?.edits.length ?? 0), 0);
+    const reset = this.group('Redefinir', { open: count > 0 });
+    reset.append(h('p', { class: 'muted', text: `${count.toLocaleString('pt-BR')} edições de escultura` }), h('div', { class: 'button-grid' },
       h('button', { type: 'button', class: 'button', onclick: () => {
         const sculpt = structuredClone(this.person.sculpt);
         if (settings.target === 'body') sculpt.body = {}; else { const style = this.renderer.sculpt.target?.style; if (style) delete sculpt[settings.target][style]; }
-        this.undo.push(JSON.stringify(this.person.sculpt)); this.redo = []; this.restoreSculpt(JSON.stringify(sculpt)); this.render();
+        const garments = settings.target === 'outfit' ? this.person.garments.map(garment => garment.patternData ? { ...garment, patternData: { ...garment.patternData, edits: [] } } : garment) : this.person.garments;
+        this.undo.push(JSON.stringify({ sculpt: this.person.sculpt, garments: this.person.garments })); this.redo = []; this.restoreSculpt(JSON.stringify({ sculpt, garments })); this.render();
       } }, 'Esta parte'),
-      h('button', { type: 'button', class: 'button danger', onclick: () => { this.undo.push(JSON.stringify(this.person.sculpt)); this.redo = []; this.restoreSculpt('{}'); this.render(); } }, 'Tudo')));
+      h('button', { type: 'button', class: 'button danger', onclick: () => {
+        this.undo.push(JSON.stringify({ sculpt: this.person.sculpt, garments: this.person.garments })); this.redo = [];
+        const garments = this.person.garments.map(garment => garment.patternData ? { ...garment, patternData: { ...garment.patternData, edits: [] } } : garment);
+        this.restoreSculpt(JSON.stringify({ sculpt: {}, garments })); this.render();
+      } }, 'Tudo')));
     this.updateSculptButtons();
   }
 
@@ -789,13 +959,18 @@ export class StudioUI {
   }
   async exportGLB() {
     try {
+      this.exportController?.abort(); this.exportController = new AbortController();
+      this.exporting = true;
       this.ready('Exportando GLB…');
+      this.showOperation(true);
       if (this.section === 'cabelo' && this.renderer?.lockEditor.active) this.person = normalizeCharacter({ ...this.person, locks: this.renderer.lockEditor.serialize() });
-      const bytes = await this.renderer.exportGLB(this.exportOptions);
+      const bytes = await this.renderer.exportGLB({ ...this.exportOptions, person: this.snapshotPerson(), signal: this.exportController.signal, onProgress: stage => this.ready(`Exportando · ${stage}`) });
+      this.exportController.signal.throwIfAborted();
       const url = URL.createObjectURL(new Blob([bytes], { type: 'model/gltf-binary' })), a = document.createElement('a');
       a.href = url; a.download = `${slug(this.person.name)}-${this.person.seed}.glb`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
       this.ready('GLB exportado');
-    } catch (error) { this.fail(`Falha ao exportar: ${error.message}`); }
+    } catch (error) { if (error.name !== 'AbortError') this.fail(`Falha ao exportar: ${error.message}`); }
+    finally { this.exporting = false; this.showOperation(Boolean(this.renderer?.buildController) || Boolean(this.renderer?.lockEditor.fusionBusy)); }
   }
 
   // ------------------------------------------------------------ controls

@@ -1,5 +1,6 @@
 import { BufferGeometry, Float32BufferAttribute, LineBasicMaterial, LineSegments, Mesh, Raycaster } from 'three';
 import { bodyLayout, garmentEdgeAt, garmentField } from './tailor.mjs';
+import { normalizePattern } from './patterns.mjs';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
@@ -79,6 +80,29 @@ export class ClothEditor {
     this.raycaster.setFromCamera(ndc, camera);
     const [hit] = this.raycaster.intersectObject(probe, false);
     return hit ? of[hit.face.a] : -1;
+  }
+  /** The authored panel beneath a 3D click, including its metre-space draft coordinate. */
+  pieceAt(ndc,camera) {
+    const outfit=this.human?.group.getObjectByName('Outfit');
+    if(!outfit?.geometry.userData.patternSources)return null;
+    const probe=new Mesh(outfit.geometry,outfit.material);probe.matrixWorld.copy(outfit.matrixWorld);
+    this.raycaster.setFromCamera(ndc,camera);
+    const [hit]=this.raycaster.intersectObject(probe,false);
+    if(!hit)return null;
+    const ids=[hit.face.a,hit.face.b,hit.face.c],sources=outfit.geometry.userData.patternSources;
+    const triangle=ids.map(v=>sources[v]),fallback=triangle.find(Boolean)??null;
+    if(!fallback||!hit.barycoord||!triangle.every(s=>s&&s.panel===fallback.panel&&s.pattern===fallback.pattern&&s.garment===fallback.garment))return fallback;
+    const weights=hit.barycoord.toArray();
+    return {...fallback,uv:[0,1].map(c=>triangle.reduce((sum,source,i)=>sum+source.uv[c]*weights[i],0))};
+  }
+  /** Add/remove a pinned region from the current garment, for a 3D pin brush. */
+  pinAt(ndc,camera,pinned=true,radius=0.035) {
+    const source=this.pieceAt(ndc,camera);
+    if(!source||!this.garment?.patternData||source.pattern!==this.garment.patternData.id)return null;
+    const patternData=normalizePattern(this.garment.patternData);
+    if(pinned)patternData.pinRegions.push({panel:source.panel,center:[...source.uv],radius});
+    else patternData.pinRegions=patternData.pinRegions.filter(p=>p.panel!==source.panel||Math.hypot(p.center[0]-source.uv[0],p.center[1]-source.uv[1])>p.radius+radius);
+    return {...this.garment,patternData};
   }
   /** Start dragging the edge under the cursor; null when there is none. */
   down(ndc, camera, clientY) {

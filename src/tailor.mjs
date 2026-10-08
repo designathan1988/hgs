@@ -1,6 +1,8 @@
 import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three';
 import { SurfaceCollider, resolvePenetration } from './collision.mjs';
 import { drapeCloth } from './cloth.mjs';
+import { normalizePattern } from './patterns.mjs';
+import { buildPatternPanels, projectPanelContacts, coveredPatternFaces } from './pattern-cloth.mjs';
 
 /**
  * Made-to-measure clothing, cut from the body and draped by simulation.
@@ -57,12 +59,15 @@ export function normalizeGarment(value = {}) {
   }
   return {
     type,
+    ...(value.authoringMode === 'surface' || value.authoringMode === 'pattern'
+      ? {authoringMode:value.authoringMode} : value.patternData ? {authoringMode:'pattern'} : {}),
     sleeve: number('sleeve', base.sleeve ?? 0), length: number('length', base.length ?? 0.5), neckline: number('neckline', base.neckline ?? 0.2),
     leg: number('leg', base.leg ?? 1), rise: number('rise', base.rise ?? 0.5), flare: number('flare', base.flare ?? 0.3),
     fit: number('fit', base.fit ?? 0.2), roughness: number('roughness', 0.85),
     color: color('color', base.color), color2: color('color2', '#e9e4da'),
     pattern: garmentPatterns.includes(value.pattern) ? value.pattern : 'solid', scale: number('scale', 0.5),
     paint,
+    ...(value.patternData ? { patternData: normalizePattern(value.patternData) } : {}),
   };
 }
 
@@ -440,6 +445,7 @@ function taubinSmooth(points, index, iterations, lambda = 0.5, mu = -0.53) {
 /** Fold every open edge under by `depth` so cut fabric shows a hem, not a paper edge. */
 function addHems(panel, depth) {
   const count = panel.pos.length / 3, edges = new Map();
+  const maxThickness = panel.materials ? panel.materials.reduce((max,m)=>Math.max(max,m.thickness),0.001) : 1;
   for (let i = 0; i < panel.index.length; i += 3) for (let e = 0; e < 3; e++) {
     const a = panel.index[i + e], b = panel.index[i + (e + 1) % 3];
     const key = a < b ? `${a}:${b}` : `${b}:${a}`;
@@ -450,16 +456,21 @@ function addHems(panel, depth) {
   const fold = v => {
     if (folded.has(v)) return folded.get(v);
     const at = panel.pos.length / 3;
-    for (let c = 0; c < 3; c++) panel.pos.push(panel.pos[v * 3 + c] - panel.normal[v * 3 + c] * depth);
+    const localDepth = panel.materials ? depth * panel.materials[v].thickness / maxThickness : depth;
+    for (let c = 0; c < 3; c++) panel.pos.push(panel.pos[v * 3 + c] - panel.normal[v * 3 + c] * localDepth);
     panel.normal.push(-panel.normal[v * 3], -panel.normal[v * 3 + 1], -panel.normal[v * 3 + 2]);
     panel.uv.push(panel.uv[v * 2], panel.uv[v * 2 + 1]);
     panel.joints.push(...panel.joints.slice(v * 4, v * 4 + 4)); panel.weights.push(...panel.weights.slice(v * 4, v * 4 + 4));
     panel.keys.push(-1); panel.origins.push(panel.origins[v]);
+    if (panel.materials) panel.materials.push(panel.materials[v]);
+    if (panel.pieceOf) panel.pieceOf.push(panel.pieceOf[v]);
+    if (panel.sources) panel.sources.push(null);
     folded.set(v, at);
     return at;
   };
   for (const { a, b, count: used } of edges.values()) {
     if (used !== 1 || a >= count || b >= count) continue;
+    if (panel.sewnBoundaryEdges?.has(a<b?`${a}:${b}`:`${b}:${a}`)) continue;
     const fa = fold(a), fb = fold(b);
     panel.index.push(a, fb, b, a, fa, fb);
   }
@@ -474,18 +485,20 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   const layout = bodyLayout(context);
   const skin = bodyCollider(context);
   const k = layout.k, height = context.height ?? 1.7;
-  const meshData = { pos: [], color: [], uv: [], joints: [], weights: [], index: [], keys: [], garment: [] };
+  const meshData = { pos: [], color: [], uv: [], joints: [], weights: [], index: [], keys: [], garment: [], piece: [], sources: [] };
   const covered = new Set(), finished = [];
   garments.forEach((garment, layer) => {
     // Inner parts first: a dress's bodice is draped before its skirt, which
     // then hangs over the bodice's hem (sewn at the waist), not under it.
     const panels = [];
-    if (garment.type !== 'skirt') {
+    const authored=garment.authoringMode!=='surface'&&garment.patternData?.panels.length;
+    if (authored) panels.push(buildPatternPanels(context, garment, layout, layer, skin));
+    else if (garment.type !== 'skirt') {
       const { panel, covered: faces } = cutPanel(context, garment, layout, layer);
       if (panel.index.length) panels.push(panel);
       for (const f of faces) covered.add(f);
     }
-    if (garment.type === 'skirt' || garment.type === 'dress') panels.push(skirtPanel(context, garment, layout, layer));
+    if (!authored && (garment.type === 'skirt' || garment.type === 'dress')) panels.push(skirtPanel(context, garment, layout, layer));
     for (const panel of panels) {
       // Start just above the surface beneath, then drape.
       const lift = (0.0035 + layer * 0.0035) * k;
@@ -496,20 +509,40 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       // cloth has less area than the skin around small bumps and spans them.
       // Looser garments are drafted from a smoother body, so they fall straight
       // from the chest and shoulder blades instead of following every curve.
-      taubinSmooth(points, panel.index, Math.round(30 + garment.fit * 150));
-      const pattern = points.slice();
+      if (!panel.pattern) taubinSmooth(points, panel.index, Math.round(30 + garment.fit * 150));
+      const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
       resolvePenetration(points, panel.index, collider, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
       drapeCloth(points, panel.index, collider, {
         thickness: 0.004 * k, slack: 0.96 + garment.fit * 0.14, frames: 30, substeps: 5, friction: 0.9, radius: 0.05 * k,
         bendCompliance: 3e-6, elastic: panel.elastic, normals: panel.normal, rest: pattern, pinned: panel.pinned,
+        ...(panel.pattern ? {thickness:panel.thickness, seams:panel.seams, selfCollision:true, iterations:3, particleCompliance:panel.particleCompliance, particleSlack:panel.particleSlack, particleThickness:panel.particleThickness, slack:0.97+garment.fit*0.08} : {}),
       });
       // Sculpted cloth edits apply after draping.
       if (sculptOffsets) panel.keys.forEach((key, v) => {
         const d = key >= 0 && sculptOffsets[key];
         if (d) { points[v * 3] += d[0] * height; points[v * 3 + 1] += d[1] * height; points[v * 3 + 2] += d[2] * height; }
       });
+      if (panel.pattern) for (let v=0;v<panel.sources.length;v++) {
+        const source=panel.sources[v];
+        for (const edit of garment.patternData.edits??[]) {
+          if (edit.panel!==source.panel) continue;
+          const distance=Math.hypot(source.uv[0]-edit.center[0],source.uv[1]-edit.center[1]);
+          if (distance>=edit.radius) continue;
+          const influence=(1-distance/edit.radius)**2;
+          for (let c=0;c<3;c++)points[v*3+c]+=edit.delta[c]*height*influence;
+        }
+      }
       // Exact final pass: nothing may end inside the skin or a lower layer.
-      resolvePenetration(points, panel.index, collider, { thickness: 0.0035 * k, depth: 0.03 * k, smoothing: 2, normals: panel.normal });
+      if (panel.pattern) {
+        let start=0;
+        while(start<points.length/3) {
+          let end=start+1;
+          while(end<points.length/3&&panel.materials[end]===panel.materials[start])end++;
+          resolvePenetration(points.subarray(start*3,end*3),null,collider,{thickness:panel.particleThickness[start],depth:0.03*k,smoothing:0,normals:panel.normal.slice(start*3,end*3)});
+          start=end;
+        }
+        projectPanelContacts(points,panel,collider,k);
+      } else resolvePenetration(points, panel.index, collider, { thickness: 0.0035 * k, depth: 0.03 * k, smoothing: 2, normals: panel.normal });
       // Skin weights come from the body surface now under each point, so the
       // cloth moves with the skin it rests on in every pose.
       if (!panel.ownWeights) transferWeights(context, points, panel, skin);
@@ -517,9 +550,10 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new Float32BufferAttribute(points, 3)); geometry.setIndex(panel.index); geometry.computeVertexNormals();
       panel.normal = Array.from(geometry.getAttribute('normal').array);
+      if(panel.pattern)for(const face of coveredPatternFaces(context,panel,points,geometry.attributes.normal.array,skin,layout))covered.add(face);
       collider.add(points, geometry.getAttribute('normal').array, panel.index);
       geometry.dispose();
-      addHems(panel, 0.0016 * k);
+      addHems(panel, panel.pattern ? panel.thickness * 0.4 : 0.0016 * k);
       finished.push({ panel, garment, layer });
     }
   });
@@ -528,6 +562,7 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   // through. A skirt or dress tube covers what lies between its band and hem.
   const outerCovers = (layer, v) => garments.some((outer, j) => {
     if (j <= layer || v < 0) return false;
+    if (outer.authoringMode!=='surface'&&outer.patternData?.panels.length) return false;
     const y = context.positions[v * 3 + 1];
     if (outer.type === 'skirt' || outer.type === 'dress') {
       const tube = finished.find(item => item.layer === j && item.panel.skirt)?.panel.skirt;
@@ -537,15 +572,18 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
     return coverage(outer, v, layout, context.positions) >= 0.03 * k;
   });
   for (const { panel, garment, layer } of finished) {
-    const hidden = panel.origins.map(v => outerCovers(layer, v));
+    const hidden = panel.origins.map(v => !panel.pattern && outerCovers(layer, v));
     const offset = meshData.pos.length / 3;
     for (let v = 0; v < panel.pos.length / 3; v++) {
       const p = new Vector3(panel.pos[v * 3], panel.pos[v * 3 + 1], panel.pos[v * 3 + 2]);
-      const color = patternColor(garment, p, k);
+      const pieceMaterial = panel.materials?.[v] ?? panel.materials?.[panel.origins[v]];
+      const color = patternColor(pieceMaterial ? {...garment,...pieceMaterial} : garment, p, k);
       meshData.pos.push(p.x, p.y, p.z); meshData.color.push(color.r, color.g, color.b);
     }
-    meshData.uv.push(...panel.uv); meshData.joints.push(...panel.joints); meshData.weights.push(...panel.weights); meshData.keys.push(...panel.keys);
+    for (const key of ['uv','joints','weights','keys']) for (const value of panel[key]) meshData[key].push(value);
     for (let v = 0; v < panel.pos.length / 3; v++) meshData.garment.push(layer);
+    for (let v = 0; v < panel.pos.length / 3; v++) meshData.piece.push(panel.pieceOf?.[v] ?? -1);
+    for (let v = 0; v < panel.pos.length / 3; v++) meshData.sources.push(panel.sources?.[v] ?? null);
     for (let i = 0; i < panel.index.length; i += 3) {
       const a = panel.index[i], b = panel.index[i + 1], c = panel.index[i + 2];
       if (hidden[a] && hidden[b] && hidden[c]) continue;
@@ -565,11 +603,14 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   geometry.userData.proxyVertexCount = meshData.keys.length;
   // Which garment (its index in the outfit) each vertex belongs to, for picking a piece by clicking it.
   geometry.userData.garmentOf = Int8Array.from(meshData.garment);
+  geometry.userData.pieceOf = Int16Array.from(meshData.piece);
+  geometry.userData.patternSources = meshData.sources;
   const roughness = garments.reduce((sum, g) => sum + g.roughness, 0) / Math.max(1, garments.length);
   const mesh = new SkinnedMesh(geometry, new MeshStandardMaterial({ vertexColors: true, roughness, side: DoubleSide }));
   mesh.name = 'Outfit';
   mesh.userData.style = 'tailor';
   mesh.userData.tailor = true;
+  mesh.userData.patterns = garments.map(g => g.patternData ?? null);
   context.group.add(mesh);
   mesh.bind(context.body.skeleton, context.body.bindMatrix);
   return { mesh, covered };

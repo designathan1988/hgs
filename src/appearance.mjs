@@ -10,7 +10,7 @@ import { eyePalette } from './state.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
-import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial } from './locks.mjs';
+import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial, lockNormalMap } from './locks.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 
 const hairGenerators = new Map();
@@ -167,6 +167,7 @@ async function proxyObject(name, label, context, { color, hair = false, fit = 0,
   });
   if (hair && material.isMeshPhysicalMaterial) { material.sheen = 0.6; material.sheenRoughness = 0.65; material.sheenColor.set(0x958477); }
   const textureURL = textureFile ? new URL(`../assets/proxies/${textureFile}`, import.meta.url).href : proxyTextureURL(proxy);
+  if (textureURL && context.lod !== 'low') material.userData.hgsProxyTexture = { url: textureURL, name, recolor: Boolean(recolor), kind: proxy.meta.kind, hair };
   if (textureURL && textured) {
     const base = await imageTexture(textureURL);
     const derived = make => async () => { const texture = make(); texture.colorSpace = SRGBColorSpace; texture.flipY = false; texture.needsUpdate = true; return texture; };
@@ -197,6 +198,44 @@ async function proxyObject(name, label, context, { color, hair = false, fit = 0,
   context.group.add(mesh);
   mesh.bind(context.body.skeleton, context.body.bindMatrix);
   return { mesh, proxy };
+}
+
+/** Restore the existing browser texture pipeline after numeric geometry was built in a worker. */
+export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
+  if (typeof document === 'undefined') return;
+  const meshes = [];
+  human.group.traverse(object => { if (object.isMesh) meshes.push(object); });
+  await Promise.all(meshes.map(async mesh => {
+    signal?.throwIfAborted();
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of materials) {
+      if (material.userData.hgsSkinTexture) material.map = await imageTexture(material.userData.hgsSkinTexture, { flipY: true });
+      const source = material.userData.hgsProxyTexture;
+      if (source) {
+        const base = await imageTexture(source.url);
+        const derived = make => async () => { const texture = make(); texture.colorSpace = SRGBColorSpace; texture.flipY = false; texture.needsUpdate = true; return texture; };
+        let texture = base;
+        if (source.recolor) {
+          const proxy = await loadProxy(source.name);
+          texture = await sharedTexture(`detail:${source.name}`, derived(() => detailTexture(base.image, proxy.uvs)));
+          const colors = mesh.geometry.getAttribute('color');
+          if (colors) { for (let i = 0; i < colors.array.length; i++) colors.array[i] = Math.min(1, colors.array[i] / DETAIL_MEAN); colors.needsUpdate = true; }
+        } else if (source.kind === 'eyebrows' || source.kind === 'eyelashes') {
+          texture = await sharedTexture(`white:${source.url}`, derived(() => {
+            const canvas = document.createElement('canvas'); canvas.width = base.image.width; canvas.height = base.image.height;
+            const drawing = canvas.getContext('2d', { willReadFrequently: true }); drawing.drawImage(base.image, 0, 0);
+            const pixels = drawing.getImageData(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < pixels.data.length; i += 4) pixels.data[i] = pixels.data[i + 1] = pixels.data[i + 2] = 255;
+            drawing.putImageData(pixels, 0, 0); return new CanvasTexture(canvas);
+          }));
+        }
+        material.map = texture;
+        if (source.hair) { material.normalMap = await sharedTexture(`normal:${source.url}`, () => hairNormalMap(base.image)); material.normalScale.set(0.7, 0.7); }
+      }
+      if (mesh.name === 'Hair' && mesh.userData.style === 'locks') { material.normalMap = lockNormalMap(); material.normalScale.set(0.45, 0.45); }
+      signal?.throwIfAborted(); material.needsUpdate = true;
+    }
+  }));
 }
 
 const bodyHeight = context => context.body.geometry.boundingBox.max.y - context.body.geometry.boundingBox.min.y;
@@ -443,7 +482,8 @@ async function addSurfaceEyes(context, eyeColor = 0, irisColor) {
       const ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
       next.push(a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca);
     }
-    triangles.splice(0, triangles.length, ...next);
+    triangles.length = 0;
+    for (const triangle of next) triangles.push(triangle);
   }
   const eyeBounds = [-1, 1].map(sign => {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;

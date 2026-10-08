@@ -25,6 +25,9 @@ canvas.addEventListener('pointerdown', event => {
     return;
   }
   if (event.button !== 0) { drag = null; return; }
+  if (ui.dressing && ['clothPin', 'clothUnpin'].includes(ui.clothTool)) {
+    ui.pinCloth(sculptNdc(event, canvas), renderer.viewCamera); drag = null; return;
+  }
   if (ui.tailoring) {
     // Clothes: drag an edge of the garment under the cursor (hem, sleeve, neckline, waistband, legs).
     ui.pickGarment(renderer.clothEditor.garmentAt(sculptNdc(event, canvas), renderer.viewCamera));
@@ -70,7 +73,7 @@ canvas.addEventListener('pointermove', event => {
   showRing(event);
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
   if (ui.locking && !drag) renderer.lockEditor.hover(sculptNdc(event, canvas), renderer.viewCamera);
-  if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera); return; }
+  if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera, { alt: event.altKey }); return; }
   if (drag?.cloth) { ui.clothEdgeMove(renderer.clothEditor.move(event.clientY, canvas.clientHeight)); return; }
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (!drag) return;

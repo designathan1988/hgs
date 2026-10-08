@@ -1,3 +1,5 @@
+import { projectClothSurface } from './cloth-contact.mjs';
+
 /**
  * Cloth draping with XPBD (Macklin, Müller & Chentanez 2016, on Müller et al.
  * 2006 position based dynamics): each substep predicts positions under
@@ -14,6 +16,7 @@
 export function drapeCloth(positions, index, collider, {
   thickness = 0.003, slack = 1, stretchCompliance = 1e-7, bendCompliance = 2e-4, gravity = -9.81,
   frames = 36, substeps = 6, friction = 0.85, pinned = null, damping = 0.985, radius = 0.06, elastic = null, elasticity = 0.92, normals = null, rest = null,
+  seams = [], selfCollision = false, selfCollisionDistance = thickness * 2, iterations = 1, particleCompliance = null, particleSlack = null, particleThickness = null,
 } = {}) {
   const count = positions.length / 3;
   const x = Float32Array.from(positions), previous = Float32Array.from(positions), velocity = new Float32Array(count * 3);
@@ -36,7 +39,9 @@ export function drapeCloth(positions, index, collider, {
   for (const [key, [a, b]] of edges) {
     // Elastic bands (waistbands, cuffs) are cut shorter so they grip.
     const band = elastic && elastic[a] && elastic[b] ? elasticity : 1;
-    constraints.push(a, b, length(a, b) * slack * band, stretchCompliance);
+    const compliance = particleCompliance ? (particleCompliance[a] + particleCompliance[b]) * 0.5 : stretchCompliance;
+    const localSlack = particleSlack ? (particleSlack[a] + particleSlack[b]) * 0.5 : 1;
+    constraints.push(a, b, length(a, b) * slack * band * localSlack, compliance);
     const across = opposite.get(key);
     if (across.length === 2) {
       // Fabric is flat at rest: the bending rest length is the distance
@@ -52,9 +57,37 @@ export function drapeCloth(positions, index, collider, {
         return [along, Math.hypot(cx, cy, cz) / el];
       };
       const [ca, ch] = flat(c), [da, dh] = flat(d);
-      constraints.push(c, d, Math.hypot(ca - da, ch + dh) * slack, bendCompliance);
+      const bend = particleCompliance ? (particleCompliance[c] + particleCompliance[d]) * 8 : bendCompliance;
+      constraints.push(c, d, Math.hypot(ca - da, ch + dh) * slack, bend);
     }
   }
+  // A seam/dart is a compliant distance constraint between independently drafted panels.
+  const excluded = new Set(edges.keys());
+  for (const seam of seams) {
+    if (!Number.isInteger(seam.a) || !Number.isInteger(seam.b) || seam.a < 0 || seam.b < 0 || seam.a >= count || seam.b >= count) continue;
+    constraints.push(seam.a, seam.b, seam.rest ?? 0, seam.compliance ?? 1e-8);
+    excluded.add(edgeKey(seam.a, seam.b));
+  }
+  // Vertices sharing a triangle, a bend, or a sewing junction are local neighbours.
+  for (let i = 0; i < constraints.length; i += 4) excluded.add(edgeKey(constraints[i], constraints[i + 1]));
+  const selfProject = () => {
+    const distance = selfCollisionDistance;
+    if (!selfCollision || !(distance > 0)) return;
+    const grid = new Map(), cell = v => [Math.floor(x[v*3]/distance), Math.floor(x[v*3+1]/distance), Math.floor(x[v*3+2]/distance)];
+    for(let v=0;v<count;v++){const key=cell(v).join(':');if(!grid.has(key))grid.set(key,[]);grid.get(key).push(v);}
+    for(let a=0;a<count;a++){
+      const [cx,cy,cz]=cell(a);
+      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)for(let dz=-1;dz<=1;dz++)for(const b of grid.get(`${cx+dx}:${cy+dy}:${cz+dz}`)??[]){
+        if(b<=a||excluded.has(edgeKey(a,b)))continue;
+        const wa=inverseMass[a],wb=inverseMass[b],w=wa+wb;if(!w)continue;
+        let vx=x[a*3]-x[b*3],vy=x[a*3+1]-x[b*3+1],vz=x[a*3+2]-x[b*3+2],len=Math.hypot(vx,vy,vz);
+        if(len>=distance)continue;
+        if(len<1e-9){vx=0;vy=0;vz=1;len=1;}
+        const correction=(distance-Math.hypot(x[a*3]-x[b*3],x[a*3+1]-x[b*3+1],x[a*3+2]-x[b*3+2]))/w;
+        for(const [c,d] of [[0,vx/len],[1,vy/len],[2,vz/len]]){x[a*3+c]+=d*correction*wa;x[b*3+c]-=d*correction*wb;}
+      }
+    }
+  };
   const n = constraints.length / 4;
   const lambda = new Float32Array(n);
   const dt = 1 / 60 / substeps;
@@ -70,7 +103,7 @@ export function drapeCloth(positions, index, collider, {
       if (!collider.deepest(x[v * 3], x[v * 3 + 1], x[v * 3 + 2], radius, thickness, radius * 0.6, hit, facing)) continue;
       if (hit.distance > radius * 0.75) continue;
       surface[v * 4] = hit.nx; surface[v * 4 + 1] = hit.ny; surface[v * 4 + 2] = hit.nz;
-      surface[v * 4 + 3] = hit.x * hit.nx + hit.y * hit.ny + hit.z * hit.nz + thickness;
+      surface[v * 4 + 3] = hit.x * hit.nx + hit.y * hit.ny + hit.z * hit.nz + (particleThickness?.[v] ?? thickness);
       hasPlane[v] = 1;
     }
     for (let step = 0; step < substeps; step++) {
@@ -85,7 +118,7 @@ export function drapeCloth(positions, index, collider, {
       }
       lambda.fill(0);
       const alphaScale = 1 / (dt * dt);
-      for (let i = 0; i < n; i++) {
+      for (let iteration = 0; iteration < iterations; iteration++) for (let i = 0; i < n; i++) {
         const a = constraints[i * 4], b = constraints[i * 4 + 1], rest = constraints[i * 4 + 2];
         const wa = inverseMass[a], wb = inverseMass[b], w = wa + wb;
         if (!w) continue;
@@ -100,6 +133,8 @@ export function drapeCloth(positions, index, collider, {
         x[a * 3] += sx * wa; x[a * 3 + 1] += sy * wa; x[a * 3 + 2] += sz * wa;
         x[b * 3] -= sx * wb; x[b * 3 + 1] -= sy * wb; x[b * 3 + 2] -= sz * wb;
       }
+      selfProject();
+      if(selfCollision)projectClothSurface(x,index,inverseMass,selfCollisionDistance,excluded,previous);
       // Collision: C(p) = n·p − (n·q + thickness) ≥ 0, projected with stiffness 1.
       for (let v = 0; v < count; v++) {
         contact[v] = 0;

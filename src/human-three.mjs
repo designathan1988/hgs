@@ -172,13 +172,22 @@ export function skinMaterialFor(spec) {
   return { file: `${best.name}.webp`, tint, target };
 }
 
-export async function createHuman(spec = {}) {
+export async function createHuman(spec = {}, { signal, onProgress } = {}) {
+  const checkpoint = async stage => {
+    signal?.throwIfAborted();
+    onProgress?.(stage);
+    if (signal || onProgress) await new Promise(resolve => setTimeout(resolve, 0));
+    signal?.throwIfAborted();
+  };
+  await checkpoint('Assets');
   spec = resolvedSpec(spec);
   const data = await loadHumanData();
+  await checkpoint('Corpo');
   const positions = shapeHuman(data, spec);
   // Sculpted body offsets act on the base mesh, so wearables and the face rig fit them.
   applyOffsets(positions, spec.sculpt?.body, spec.heightMeters ?? 1.7);
   const group = new Group();
+  try {
   group.name = 'Human';
   const skeleton = makeSkeleton(data, positions);
   for (const root of skeleton.roots) group.add(root);
@@ -188,6 +197,7 @@ export async function createHuman(spec = {}) {
     color: spec.lod === 'low' ? skin.target : skin.tint,
     roughness: 0.55 + 0.4 * Math.max(0, Math.min(1, spec.skinRoughness ?? 0.6)),
   });
+  if (spec.lod !== 'low') material.userData.hgsSkinTexture = new URL(`../assets/skins/${skin.file}`, import.meta.url).href;
   if (typeof document !== 'undefined' && spec.lod !== 'low') {
     material.map = await imageTexture(new URL(`../assets/skins/${skin.file}`, import.meta.url).href, { flipY: true });
     material.needsUpdate = true;
@@ -199,13 +209,17 @@ export async function createHuman(spec = {}) {
   body.bind(new Skeleton(skeleton.bones));
   body.normalizeSkinWeights();
   const context = { data, positions, group, body, skeleton, lod: spec.lod ?? 'high', sculpt: spec.sculpt, height: spec.heightMeters ?? 1.7 };
+  await checkpoint('Aparência');
   await dressHuman(context, spec);
+  await checkpoint('Rig');
   // The facial rig is for the close, editable character; crowd LODs skip it.
   const faceMeshes = context.lod === 'high' ? await addFaceRig(context, spec.faceWeights ?? {}) : [];
   if (spec.lod === 'medium' || spec.lod === 'low') {
+    await checkpoint('Detalhes');
     const meshes = [];
     group.traverse(object => { if (object.isMesh) meshes.push(object); });
     for (const mesh of meshes) {
+      signal?.throwIfAborted();
       const previous = mesh.geometry;
       mesh.geometry = await reduceGeometry(previous, spec.lod);
       if (mesh.geometry !== previous) previous.dispose();
@@ -215,19 +229,33 @@ export async function createHuman(spec = {}) {
   group.animations = animations;
   const bounds = body.geometry.boundingBox;
   const height = bounds.max.y - bounds.min.y;
+  await checkpoint('Pronto');
   return {
     // What the hair editor needs to rebuild locks on this exact body.
     context: { data, positions, skeleton, outfitSurface: context.outfitSurface ?? null, height: context.height, lod: context.lod },
     group, body, animations, faceMeshes, metrics: { height, vertices: body.geometry.getAttribute('position').count, triangles: body.geometry.index.count / 3 },
     dispose() {
-      group.traverse(object => {
-        object.geometry?.dispose();
-        // Shared (cached) textures outlive this character.
-        for (const key of ['map', 'normalMap']) if (object.material?.[key] && !object.material[key].userData.shared) object.material[key].dispose();
-        object.material?.dispose();
-      });
+      disposeHumanGroup(group);
     },
   };
+  } catch (error) {
+    disposeHumanGroup(group);
+    throw error;
+  }
+}
+
+function disposeHumanGroup(group) {
+  const geometries = new Set(), materials = new Set(), textures = new Set();
+  group.traverse(object => {
+    if (object.geometry) geometries.add(object.geometry);
+    for (const material of Array.isArray(object.material) ? object.material : object.material ? [object.material] : []) {
+      materials.add(material);
+      for (const key of ['map', 'normalMap']) if (material[key] && !material[key].userData.shared) textures.add(material[key]);
+    }
+  });
+  for (const geometry of geometries) geometry.dispose();
+  for (const texture of textures) texture.dispose();
+  for (const material of materials) material.dispose();
 }
 
 // Unreal Mannequin names (the rig's own) mapped to Mixamo's, which Unity's

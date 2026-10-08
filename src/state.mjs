@@ -69,6 +69,8 @@ export const colorKeys = ['skin', 'hair', 'eyes', 'top', 'bottom', 'brows', 'las
 
 export function normalizeCharacter(value = {}) {
   const result = { ...defaultCharacter };
+  result.version = 2;
+  result.creation = { locks: Object.fromEntries(['body', 'face', 'hair', 'clothes'].map(key => [key, value.creation?.locks?.[key] === true])) };
   if (typeof value.name === 'string') result.name = value.name.trim().slice(0, 42) || defaultCharacter.name;
   if (Number.isFinite(value.seed)) result.seed = Math.floor(value.seed) >>> 0;
   for (const [key, [min, max, integer]] of Object.entries(ranges)) {
@@ -88,7 +90,7 @@ export function normalizeCharacter(value = {}) {
   if (hairPresetIds.includes(value.hairPreset)) result.hairPreset = value.hairPreset;
   else if (Number.isInteger(value.hairStyle) && legacyHair[value.hairStyle]) result.hairPreset = legacyHair[value.hairStyle];
   result.locks = value.locks ? normalizeLocks(value.locks) : null;
-  if (result.locks && !result.locks.locks.length && result.hairPreset !== 'careca') result.locks = null;
+  if (result.locks && !result.locks.locks.length && !Array.isArray(value.locks?.locks)) result.locks = null;
   result.garments = Array.isArray(value.garments) ? value.garments.slice(0, 8).map(normalizeGarment) : [newGarment('tshirt'), newGarment('pants')];
   // Free colours chosen with the colour picker; a palette swatch clears them.
   result.colors = {};
@@ -144,4 +146,26 @@ export function randomCharacter(seed = Math.floor(Math.random() * 4294967296)) {
     animationSpeed: 0.78 + random() * 0.45,
     lighting: 2,
   });
+}
+
+/** A new deterministic variation, preserving complete authoring groups chosen by the user. */
+export function varyCharacter(character, locks = character.creation?.locks ?? {}, seed = Math.floor(Math.random() * 4294967296)) {
+  const current = normalizeCharacter(character), next = randomCharacter(seed);
+  const groups = {
+    body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness'],
+    face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes'],
+    hair: ['hairPreset', 'hairColor', 'locks'],
+    clothes: ['outfit', 'garments', 'topColor', 'bottomColor'],
+  };
+  for (const [group, keys] of Object.entries(groups)) if (locks[group]) for (const key of keys) next[key] = structuredClone(current[key]);
+  next.colors = {};
+  for (const [group, keys] of Object.entries({ body: ['skin'], face: ['eyes', 'brows', 'lashes'], hair: ['hair'], clothes: ['top', 'bottom'] })) {
+    if (locks[group]) for (const key of keys) if (current.colors[key]) next.colors[key] = current.colors[key];
+  }
+  if (locks.body || locks.face) next.sculpt.body = structuredClone(current.sculpt.body);
+  if (locks.hair) { next.sculpt.hair = structuredClone(current.sculpt.hair); next.sculpt.pins = structuredClone(current.sculpt.pins); }
+  if (locks.clothes) next.sculpt.outfit = structuredClone(current.sculpt.outfit);
+  for (const key of ['name', 'animation', 'animationSpeed', 'lighting', 'pose', 'expression', 'expressionIntensity']) next[key] = current[key];
+  next.creation = { locks: { ...locks } };
+  return normalizeCharacter(next);
 }
