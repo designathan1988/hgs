@@ -12,6 +12,7 @@ import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
 import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial, lockNormalMap } from './locks.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
+import { buildHairRig } from './hair-rig.mjs';
 
 const hairGenerators = new Map();
 const clothingGenerators = new Map();
@@ -364,7 +365,8 @@ async function shellHair(context, color, { thickness, bumps, round, opacity = 1 
   applyOffsets(geometry.getAttribute('position').array, context.sculpt?.hair?.[context.shellStyle], context.height ?? 1.7);
   geometry.computeVertexNormals();
   geometry.userData.proxyVertexCount = out.pos.length / 3;
-  const material = new MeshStandardMaterial({ vertexColors: true, roughness: 0.92, transparent: true, alphaTest: 0.25, side: DoubleSide });
+  // Cut-out (glTF MASK) with alpha to coverage under MSAA: no sorting of a double-sided transparent shell.
+  const material = new MeshStandardMaterial({ vertexColors: true, roughness: 0.92, transparent: false, alphaTest: 0.25, alphaToCoverage: true, side: DoubleSide });
   const mesh = new SkinnedMesh(geometry, material);
   mesh.name = 'Hair';
   mesh.userData.style = context.shellStyle;
@@ -733,7 +735,9 @@ export async function dressHuman(context, spec) {
       state.sim.apply();
       if (state.locks.length) {
         const color = spec.hairColor ?? 0x30231e;
-        const mesh = locksMesh(context, state, color);
+        // Hair joint chains for the free part of long locks (hair-rig.mjs).
+        const rig = buildHairRig(context, state);
+        const mesh = locksMesh(context, state, color, rig);
         context.group.add(mesh);
         mesh.bind(context.body.skeleton, context.body.bindMatrix);
         const under = context.lod === 'low' ? null : locksUnderlayGeometry(context.body.geometry, locksScalpColors(state), color);
@@ -743,6 +747,8 @@ export async function dressHuman(context, spec) {
           context.group.add(scalp);
           scalp.bind(context.body.skeleton, context.body.bindMatrix);
         }
+        // The joints join the character's one skeleton; every skinned mesh is rebound to it.
+        if (rig.attach().length) context.group.userData.hairSprings = rig.springs;
       }
     } else if (shellStyles[hair.style]) {
       context.shellStyle = hair.style;

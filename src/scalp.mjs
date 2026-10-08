@@ -9,8 +9,6 @@ import { SurfaceCollider } from './collision.mjs';
  */
 const TAU = Math.PI * 2;
 export const HAIRLINE_POINTS = 16;
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const round = (v, digits = 1000) => Math.round(v * digits) / digits;
 
 /** A natural hairline: high on the forehead, above the ears, low at the nape (radians of elevation). */
@@ -135,14 +133,33 @@ export function vertexNormals(data, positions, frame) {
   return normals;
 }
 
-/** Skin weights for hair: the head near the scalp, blending to the upper spine below the neck. */
-export function hairWeights(data, skeleton) {
-  const index = name => data.skeleton.bones.findIndex(bone => bone.name === name);
-  const head = index('head'), neck = index('neck_01'), spine = index('spine_03');
-  const neckY = skeleton.heads[skeleton.byName.get('neck_01')].y;
-  return p => {
-    const t = smooth(neckY - 0.06, neckY + 0.02, p.y);
-    if (t >= 1) return [[head, 0, 0, 0], [1, 0, 0, 0]];
-    return [[head, neck, spine, 0], [t, (1 - t) * 0.4, (1 - t) * 0.6, 0]];
+/**
+ * Skin weights for the part of the hair resting on the head: transferred from
+ * the head and neck skin it lies on (Nearest Face Interpolated, Blender's Data
+ * Transfer), so it moves exactly like that skin; beyond 15 cm, or with no head
+ * skin near, the head bone. The free part of long hair is weighted to the hair
+ * joint chains instead (hair-rig.mjs).
+ */
+export function hairSkinWeights(data, positions, normals, frame) {
+  const names = data.skeleton.bones.map(bone => bone.name), head = names.indexOf('head'), neck = names.indexOf('neck_01');
+  const index = [];
+  for (const face of frame.faces) {
+    const ids = [0, 1, 2, 3].map(c => data.faces[face * 4 + c]), influence = new Map();
+    for (const v of ids) for (let k = 0; k < 4; k++) influence.set(data.joints[v * 4 + k], (influence.get(data.joints[v * 4 + k]) ?? 0) + data.weights[v * 4 + k]);
+    const dominant = [...influence].sort((a, b) => b[1] - a[1])[0][0];
+    if (dominant === head || dominant === neck) index.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
+  }
+  const skin = new SurfaceCollider(0.015).add(positions, normals, index), hit = {};
+  const weigh = p => {
+    if (!skin.closest(p.x, p.y, p.z, 0.15, hit)) return [[head, 0, 0, 0], [1, 0, 0, 0]];
+    const total = new Map();
+    for (const [id, share] of [[hit.a, hit.u], [hit.b, hit.v], [hit.c, hit.w]]) for (let k = 0; k < 4; k++) {
+      const w = data.weights[id * 4 + k] / 65535 * share;
+      if (w > 0) total.set(data.joints[id * 4 + k], (total.get(data.joints[id * 4 + k]) ?? 0) + w);
+    }
+    const top = [...total].sort((a, b) => b[1] - a[1]).slice(0, 4), sum = top.reduce((s, [, w]) => s + w, 0) || 1;
+    return [[0, 1, 2, 3].map(k => top[k]?.[0] ?? 0), [0, 1, 2, 3].map(k => (top[k]?.[1] ?? 0) / sum)];
   };
+  weigh.skin = skin; // the head and neck skin surface, for telling which part of a lock rests on it
+  return weigh;
 }

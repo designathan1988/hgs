@@ -2,8 +2,9 @@ import {
   BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, Float32BufferAttribute, MeshStandardMaterial, RepeatWrapping,
   SkinnedMesh, Triangle, Uint16BufferAttribute, Uint32BufferAttribute, Vector2, Vector3,
 } from 'three';
-import { defaultHairline, hairCollider, hairWeights, headFrame, scalpField, vertexNormals } from './scalp.mjs';
+import { defaultHairline, hairCollider, headFrame, scalpField, vertexNormals } from './scalp.mjs';
 import { fusedHairSurface, hairFusionGroups, normalizeHairFusion } from './hair-fusion.mjs';
+import { buildHairRig } from './hair-rig.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -842,15 +843,15 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
       normal[v * 3] = nx; normal[v * 3 + 1] = ny; normal[v * 3 + 2] = nz;
       uv[v * 2] = k / sides; uv[v * 2 + 1] = u;
       color[v * 3] = color[v * 3 + 1] = color[v * 3 + 2] = shade;
-      vertex?.(px, py, pz);
+      vertex?.(px, py, pz, u);
     }
   }
   // Close the sunken root end.
   pos.set(line.subarray(0, 3), v * 3); normal.set([-tan[0], -tan[1], -tan[2]], v * 3); uv.set([0.5, 0], v * 2); color.set([0.78, 0.78, 0.78], v * 3);
-  vertex?.(line[0], line[1], line[2]);
+  vertex?.(line[0], line[1], line[2], 0);
   if (flatTip) {
     pos.set(line.subarray((M - 1) * 3, M * 3), (v + 1) * 3); normal.set(tan.subarray((M - 1) * 3, M * 3), (v + 1) * 3); uv.set([.5, 1], (v + 1) * 2); color.set([1, 1, 1], (v + 1) * 3);
-    vertex?.(line[(M - 1) * 3], line[(M - 1) * 3 + 1], line[(M - 1) * 3 + 2]);
+    vertex?.(line[(M - 1) * 3], line[(M - 1) * 3 + 1], line[(M - 1) * 3 + 2], 1);
   }
   const index = new Uint32Array((M - 1) * sides * 6 + sides * 3 + (flatTip ? sides * 3 : 0));
   let n = 0;
@@ -933,20 +934,24 @@ export function lockMaterial(color, { highlight = false } = {}) {
   return material;
 }
 
-/** The game mesh for a locks hairstyle: every lock merged and skinned to the head. */
-export function locksMesh(context, state, color) {
-  const weightsFor = hairWeights(context.data, context.skeleton);
+/**
+ * The game mesh for a locks hairstyle: every lock merged into one skinned
+ * mesh. `rig` (hair-rig.mjs) weights each vertex: the part resting on the head
+ * like the skin under it, the free part of long locks to the hair joints.
+ * Without a rig (a mesh not attached to a character) only skin weights are used.
+ */
+export function locksMesh(context, state, color, rig = buildHairRig(context, state, { joints: false })) {
   const joints = [], weights = [], point = new Vector3();
   const groups = hairFusionGroups(state), fused = new Set(groups.flatMap(g => g.locks));
   const parts = state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockSurface(lock, state, {
     detail: context.lod === 'low' ? 0.45 : context.lod === 'medium' ? 0.65 : 0.85, sides: context.lod === 'low' ? 8 : context.lod === 'medium' ? 10 : SIDES,
-    vertex: (x, y, z) => { const [j, w] = weightsFor(point.set(x, y, z)); joints.push(...j); weights.push(...w); },
+    vertex: (x, y, z, u) => { const [j, w] = rig.weightsFor(lock, u, point.set(x, y, z)); joints.push(...j); weights.push(...w); },
   }));
   for (const group of groups) {
     const part = fusedHairSurface(state, group.locks, lockSurface, { group: group.id });
     // Official Three.js SkinnedMesh contract: four joint indices and weights
     // for every extracted vertex, including newly generated fusion topology.
-    for (let i = 0; i < part.pos.length; i += 3) { const [j, w] = weightsFor(point.fromArray(part.pos, i)); joints.push(...j); weights.push(...w); }
+    for (let i = 0; i < part.pos.length; i += 3) { const [j, w] = rig.weightsAt(point.fromArray(part.pos, i)); joints.push(...j); weights.push(...w); }
     parts.push(part);
   }
   const geometry = geometryFrom(parts, { skinIndex: new Uint16BufferAttribute(joints, 4), skinWeight: new Float32BufferAttribute(weights, 4) });

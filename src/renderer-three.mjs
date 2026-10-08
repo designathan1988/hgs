@@ -13,6 +13,7 @@ import { hairPresetData } from './hair-presets.mjs';
 import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPalette } from './state.mjs';
 import { buildHumanInWorker } from './generation.mjs';
 import { hydrateHumanAppearance } from './appearance.mjs';
+import { SpringBones } from './spring-bones.mjs';
 
 const femaleOutfits = ['female_casualsuit01', 'female_casualsuit02', 'female_elegantsuit01', 'female_sportsuit01'];
 const maleOutfits = ['male_casualsuit01', 'male_casualsuit02', 'male_elegantsuit01', 'male_worksuit01'];
@@ -185,6 +186,8 @@ export class Renderer {
       this.person = person;
       this.current = human; this.scene.add(human.group);
       this.mixer = new AnimationMixer(human.group);
+      // Hair joint chains swing after the body animation (VRMC_springBone algorithm).
+      this.springs = new SpringBones(human.group, human.group.userData.hairSprings);
       this.action = null;
       this.setPresentation(person);
       // Keep the user's orbit and zoom; only follow a change in stature.
@@ -223,6 +226,8 @@ export class Renderer {
       else action.setLoop(LoopRepeat, Infinity);
       action.play();
       this.action = action;
+      // A new clip starts without a blend: restart the springs from it (as SpringBoneSimulator3D.reset()).
+      this.mixer.update(0); this.springs?.reset();
     }
     action.setEffectiveTimeScale(person.animationSpeed ?? 1);
   }
@@ -235,6 +240,7 @@ export class Renderer {
     this.mixer?.stopAllAction();
     this.action = null;
     this.current.body.skeleton.pose();
+    this.springs?.reset();
     applyFaceWeights(this.current.faceMeshes, {});
     this.sculpt.prepare(this.current, { pins: this.person?.sculpt?.pins?.[this.current.group.getObjectByName('Hair')?.userData.style] });
   }
@@ -251,8 +257,9 @@ export class Renderer {
     if (!this.current) return;
     this.mixer?.stopAllAction(); this.action = null;
     this.current.body.skeleton.pose();
+    this.springs?.reset();
     applyFaceWeights(this.current.faceMeshes, {});
-    const keep = this.lockEditor.active ? this.lockEditor.end() : null;
+    const keep =this.lockEditor.active ? this.lockEditor.end() : null;
     this.lockEditor.begin(this.current, keep ?? (this.person ? hairLocksOf(this.person) : null), this.hairColor ?? 0x30231e);
     const height = this.current.metrics.height;
     if (this.camera.distance > 1.2) { this.camera.yaw = 0.55; this.camera.pitch = 0.12; this.camera.distance = 1.05; this.camera.target.set(0, height * 0.88, 0); }
@@ -351,7 +358,7 @@ export class Renderer {
     this.renderer.setSize(width, height, false);
     this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
-    if (!this.frozen) this.mixer?.update(dt);
+    if (!this.frozen) { this.mixer?.update(dt); this.springs?.update(dt); }
     if (this.locksMode && this.lockEditor.active) {
       this.lockEditor.tickPhysics(dt || 1 / 60);
       this.lockEditor.step();
