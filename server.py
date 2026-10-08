@@ -5,6 +5,7 @@ serving old modules after the project is updated. This server asks the browser
 to revalidate every file and gives module scripts and textures explicit types.
 """
 import http.server
+import os
 import sys
 from functools import partial
 from pathlib import Path
@@ -28,7 +29,9 @@ class StudioHandler(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    # Port: the command-line argument, else the PORT variable (set by the preview
+    # tooling when it assigns a free port), else 8765.
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8765"))
     root = Path(__file__).resolve().parent
     handler = partial(StudioHandler, directory=str(root))
     with http.server.ThreadingHTTPServer(("127.0.0.1", port), handler) as server:
