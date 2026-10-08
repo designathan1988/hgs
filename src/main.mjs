@@ -1,9 +1,12 @@
 import { sculptNdc } from './sculpt.mjs';
 import { Renderer } from './renderer-three.mjs';
-import { StudioUI } from './ui.mjs';
+import { StudioUI, restoredSession } from './ui.mjs';
+import { Store, createState } from './store.mjs';
 
 const canvas = document.getElementById('stage');
-const ui = new StudioUI();
+// The global state starts from the last session's character and panel preferences.
+const store = new Store(createState(restoredSession()));
+const ui = new StudioUI(store);
 let renderer;
 let drag = null;
 const sculptHit = event => renderer?.sculpt.hit(sculptNdc(event, canvas), renderer.viewCamera);
@@ -25,7 +28,7 @@ canvas.addEventListener('pointerdown', event => {
     return;
   }
   if (event.button !== 0) { drag = null; return; }
-  if (ui.dressing && ['clothPin', 'clothUnpin'].includes(ui.clothTool)) {
+  if (ui.pinning) {
     ui.pinCloth(sculptNdc(event, canvas), renderer.viewCamera); drag = null; return;
   }
   if (ui.tailoring) {
@@ -80,6 +83,9 @@ canvas.addEventListener('pointermove', event => {
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
   if (!drag) return;
   const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+  if (!dx && !dy) return;
+  // The camera leaves the view chosen in the toolbar.
+  ui.viewMoved();
   if (drag.pan) renderer.camera.pan(dx, dy); else renderer.camera.orbit(dx, dy, drag.pivot);
   drag.x = event.clientX; drag.y = event.clientY;
 });
@@ -103,37 +109,30 @@ window.addEventListener('keydown', event => {
   if (!typing) held.add(event.key.toLowerCase());
   if (typing) return;
   const key = event.key.toLowerCase(), command = event.ctrlKey || event.metaKey;
+  // One history for the whole studio: the store sends it to the hair editor while it is open.
+  if (command && key === 'z' && !event.shiftKey) { event.preventDefault(); if (!drag) store.undo(); return; }
+  if (command && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); if (!drag) store.redo(); return; }
   if (ui.locking) {
     const editor = renderer.lockEditor;
-    if (command && key === 'z' && !event.shiftKey) { event.preventDefault(); editor.undo(); return; }
-    if (command && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); editor.redo(); return; }
     if (key === 'delete') { event.preventDefault(); editor.deleteSelected(); return; }
     // F: keep shape (held while releasing a pulled lock, or pressed with locks selected); G: gravity on/off.
     if (!command && key === 'f') { editor.fixHeld = true; if (!event.repeat && !drag) editor.fixSelected(); return; }
-    if (!command && key === 'g' && !event.repeat) { editor.setGravityOn(!editor.settings.gravityOn); ui.render(); return; }
+    if (!command && key === 'g' && !event.repeat) { editor.setGravityOn(!editor.settings.gravityOn); ui.scheduleRender(); return; }
     if (!command && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
     if (!command && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
-  }
-  if (ui.dressing && command) {
-    if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoGarment(); return; }
-    if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); ui.redoGarment(); return; }
-  }
-  if (ui.sculpting && command) {
-    if (key === 'z' && !event.shiftKey) { event.preventDefault(); ui.undoSculpt(); }
-    else if (key === 'y' || (key === 'z' && event.shiftKey)) { event.preventDefault(); ui.redoSculpt(); }
   }
 });
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 canvas.addEventListener('wheel', event => {
   event.preventDefault();
-  if (renderer) renderer.camera.zoomAt(event.deltaY, renderer.pointUnder(sculptNdc(event, canvas)));
+  if (renderer) { renderer.camera.zoomAt(event.deltaY, renderer.pointUnder(sculptNdc(event, canvas))); ui.viewMoved(); }
 }, { passive: false });
 
 try {
   renderer = await Renderer.create(canvas, message => ui.fail(message));
   ui.attachRenderer(renderer);
   // Handle for inspecting the editor from the browser console.
-  window.__studio = { ui, renderer };
+  window.__studio = { ui, renderer, store };
   let last = performance.now(), bucketStart = last, frames = 0, aggregate = 0;
   function frame(now) {
     const delta = Math.min(100, now - last); last = now;

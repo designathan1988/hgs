@@ -9,17 +9,18 @@ function svg(tag,attrs){const el=document.createElementNS(NS,tag);for(const [key
 export class PatternEditor {
   constructor(container,{garment,onChange=()=>{}}={}) {
     this.container=container;this.onChange=onChange;this.garment=structuredClone(garment);this.active=0;this.selected=0;this.selectedHole=null;this.tool='select';this.draft=[];this.edge=null;this.sewStart=null;
-    this.root=element('section');this.root.className='pattern-editor';this.root.style.cssText='border:1px solid #415366;padding:10px;border-radius:8px;display:grid;gap:8px;background:#152131;color:#dce9f3;font:12px system-ui;';container.append(this.root);this.render();
+    // Looks come from the app's stylesheet (.pattern-editor, .pe-*), not inline styles.
+    this.root=element('section');this.root.className='pattern-editor';container.append(this.root);this.render();
   }
   setGarment(garment){this.garment=structuredClone(garment);this.active=Math.min(this.active,Math.max(0,(garment?.patternData?.panels.length??1)-1));this.render();}
   get pattern(){return this.garment?.patternData;}
   get panel(){return this.pattern?.panels[this.active];}
   get selectedPoint(){return ((this.selectedHole===null?this.panel.contour:this.panel.holes[this.selectedHole])??[])[this.selected]??this.panel.contour[0];}
   commit(){this.garment={...this.garment,patternData:normalizePattern(this.pattern)};this.onChange(structuredClone(this.garment));this.render();}
-  button(parent,text,action){const b=element('button',text);b.type='button';b.style.cssText='font:inherit;padding:5px 7px;background:#25394d;color:inherit;border:1px solid #5a7184;border-radius:4px;cursor:pointer;';b.addEventListener('click',action);parent.append(b);return b;}
-  select(parent,label,options,value,onChange){const wrap=element('label',label+' '),select=element('select');select.style.cssText='max-width:145px;font:inherit;background:#203247;color:inherit;padding:4px;';for(const [v,text] of options){const option=element('option',text);option.value=v;select.append(option);}select.value=value;select.addEventListener('change',()=>onChange(select.value));wrap.append(select);parent.append(wrap);return select;}
-  number(parent,label,value,step,onChange,min,max){const wrap=element('label',label+' '),input=element('input');input.type='number';input.value=value;input.step=step;if(min!==undefined)input.min=min;if(max!==undefined)input.max=max;input.style.cssText='width:62px;background:#203247;color:inherit;border:1px solid #536c82;font:inherit;padding:4px;';input.addEventListener('change',()=>{if(Number.isFinite(input.valueAsNumber))onChange(input.valueAsNumber);});wrap.append(input);parent.append(wrap);}
-  row(){const row=element('div');row.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:6px';this.root.append(row);return row;}
+  button(parent,text,action){const b=element('button',text);b.type='button';b.className='pe-button';b.addEventListener('click',action);parent.append(b);return b;}
+  select(parent,label,options,value,onChange){const wrap=element('label',label+' '),select=element('select');select.className='pe-select';for(const [v,text] of options){const option=element('option',text);option.value=v;select.append(option);}select.value=value;select.addEventListener('change',()=>onChange(select.value));wrap.append(select);parent.append(wrap);return select;}
+  number(parent,label,value,step,onChange,min,max){const wrap=element('label',label+' '),input=element('input');input.type='number';input.value=value;input.step=step;if(min!==undefined)input.min=min;if(max!==undefined)input.max=max;input.className='pe-number';input.addEventListener('change',()=>{if(Number.isFinite(input.valueAsNumber))onChange(input.valueAsNumber);});wrap.append(input);parent.append(wrap);}
+  row(){const row=element('div');row.className='pe-row';this.root.append(row);return row;}
   begin(tool){this.tool=tool;this.draft=[];this.sewStart=null;this.render();}
   finishDrawing(){
     if(this.draft.length<3&&this.tool!=='cut')return;
@@ -46,7 +47,7 @@ export class PatternEditor {
     this.root.replaceChildren();const top=this.row();this.button(top,'Gerar molde editável',()=>{this.garment={...this.garment,authoringMode:'pattern',patternData:createPatternTemplate(this.garment.type,this.garment)};this.active=0;this.commit();});
     if(!this.pattern?.panels.length){this.root.append(element('p','Gere os painéis do modelo para desenhar contornos, costurar e ajustar o tecido.'));return;}
     this.select(top,'Peça',this.pattern.panels.map((p,i)=>[String(i),p.name]),String(this.active),v=>{this.active=Number(v);this.selected=0;this.selectedHole=null;this.render();});
-    const tools=this.row();for(const [tool,label] of [['select','Mover pontos'],['draw','Novo contorno'],['point','Inserir ponto'],['hole','Abertura'],['cut','Corte'],['seam','Costurar'],['dart','Pence'],['opening','Borda aberta']]){const b=this.button(tools,label,()=>this.begin(tool));if(this.tool===tool)b.style.background='#426b83';}
+    const tools=this.row();for(const [tool,label] of [['select','Mover pontos'],['draw','Novo contorno'],['point','Inserir ponto'],['hole','Abertura'],['cut','Corte'],['seam','Costurar'],['dart','Pence'],['opening','Borda aberta']]){const b=this.button(tools,label,()=>this.begin(tool));b.classList.toggle('on',this.tool===tool);b.setAttribute('aria-pressed',String(this.tool===tool));}
     const componentRow=this.row();this.select(componentRow,'Componente',[['','Adicionar…'],...panelComponents.map(c=>[c,labels[c]])],'',v=>{if(!v)return;const panel=createComponent(v,`${v}-${Date.now()}`,this.garment);this.pattern.panels.push(panel);this.active=this.pattern.panels.length-1;this.commit();});
     this.button(componentRow,'Duplicar',()=>{const p=structuredClone(this.panel);p.id=`${p.id}-${Date.now()}`;p.name+=' cópia';this.pattern.panels.push(p);this.active=this.pattern.panels.length-1;this.commit();});
     this.button(componentRow,'Espelhar',()=>{this.pattern.panels.push(mirrorPanel(this.panel,`${this.panel.id}-${Date.now()}`));this.active=this.pattern.panels.length-1;this.commit();});
@@ -57,7 +58,7 @@ export class PatternEditor {
     const bounds=[...this.panel.contour,...this.panel.holes.flat()];
     const minX=Math.min(...bounds.map(p=>p.x))*1000-50,minY=Math.min(...bounds.map(p=>p.y))*1000-50,maxX=Math.max(...bounds.map(p=>p.x))*1000+50,maxY=Math.max(...bounds.map(p=>p.y))*1000+50;
     const width=Math.max(350,maxX-minX),height=Math.max(400,maxY-minY),viewX=(maxX+minX-width)/2,viewY=(maxY+minY-height)/2;
-    const canvas=svg('svg',{viewBox:`${viewX} ${viewY} ${width} ${height}`,role:'img','aria-label':'Editor de molde em milímetros'});canvas.style.cssText='width:100%;height:340px;touch-action:none;background:#edf4f7;border-radius:5px;';this.root.append(canvas);this.canvas=canvas;
+    const canvas=svg('svg',{viewBox:`${viewX} ${viewY} ${width} ${height}`,role:'img','aria-label':'Editor de molde em milímetros'});canvas.classList.add('pe-canvas');this.root.append(canvas);this.canvas=canvas;
     const pointFromEvent=e=>{const pt=canvas.createSVGPoint();pt.x=e.clientX;pt.y=e.clientY;const transformed=pt.matrixTransform(canvas.getScreenCTM().inverse());return{x:Math.round(transformed.x)/1000,y:Math.round(transformed.y)/1000};};
     const path=contour=>{let d=`M ${contour[0].x*1000} ${contour[0].y*1000}`;for(let i=0;i<contour.length;i++){const a=contour[i],b=contour[(i+1)%contour.length];d+=a.out||b.in?` C ${(a.out??[a.x,a.y]).map(x=>x*1000).join(' ')} ${(b.in??[b.x,b.y]).map(x=>x*1000).join(' ')} ${b.x*1000} ${b.y*1000}`:` L ${b.x*1000} ${b.y*1000}`;}return d+' Z';};
     // Millimetre grid and a single active piece keep point editing legible on narrow inspectors.

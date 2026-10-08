@@ -50,7 +50,8 @@ function patchPerson(person, changes) {
 
 export function reducer(state, action) {
   switch (action.type) {
-    case 'person/set': return { ...state, person: normalizeCharacter(action.person) };
+    // A character from the history is a former state: kept as it was, so only what differs reads as changed.
+    case 'person/set': return { ...state, person: action.origin === 'history' ? action.person : normalizeCharacter(action.person) };
     case 'person/patch': return { ...state, person: patchPerson(state.person, action.changes) };
     case 'ui/set': return { ...state, ui: { ...state.ui, ...action.changes } };
     case 'ui/tool': return { ...state, ui: { ...state.ui, tools: { ...state.ui.tools, [action.section]: action.tool } } };

@@ -61,6 +61,15 @@ const paths = {
   info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 7.5h.01"/>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
   more: '<path d="M6 12h.01M12 12h.01M18 12h.01"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  // Sculpt brushes and the clothes tools.
+  grab: '<path d="M8 12.5V6.5a1.5 1.5 0 0 1 3 0v5M11 11V5a1.5 1.5 0 0 1 3 0v6M14 11V6.5a1.5 1.5 0 0 1 3 0V14c0 3.6-2.4 6-5.6 6-2.3 0-3.7-1-4.9-2.8L4.3 13a1.5 1.5 0 0 1 2.5-1.6L8 13"/>',
+  flatten: '<path d="M4 15c3-1 5-4 8-4s5 3 8 4"/><path d="M3 19h18M12 4v4M9.5 6 12 8.5 14.5 6"/>',
+  pinch: '<path d="M4 17c4 0 6-9 8-9s4 9 8 9"/><path d="M6.5 6 9 8.5M17.5 6 15 8.5"/>',
+  orbit: '<ellipse cx="12" cy="12" rx="8.5" ry="4"/><circle cx="12" cy="12" r="2"/><path d="m17.5 5.5 2 2.5-3 .5"/>',
+  paintAdd: '<path d="M14.5 4.5 19.5 9.5 11 18H6v-5z"/><path d="M4 21h6M17 15v6M14 18h6"/>',
+  paintErase: '<path d="M14.5 4.5 19.5 9.5 11 18H6v-5z"/><path d="M4 21h6M14 18h6"/>',
+  sliders: '<path d="M5 7h9M18 7h1M5 17h3M12 17h7"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
 };
 
 /** An inline SVG icon element. */
