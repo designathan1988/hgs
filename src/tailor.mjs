@@ -128,8 +128,11 @@ export function bodyLayout(context) {
     arm[v] = sumArm / total; leg[v] = sumLeg / total;
     armW[v] /= total; legW[v] /= total; headW[v] /= total;
   }
+  // Vertices of the visible body (helpers and joint cubes excluded).
+  const used = new Uint8Array(count);
+  for (const face of faces) for (let c = 0; c < 4; c++) used[data.faces[face * 4 + c]] = 1;
   context.tailorLayout = {
-    faces, normals, arm, leg, armW, legW, headW, arms, legs, height, k,
+    faces, normals, arm, leg, armW, legW, headW, arms, legs, height, k, used, kind,
     hipY: at('thigh_l').y, waistY: at('spine_01').y, chestY: at('spine_03').y, neckY: at('neck_01').y,
     frontZ: at('spine_03').z,
   };
@@ -396,12 +399,49 @@ function skirtPanel(context, garment, layout, layer) {
   return panel;
 }
 
-/** Barycentric skin-weight transfer from the closest body point (body collider vertices are base-mesh ids). */
-function transferWeights(context, points, panel, skin) {
+/**
+ * Body skin split by anatomical region (dominant bone of each face): left and
+ * right arm, left and right leg, torso, head. A pattern panel takes its weights
+ * only from the skin of its own region (Blender Data Transfer restricted to a
+ * source group), so a sleeve hanging near the torso in the A pose never takes
+ * torso weights, nor a bodice the arm's.
+ */
+function regionColliders(context) {
+  if (context.tailorRegions) return context.tailorRegions;
+  const { data, positions } = context, layout = bodyLayout(context), names = data.skeleton.bones.map(bone => bone.name);
+  const lists = { arm_l: [], arm_r: [], leg_l: [], leg_r: [], torso: [], head: [] };
+  for (const face of layout.faces) {
+    const ids = [0, 1, 2, 3].map(c => data.faces[face * 4 + c]), influence = new Map();
+    for (const v of ids) for (let j = 0; j < 4; j++) influence.set(data.joints[v * 4 + j], (influence.get(data.joints[v * 4 + j]) ?? 0) + data.weights[v * 4 + j]);
+    const dominant = names[[...influence].sort((a, b) => b[1] - a[1])[0][0]] ?? '';
+    const part = layout.kind(dominant), side = dominant.endsWith('_r') ? 'r' : 'l';
+    const region = ['upper', 'lower', 'hand'].includes(part) ? `arm_${side}` : ['thigh', 'calf', 'foot'].includes(part) ? `leg_${side}` : part === 'head' ? 'head' : 'torso';
+    lists[region].push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
+  }
+  context.tailorRegions = Object.fromEntries(Object.entries(lists).map(([name, index]) => [name, new SurfaceCollider(0.012 * layout.k).add(positions, layout.normals, index)]));
+  return context.tailorRegions;
+}
+
+/** Region skin of a pattern placement (`region`, `side` from pattern-cloth). */
+function placementRegion(placement) {
+  const side = placement.side === 'r' ? 'r' : 'l';
+  if (placement.region === 'arm' || placement.region === 'hand') return `arm_${side}`;
+  if (placement.region === 'leg' || placement.region === 'foot') return `leg_${side}`;
+  if (placement.region === 'head') return 'head';
+  return 'torso';
+}
+
+/**
+ * Barycentric skin-weight transfer from the closest body point (Nearest Face
+ * Interpolated; body collider vertices are base-mesh ids). `collidersFor(v)`
+ * lists the source surfaces to try in order; a vertex with no source within
+ * the maximum distance keeps the weights it already has.
+ */
+function transferWeights(context, points, panel, collidersFor) {
   const { data } = context, hit = {};
   for (let v = 0; v < points.length / 3; v++) {
     const facing = [panel.normal[v * 3], panel.normal[v * 3 + 1], panel.normal[v * 3 + 2]];
-    if (!skin.closest(points[v * 3], points[v * 3 + 1], points[v * 3 + 2], 0.08, hit, facing)) continue;
+    if (!collidersFor(v).some(skin => skin.closest(points[v * 3], points[v * 3 + 1], points[v * 3 + 2], 0.08, hit, facing))) continue;
     const total = new Map();
     for (const [id, share] of [[hit.a, hit.u], [hit.b, hit.v], [hit.c, hit.w]]) for (let j = 0; j < 4; j++) {
       const w = data.weights[id * 4 + j] / 65535 * share;
@@ -543,9 +583,31 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
         }
         projectPanelContacts(points,panel,collider,k);
       } else resolvePenetration(points, panel.index, collider, { thickness: 0.0035 * k, depth: 0.03 * k, smoothing: 2, normals: panel.normal });
-      // Skin weights come from the body surface now under each point, so the
-      // cloth moves with the skin it rests on in every pose.
-      if (!panel.ownWeights) transferWeights(context, points, panel, skin);
+      // Weights: a panel cut from the body keeps the weights of the skin it was
+      // cut from (topology mapping, like MakeHuman proxies weighted by their
+      // reference vertices), so it deforms with that skin and every layer cut
+      // from the same skin deforms alike. Pattern panels have no such
+      // correspondence: skirt pieces hang from the pelvis and thighs like the
+      // skirt tube, the others take the nearest skin of their own region.
+      if (panel.pattern) {
+        const regions = regionColliders(context), pieces = garment.patternData.panels;
+        const skirt = new Map();
+        panel.pieceOf.forEach((piece, v) => {
+          if (pieces[piece]?.placement.region !== 'skirt') return;
+          const range = skirt.get(piece) ?? { top: -Infinity, hem: Infinity, rx: 1e-3, vertices: [] };
+          range.top = Math.max(range.top, points[v * 3 + 1]); range.hem = Math.min(range.hem, points[v * 3 + 1]); range.rx = Math.max(range.rx, Math.abs(points[v * 3]));
+          range.vertices.push(v); skirt.set(piece, range);
+        });
+        const names = context.data.skeleton.bones.map(bone => bone.name), pelvis = names.indexOf('pelvis'), thighL = names.indexOf('thigh_l'), thighR = names.indexOf('thigh_r');
+        for (const { top, hem, rx, vertices } of skirt.values()) for (const v of vertices) {
+          const s = smooth((top - points[v * 3 + 1]) / Math.max(1e-3, top - hem)), legs = 0.75 * s, side = smooth((points[v * 3] / rx + 1) / 2);
+          panel.joints.splice(v * 4, 4, pelvis, thighL, thighR, 0); panel.weights.splice(v * 4, 4, 1 - legs, legs * side, legs * (1 - side), 0);
+        }
+        transferWeights(context, points, panel, v => {
+          const placement = pieces[panel.pieceOf[v]]?.placement;
+          return !placement || placement.region === 'skirt' ? [] : [regions[placementRegion(placement)], skin];
+        });
+      }
       panel.pos = Array.from(points);
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new Float32BufferAttribute(points, 3)); geometry.setIndex(panel.index); geometry.computeVertexNormals();

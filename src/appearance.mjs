@@ -87,7 +87,7 @@ function detailTexture(image, uvs) {
   return new CanvasTexture(canvas);
 }
 
-async function proxyObject(name, label, context, { color, hair = false, fit = 0, length = 1, volume = 0, textureFile = null, deform = null, recolor = null, texture = 'straight', curl = 0.5, collide = 0, layer = false } = {}) {
+async function proxyObject(name, label, context, { color, hair = false, length = 1, volume = 0, textureFile = null, deform = null, recolor = null, texture = 'straight', curl = 0.5, collide = 0, layer = false } = {}) {
   const proxy = await loadProxy(name);
   const shaped = fitProxy(proxy, context.positions);
   if (deform) for (let i = 0; i < shaped.length; i += 3) {
@@ -107,14 +107,6 @@ async function proxyObject(name, label, context, { color, hair = false, fit = 0,
       shaped[i] = centreX + (shaped[i] - centreX) * (1 + volume * 0.22);
       if (shaped[i + 1] < anchor) shaped[i + 1] = anchor + (shaped[i + 1] - anchor) * Math.max(0.4, Math.min(3.5, length));
       shaped[i + 2] = centreZ + (shaped[i + 2] - centreZ) * (1 + volume * 0.22);
-    }
-  } else if (fit) {
-    let cx = 0, cz = 0;
-    for (let i = 0; i < shaped.length; i += 3) { cx += shaped[i]; cz += shaped[i + 2]; }
-    cx /= shaped.length / 3; cz /= shaped.length / 3;
-    for (let i = 0; i < shaped.length; i += 3) {
-      shaped[i] = cx + (shaped[i] - cx) * (1 + fit * 0.08);
-      shaped[i + 2] = cz + (shaped[i + 2] - cz) * (1 + fit * 0.08);
     }
   }
   const kind = label === 'Hair' ? 'hair' : label === 'Outfit' ? 'outfit' : null;
@@ -423,9 +415,12 @@ function childLayer(context, label, select, color, offset = 0.008) {
   const weights = original.getAttribute('skinWeight');
   const height = context.body.geometry.boundingBox.max.y - context.body.geometry.boundingBox.min.y;
   const out = { pos: [], nor: [], uv: [], joints: [], weights: [], index: [] };
+  const baseIds = original.userData.baseIds, touching = new Map(), copied = new Map();
+  const count = (map, first) => { for (let k = 0; k < 4; k++) map.set(baseIds[first + k], (map.get(baseIds[first + k]) ?? 0) + 1); };
   // Visible body quads only; each is (a, a+1, a+2, a, a+2, a+3) in the index.
   for (let quad = 0; quad < original.index.count; quad += 6) {
     const first = original.index.array[quad];
+    count(touching, first);
     let x = 0, y = 0, z = 0;
     for (let k = 0; k < 4; k++) { x += pos.getX(first + k); y += pos.getY(first + k); z += pos.getZ(first + k); }
     x /= 4; y /= 4; z /= 4;
@@ -437,6 +432,7 @@ function childLayer(context, label, select, color, offset = 0.008) {
     const dominant = [...influence].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
     const boneName = context.data.skeleton.bones[dominant]?.name ?? '';
     if (!select(Math.abs(x) / height, y / height, z / height, boneName)) continue;
+    count(copied, first);
     const at = out.pos.length / 3;
     for (let k = 0; k < 4; k++) {
       const v = first + k;
@@ -458,7 +454,10 @@ function childLayer(context, label, select, color, offset = 0.008) {
   mesh.name = label;
   context.group.add(mesh);
   mesh.bind(context.body.skeleton, context.body.bindMatrix);
-  return mesh;
+  // Skin it fully covers (every quad around the vertex was copied), to be hidden
+  // like a proxy's delete_verts; the border ring stays so no gap opens.
+  const covered = [...copied].filter(([v, n]) => n === touching.get(v)).map(([v]) => v);
+  return { mesh, covered };
 }
 
 async function addSurfaceEyes(context, eyeColor = 0, irisColor) {
@@ -673,7 +672,8 @@ export async function dressHuman(context, spec) {
   if (spec.shoes === 'none') {
     // Barefoot.
   } else if ((spec.ageYears ?? 30) < 16) {
-    childLayer(context, 'ChildShoes', (_x, y, _z, bone) => y < 0.14 && /^(foot|ball)/.test(bone), 0x674b36);
+    const { covered } = childLayer(context, 'ChildShoes', (_x, y, _z, bone) => y < 0.14 && /^(foot|ball)/.test(bone), 0x674b36);
+    hideCoveredSkin(context.body.geometry, covered);
   } else {
     const shoes = spec.shoes ?? 'shoes01';
     if (!shoeStyles.has(shoes)) throw new Error(`Unknown shoes: ${shoes}`);
@@ -692,21 +692,24 @@ export async function dressHuman(context, spec) {
     const { covered } = tailorOutfit(context, clothing.garments ?? [], context.sculpt?.outfit?.tailor, context.collider ?? bodyCollider(context));
     hideBodyFaces(context.body.geometry, covered);
   } else if ((spec.ageYears ?? 30) < 16) {
-    childLayer(context, 'ChildTop', (_x, y, _z, bone) =>
+    // Every layer is cut from the skin first; the covered skin is hidden afterwards.
+    const covered = [];
+    covered.push(...childLayer(context, 'ChildTop', (_x, y, _z, bone) =>
       y > 0.42 && y < 0.87 && /^(spine|clavicle|upperarm|lowerarm|neck)/.test(bone),
-    clothing.color ?? 0x477aa1, 0.014);
-    childLayer(context, 'ChildBottom', (_x, y, _z, bone) =>
+    clothing.color ?? 0x477aa1, 0.014).covered);
+    covered.push(...childLayer(context, 'ChildBottom', (_x, y, _z, bone) =>
       y > 0.09 && y < 0.6 && /^(pelvis|thigh|calf)/.test(bone),
-    clothing.bottomColor ?? 0x343d57, 0.008);
+    clothing.bottomColor ?? 0x343d57, 0.008).covered);
     if (context.lod !== 'low') childLayer(context, 'ChildWaist', (x, y) => x < 0.28 && y > 0.47 && y < 0.56,
       clothing.bottomColor ?? 0x343d57, 0.011);
+    hideCoveredSkin(context.body.geometry, covered);
   } else {
     const style = clothing.style ?? (spec.gender < 0.5 ? 'female_casualsuit01' : 'male_worksuit01');
     if (!bodyOutfits.has(style)) throw new Error(`Unknown outfit: ${style}`);
     const pelvis = context.skeleton.heads[context.skeleton.byName.get('pelvis')];
     const top = clothing.color ?? (clothing.bottomColor !== undefined || context.lod === 'low' ? 0x45505e : undefined);
     const { proxy } = await proxyObject(style, 'Outfit', context, {
-      fit: clothing.fit ?? 0, collide: 0.002, layer: true,
+      collide: 0.002, layer: true,
       recolor: top === undefined ? null : { top, bottom: clothing.bottomColor ?? top, waistY: pelvis.y + 0.02 * bodyHeight(context) },
     });
     hideCoveredSkin(context.body.geometry, proxy.deleteVerts);

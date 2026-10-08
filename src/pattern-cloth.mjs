@@ -18,6 +18,8 @@ export function buildPatternPanels(context,garment,layout,layer,skin=null) {
     const mesh=triangulatePanel(piece,pattern.resolution),offset=out.pos.length/3,place=piece.placement,region=place.region,side=place.side;
     const candidates=[];
     for(let v=0;v<P.length/3;v++) {
+      // Visible skin only: joint cubes and helper geometry are not a weight source.
+      if(layout.used&&!layout.used[v])continue;
       const signed=side==='r'?P[v*3]<=0:side==='l'?P[v*3]>=0:true;
       const include=region==='arm'||region==='hand'?layout.armW[v]>0.55&&signed:region==='leg'||region==='foot'?layout.legW[v]>0.55&&signed:region==='head'?layout.headW[v]>0.45:layout.armW[v]<0.3&&layout.headW[v]<0.3;
       if(include)candidates.push(v);
