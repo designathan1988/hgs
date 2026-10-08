@@ -10,8 +10,8 @@ import { eyePalette } from './state.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
-import { prepareLocks, locksMesh, geometryFrom } from './locks.mjs';
-import { hairStrandTexture } from './hair-cards.mjs';
+import { prepareLocks, locksMesh, geometryFrom, locksCap, capGeometry } from './locks.mjs';
+import { hairCapMaterial, hairCapTexture, hairStrandTexture } from './hair-cards.mjs';
 import { accessoryMaterial, accessoryParts } from './hair-accessories.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 import { buildHairRig } from './hair-rig.mjs';
@@ -268,6 +268,7 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
       }
       // Hair cards: the strand atlas is drawn on the page (the worker has no canvas).
       if (mesh.name === 'Hair' && mesh.userData.style === 'locks') material.map = hairStrandTexture();
+      if (mesh.name === 'HairCap') material.map = hairCapTexture();
       signal?.throwIfAborted(); material.needsUpdate = true;
     }
   }));
@@ -782,7 +783,16 @@ export async function dressHuman(context, spec) {
         const mesh = locksMesh(context, state, color, rig);
         context.group.add(mesh);
         mesh.bind(context.body.skeleton, context.body.bindMatrix);
-        // No painted scalp under the cards: the hair's own cards cover the head.
+        // The hair cap: the scalp under the cards covered with combed strands (off with the hairstyle's `scalp` flag).
+        const cap = context.lod === 'low' ? null : locksCap(state);
+        if (cap) {
+          const point = new Vector3(), joints = [], weights = [];
+          for (let i = 0; i < cap.pos.length; i += 3) { const [j, w] = rig.weightsAt(point.fromArray(cap.pos, i)); joints.push(...j); weights.push(...w); }
+          const capMesh = new SkinnedMesh(capGeometry(cap, { skinIndex: new Uint16BufferAttribute(joints, 4), skinWeight: new Float32BufferAttribute(weights, 4) }), hairCapMaterial(color));
+          capMesh.name = 'HairCap';
+          context.group.add(capMesh);
+          capMesh.bind(context.body.skeleton, context.body.bindMatrix);
+        }
         // Ties, clips and bands hold their points to the head: their mesh moves wholly with `head`.
         const parts = accessoryParts(state);
         if (parts.length) {

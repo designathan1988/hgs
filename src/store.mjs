@@ -30,7 +30,7 @@ export function createState({ person = defaultCharacter, ui = {} } = {}) {
     ui: {
       section: 'personagem',
       // The active tool of each section with tools; null in Roupas is "look around".
-      tools: { cabelo: 'draw', esculpir: 'draw', roupas: null },
+      tools: { cabelo: 'brush', esculpir: 'draw', roupas: null },
       garment: 0, view: 'body', crowd: 0,
       undress: true, sculptTarget: 'body',
       export: { ...defaultExport }, groups: {}, toolPanel: true,

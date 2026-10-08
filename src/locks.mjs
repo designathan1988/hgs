@@ -5,7 +5,7 @@ import {
 import { defaultHairline, hairCollider, headFrame, scalpField, vertexNormals } from './scalp.mjs';
 import { fusedHairSurface, hairFusionGroups, normalizeHairFusion } from './hair-fusion.mjs';
 import { buildHairRig } from './hair-rig.mjs';
-import { cardFromSweep, hairCardMaterial } from './hair-cards.mjs';
+import { cardFromSweep, hairCapPart, hairCardMaterial } from './hair-cards.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -808,7 +808,7 @@ export function lockCard(lock, state, { detail = 1, vertex = null } = {}) {
   // and is half again as wide as the lock so neighbouring cards overlap and no scalp shows between them.
   const half = sweep.ss.map(s => {
     const u = clamp(s / sweep.length, 0, 1);
-    return 0.75 * lock.width * (1 - 0.45 * lock.taper * Math.pow(u, 1.4)) * (0.75 + 0.25 * smooth(0, Math.min(0.03, sweep.length * 0.2), s));
+    return 0.75 * lock.width * (1 - 0.7 * lock.taper * Math.pow(u, 1.6)) * (0.75 + 0.25 * smooth(0, Math.min(0.03, sweep.length * 0.2), s));
   });
   const u = sweep.ss.map(s => clamp(s / sweep.length, 0, 1));
   return cardFromSweep({ M: sweep.M, line: sweep.line, tan: sweep.tan, side: sweep.SA, out: sweep.RA, half, u }, lock, { vertex });
@@ -981,6 +981,50 @@ export function updateGeometry(geometry, part) {
 
 /** The locks' material: hair cards (hair-cards.mjs). */
 export const lockMaterial = hairCardMaterial;
+
+/**
+ * The combing direction over the scalp: at a point, the average direction in
+ * which the locks rooted within 6 cm leave the scalp (their first fifth, in
+ * the skin's plane, nearer ones counting more); with none near, combed back
+ * from the face and a little to its own side.
+ */
+export function hairFlow(state) {
+  const C = state.frame.C, starts = state.locks.filter(lock => !lock.erased && (lock.density ?? 1) > 0).map(lock => ({
+    p: lock.rootP, d: [lock.x[12] - lock.rootP.x, lock.x[13] - lock.rootP.y, lock.x[14] - lock.rootP.z],
+  }));
+  return (p, n) => {
+    let x = 0, y = 0, z = 0;
+    for (const s of starts) {
+      const dist = Math.hypot(s.p.x - p.x, s.p.y - p.y, s.p.z - p.z);
+      if (dist > 0.06) continue;
+      const w = 1 / (dist + 0.01), l = Math.hypot(...s.d) || 1;
+      x += s.d[0] / l * w; y += s.d[1] / l * w; z += s.d[2] / l * w;
+    }
+    if (x * x + y * y + z * z < 1e-8) { x = (p.x < C.x ? -1 : 1) * 0.35; y = -0.45; z = -1; }
+    const dot = x * n.x + y * n.y + z * n.z;
+    x -= n.x * dot; y -= n.y * dot; z -= n.z * dot;
+    const l = Math.hypot(x, y, z);
+    return l > 1e-6 ? [x / l, y / l, z / l] : [0, -1, 0];
+  };
+}
+/** BufferGeometry of a hair cap part (RGBA colour: the alpha fades the hairline). */
+export function capGeometry(part, extra = null) {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(part.pos, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(part.normal, 3));
+  geometry.setAttribute('uv', new Float32BufferAttribute(part.uv, 2));
+  geometry.setAttribute('color', new Float32BufferAttribute(part.color, 4));
+  if (extra) for (const [name, attribute] of Object.entries(extra)) geometry.setAttribute(name, attribute);
+  geometry.setIndex(part.pos.length / 3 > 65535 ? new Uint32BufferAttribute(part.index, 1) : new Uint16BufferAttribute(part.index, 1));
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+/** The hair cap for a hairstyle (none when its `scalp` flag is off or it has no locks). */
+export function locksCap(state) {
+  if (!state.scalp || !state.locks.some(lock => !lock.erased)) return null;
+  const part = hairCapPart(state, hairFlow(state));
+  return part.index.length ? part : null;
+}
 
 /**
  * The game mesh for a locks hairstyle: every lock merged into one skinned

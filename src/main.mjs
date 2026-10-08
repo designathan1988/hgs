@@ -58,17 +58,18 @@ canvas.addEventListener('pointerdown', event => {
 });
 canvas.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
 canvas.addEventListener('auxclick', event => event.preventDefault());
-// The comb's circle follows the cursor.
+// The hair brushes' circle follows the cursor.
 const combRing = document.createElement('div');
 combRing.style.cssText = 'position:fixed;pointer-events:none;border:1.5px solid rgba(255,255,255,.75);border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.35);display:none;z-index:5';
 document.body.append(combRing);
+const ringTools = new Set(['fill', 'retouch', 'volume']);
 function showRing(event) {
-  // The circle marks the hair a tool takes: the comb, gel, and a tie or barrette with nothing selected.
+  // The circle marks the hair a brush takes (radius in NDC height units: its diameter is radius × viewport height).
   const editor = renderer?.lockEditor, tool = editor?.settings.tool;
-  const on = Boolean(ui.locking && ((tool === 'comb' && editor.settings.combScope !== 'all') || tool === 'gel' || (tool === 'brush' && editor.settings.brushCreation === 'fill') || (tool === 'barrette' && !editor.selected.size)));
+  const on = Boolean(ui.locking && ringTools.has(tool));
   combRing.style.display = on ? 'block' : 'none';
   if (!on) return;
-  const size = editor.settings.combRadius * canvas.getBoundingClientRect().height;
+  const size = editor.settings.radius * canvas.getBoundingClientRect().height;
   combRing.style.width = combRing.style.height = `${size}px`;
   combRing.style.left = `${event.clientX - size / 2}px`; combRing.style.top = `${event.clientY - size / 2}px`;
 }
@@ -92,7 +93,7 @@ canvas.addEventListener('pointermove', event => {
 const release = event => {
   // A click (no drag) on a made-to-measure garment selects that piece.
   if (drag?.ndc && ui.dressing && event && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) ui.pickGarment(renderer.clothEditor.garmentAt(drag.ndc, renderer.viewCamera));
-  if (drag?.locks) renderer.lockEditor.pointerUp({ pin: held.has('p'), fix: held.has('f') });
+  if (drag?.locks) renderer.lockEditor.pointerUp();
   if (drag?.cloth) ui.clothEdgeEnd(renderer.clothEditor.up());
   if (drag?.sculpt) {
     const target = renderer.sculpt.end();
@@ -114,10 +115,12 @@ window.addEventListener('keydown', event => {
   if (command && (key === 'y' || (key === 'z' && event.shiftKey))) { event.preventDefault(); if (!drag) store.redo(); return; }
   if (ui.locking) {
     const editor = renderer.lockEditor;
-    if (key === 'delete') { event.preventDefault(); editor.deleteSelected(); return; }
-    // F: keep shape (held while releasing a pulled lock, or pressed with locks selected); G: gravity on/off.
-    if (!command && key === 'f') { editor.fixHeld = true; if (!event.repeat && !drag) editor.fixSelected(); return; }
-    if (!command && key === 'g' && !event.repeat) { editor.setGravityOn(!editor.settings.gravityOn); ui.scheduleRender(); return; }
+    if (key === 'delete' || key === 'backspace') { event.preventDefault(); editor.deleteSelected(); return; }
+    // One key per hair tool (the letters in the tool tooltips).
+    const tool = !command && !event.repeat && { b: 'brush', f: 'fill', r: 'retouch', c: 'cut', e: 'erase', v: 'volume', s: 'select' }[key];
+    if (tool && !drag) { ui.pickTool(tool); return; }
+    // [ and ] resize the brush circle (Photoshop, Krita).
+    if (!command && (key === '[' || key === ']')) { editor.settings.radius = Math.max(0.02, Math.min(0.6, editor.settings.radius * (key === ']' ? 1.15 : 1 / 1.15))); ui.scheduleRender(); return; }
     if (!command && (key === '+' || key === '=')) { event.preventDefault(); editor.scaleLength(1.1); return; }
     if (!command && (key === '-' || key === '_')) { event.preventDefault(); editor.scaleLength(1 / 1.1); return; }
   }

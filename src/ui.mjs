@@ -1,11 +1,10 @@
 import { blendshapeNames } from './face-rig.mjs';
-import { LockEditor } from './lock-editor.mjs';
+import { HairEditor, hairTools } from './hair-editor.mjs';
 import { lockLength } from './locks.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
 import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment } from './tailor.mjs';
 import { PatternEditor } from './pattern-editor.mjs';
 import { createPatternTemplate } from './patterns.mjs';
-import { renderHairTools } from './hair-tools-ui.mjs';
 import { icon, hairPictogram } from './icons.mjs';
 import { h, group, row, iconButton, slider, segmented, chips, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
@@ -35,25 +34,13 @@ const sections = [
 const hints = {
   default: 'Roda: zoom no cursor · botão direito: girar · botão do meio: mover',
   esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão direito: girar',
-  draw: 'Arraste do couro cabeludo para fora · Alt ajusta a largura',
-  fill: 'Pinte com o círculo: planta mechas a distâncias iguais, imitando as vizinhas',
-  pull: 'Arraste do couro cabeludo para criar, ou de uma mecha para puxá-la · P prende · F mantém a forma',
-  comb: 'Arraste da raiz ou do meio: o pente agarra as mechas e puxa até a ponta',
-  move: 'Arraste uma mecha para mudar a raiz de lugar',
-  grow: 'Arraste uma mecha no sentido da ponta para alongar',
+  brush: 'Desenhe a mecha da raiz até a ponta, sobre a grade · cada traço fica por cima dos anteriores',
+  fill: 'Pinte o couro com o círculo: planta mechas espaçadas, penteadas como as vizinhas',
+  retouch: 'Passe o círculo sobre mechas e arraste: elas seguem o traço · começar na ponta alonga',
   cut: 'Passe a tesoura sobre as mechas',
-  clump: 'Pincel: junta as mechas',
-  density: 'Pincel: acrescenta mechas · Ctrl rareia',
+  erase: 'Passe sobre as mechas para apagá-las inteiras',
+  volume: 'Pincel: afasta o cabelo da cabeça · Ctrl achata',
   select: 'Clique ou pinte sobre as mechas · Shift soma · Ctrl tira · Delete apaga',
-  pin: 'Clique num ponto da mecha para fixá-lo ou soltá-lo',
-  tie: 'Desenhe um laço em volta do cabelo para prender · arraste o elástico para puxar',
-  clip: 'Clique sobre o cabelo onde vai o grampo',
-  barrette: 'Selecione a parte (ou use o círculo) e clique onde vai a fivela',
-  band: 'Clique no alto da cabeça por onde o arco passa',
-  gel: 'Pincel: a mecha fica na forma atual · Ctrl tira o gel',
-  smooth: 'Pincel: suaviza o volume',
-  volume: 'Pincel: infla o volume · Ctrl esvazia',
-  mask: 'Pincel: protege regiões · Ctrl libera',
 };
 const clothHints = {
   look: hints.default,
@@ -71,15 +58,12 @@ const metaFields = new Set(['name', 'creation', 'version']);
 // Viewing choices, not edits: they stay out of the undo history.
 const noHistory = new Set(['lighting', 'animation', 'animationSpeed']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
-// Tools by purpose: [id, name, icon]. Draw and Fill are the hair editor's brush in its
-// two creation modes; the surface tools work on the Volume representation only.
+// Hair tools by purpose: [id, name, icon, { shortcut }] (hair-editor.mjs).
 const hairToolGroups = [
-  ['Criar', [['draw', 'Desenhar', 'sculpt'], ['fill', 'Preencher', 'plus'], ['pull', 'Puxar', 'pull'], ['density', 'Adensar', 'crowd']]],
-  ['Dar forma', [['comb', 'Pentear', 'comb'], ['clump', 'Agrupar', 'users'], ['grow', 'Alongar', 'grow'], ['cut', 'Cortar', 'cut']]],
-  ['Selecionar', [['select', 'Selecionar', 'select'], ['move', 'Mover raiz', 'move']]],
-  ['Prender', [['tie', 'Elástico', 'tie'], ['clip', 'Grampo', 'clip'], ['barrette', 'Fivela', 'barrette'], ['band', 'Arco', 'band'], ['gel', 'Gel', 'gel'], ['pin', 'Pino', 'pin']]],
+  ['Criar', [['brush', 'Pincel', 'sculpt', { shortcut: 'B' }], ['fill', 'Preencher', 'plus', { shortcut: 'F' }]]],
+  ['Modelar', [['retouch', 'Retocar', 'comb', { shortcut: 'R' }], ['volume', 'Volume', 'inflate', { shortcut: 'V' }], ['cut', 'Cortar', 'cut', { shortcut: 'C' }], ['erase', 'Apagar', 'trash', { shortcut: 'E' }]]],
+  ['Selecionar', [['select', 'Selecionar', 'select', { shortcut: 'S' }]]],
 ];
-const hairSurfaceTools = ['Volume', [['smooth', 'Suavizar', 'smooth'], ['volume', 'Inflar', 'inflate'], ['mask', 'Proteger', 'lock']]];
 const sculptTools = [['Pincéis', [['draw', 'Desenhar', 'sculpt'], ['inflate', 'Inflar', 'inflate'], ['grab', 'Arrastar', 'grab'], ['smooth', 'Suavizar', 'smooth'], ['flatten', 'Achatar', 'flatten'], ['pinch', 'Pinçar', 'pinch']]]];
 const brushNames = Object.fromEntries(sculptTools[0][1].map(([id, name]) => [id, name]));
 const clothToolGroups = [
@@ -90,7 +74,6 @@ const clothToolGroups = [
 // Cut-on-body garments edit edges and coverage; drafted (2D pattern) garments pin regions.
 const surfaceOnly = ['edges', 'clothAdd', 'clothErase'], draftedOnly = ['clothPin', 'clothUnpin'];
 const holderNames = { tie: 'Elástico', clip: 'Grampo', barrette: 'Fivela', band: 'Arco', tiara: 'Tiara' };
-const holderPalette = [0x262626, 0x5a3a28, 0x8a5a3c, 0xc9a227, 0xb8bcc2, 0xb3261e, 0xe48aa8, 0x2f5fb3];
 // [value, name, icon]: the choices show their icons, the names in the tooltips.
 const shapes = { tips: [['round', 'Redondas', 'tipRound'], ['point', 'Finas', 'tipPoint'], ['flat', 'Retas', 'tipFlat']], forms: [['straight', 'Lisa', 'straight'], ['wavy', 'Ondulada', 'wavy'], ['curl', 'Cacheada', 'curly']] };
 const choices = list => list.map(([, name, glyph]) => [name, glyph]);
@@ -153,15 +136,8 @@ export class StudioUI {
     this.renderer = renderer;
     const editor = renderer.lockEditor;
     // The editor's callbacks are set once and feed the store's operations and status.
-    editor.onPhysics = stats => this.updateHairPhysics(stats);
+    // The hair editor has no background work (no live gravity): it only reports changes.
     editor.onChange = () => this.locksChanged();
-    editor.onBusy = busy => {
-      if (busy) { if (!this.store.operations.has('hair')) this.store.begin('hair', { label: 'Processando o cabelo…' }); return; }
-      this.store.end('hair');
-      if (editor.fusionError && editor.fusionError !== this.lastFusionError) this.toast(`Falha na fusão do cabelo: ${editor.fusionError}`, 'error');
-      this.lastFusionError = editor.fusionError ?? null;
-    };
-    editor.onProgress = stage => { if (!this.store.progress('hair', stage)) this.notify(stage, 'busy'); };
     this.editorHistory = { undo: () => editor.undo(), redo: () => editor.redo(), canUndo: () => editor.undoStack.length > 0, canRedo: () => editor.redoStack.length > 0 };
     this.queueCharacter();
     this.applyMode();
@@ -275,10 +251,8 @@ export class StudioUI {
     const r = this.renderer, ui = this.state.ui, s = r.sculpt.settings;
     let retarget = false;
     if (mode === 'hair') {
-      const editor = r.lockEditor, es = editor.settings, tool = ui.tools.cabelo;
-      const target = tool === 'draw' || tool === 'fill' ? 'brush' : tool;
-      if (tool === 'draw' || tool === 'fill') es.brushCreation = tool === 'fill' ? 'fill' : 'stroke';
-      if (es.tool !== target) { if (editor.active) editor.setTool(target); else es.tool = target; }
+      const editor = r.lockEditor, target = this.hairTool();
+      if (editor.settings.tool !== target) editor.setTool(target);
     }
     if (mode === 'sculpt') {
       s.brush = ui.tools.esculpir;
@@ -559,18 +533,20 @@ export class StudioUI {
     if (this.section === 'roupas') this.renderClothToolOptions(options, active);
     const open = this.state.ui.toolPanel, hasOptions = options.childElementCount > 0;
     this.toolCard.classList.toggle('collapsed', !open || !hasOptions);
-    this.toolCard.replaceChildren(
+    // replaceChildren turns null into the text "null": only real nodes are passed.
+    this.toolCard.replaceChildren(...[
       h('div', { class: 'tool-card-head' }, glyph ? icon(glyph, 18) : null, h('span', { class: 'tool-card-title', text: name }),
         hasOptions ? h('button', {
           type: 'button', class: 'icon-button small', title: open ? 'Recolher as opções' : 'Mostrar as opções', 'aria-label': open ? 'Recolher as opções' : 'Mostrar as opções',
           'aria-expanded': String(open), 'aria-controls': 'toolCardBody', onclick: () => this.store.dispatch({ type: 'ui/set', changes: { toolPanel: !open } }),
         }, icon('chevronDown', 16)) : null),
-      hasOptions && open ? options : null);
+      hasOptions && open ? options : null,
+    ].filter(Boolean));
   }
   toolGroups() {
     if (this.section === 'cabelo') {
       if (!this.renderer?.lockEditor.active) return null;
-      return [...hairToolGroups, ...(this.hairRepresentation() === 'volume' ? [hairSurfaceTools] : [])];
+      return hairToolGroups;
     }
     if (this.section === 'esculpir') return this.renderer ? sculptTools : null;
     if (this.section === 'roupas' && this.person.outfit === 4) {
@@ -581,8 +557,11 @@ export class StudioUI {
   }
   activeTool() {
     if (this.section === 'roupas') return this.clothTool() ?? 'look';
+    if (this.section === 'cabelo') return this.hairTool();
     return this.state.ui.tools[this.section];
   }
+  /** The hair tool in effect (a tool saved by an older version falls back to the brush). */
+  hairTool() { const tool = this.state.ui.tools.cabelo; return hairTools.includes(tool) ? tool : 'brush'; }
   // Controls bound to this UI: groups remember their state; sliders mark a drag in progress.
   group(title, { open = true } = {}) {
     const key = `${this.section}:${title}`, saved = this.state.ui.groups[key];
@@ -683,21 +662,6 @@ export class StudioUI {
     else this.queueCharacter();
     this.hairEntry = null;
   }
-  hairRepresentation() {
-    const editor = this.renderer.lockEditor;
-    return editor.state?.fusion?.enabled ? 'volume' : editor.state?.fusion?.representation ?? editor.settings.hairRepresentation ?? 'lock';
-  }
-  updateHairPhysics(stats = this.renderer?.lockEditor.physicsStats) {
-    const node = document.getElementById('hairPhysicsStatus'), editor = this.renderer?.lockEditor;
-    if (!node || !editor) return;
-    const gravitySwitch = document.getElementById('hairGravitySwitch');
-    if (gravitySwitch) gravitySwitch.checked = Boolean(editor.settings.gravityOn);
-    if (stats?.error || editor.physicsError) node.textContent = `Falha na simulação: ${stats?.error ?? editor.physicsError}`;
-    else if (!editor.settings.gravityOn) node.textContent = '';
-    else if (!stats) node.textContent = 'Preparando a gravidade…';
-    else if (stats.infeasibleContacts) node.textContent = 'Um ponto preso está dentro do corpo. Solte o pino ou mova a mecha.';
-    else node.textContent = 'Gravidade ligada';
-  }
   lockPanelState() {
     const editor = this.renderer.lockEditor;
     return `${[...editor.selected].sort((a, b) => a - b).join(',')}|${editor.locks.length}|${editor.settings.tool}|${editor.revision ?? 0}|${editor.state?.accessories?.length ?? 0}`;
@@ -710,11 +674,12 @@ export class StudioUI {
     if (this.lockPanelState() !== this.lockPanelKey && !this.sliding) { this.scheduleRender(); return; }
     this.updateLockStatus();
   }
+  /** The lock count over the hair panel. */
   updateLockStatus() {
     const node = document.getElementById('lockStatus'), editor = this.renderer?.lockEditor;
     if (!node || !editor?.active) return;
     const s = editor.summary();
-    node.textContent = s.fixed ? `${s.fixed} ${s.fixed > 1 ? 'mechas' : 'mecha'} com forma fixa` : '';
+    node.textContent = `${s.count} ${s.count === 1 ? 'mecha' : 'mechas'}${s.selected ? ` · ${s.selected} ${s.selected > 1 ? 'selecionadas' : 'selecionada'}` : ''}`;
   }
   applyHairPreset(id) {
     const editor = this.renderer?.lockEditor, data = hairPresetData(id);
@@ -737,7 +702,6 @@ export class StudioUI {
     if (!editor?.active) { this.group('Cabelo').append(h('p', { class: 'muted', text: 'Preparando o editor de cabelo…' })); return; }
     const settings = editor.settings;
     this.lockPanelKey = this.lockPanelState();
-    const representation = this.hairRepresentation();
 
     // 1. The hairstyle to start from and its colour.
     const style = this.group('Penteado');
@@ -746,6 +710,7 @@ export class StudioUI {
       type: 'button', class: `style-card${this.person.hairPreset === p.id ? ' on' : ''}`, title: p.name, 'aria-pressed': String(this.person.hairPreset === p.id), onclick: () => this.applyHairPreset(p.id),
     }, hairPictogram(p.id), h('span', { text: p.name })))));
     style.append(swatches({ label: 'Cor', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
+    this.toggle(style, 'Base de fios sobre o couro', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Cobre o couro entre as mechas com fios penteados na mesma direção');
 
     // 2. The ties, clips and bands on the hair, each with a button to take it off.
     if (editor.state.accessories?.length) {
@@ -764,56 +729,39 @@ export class StudioUI {
     // 3. Adjust the selected locks, or all of them.
     const count = editor.selected.size, lock = editor.summary().first;
     const record = () => editor.checkpoint();
+    const adjust = this.group('Ajustar mechas');
+    adjust.append(h('p', { class: 'status-line', id: 'lockStatus' }));
     if (lock) {
-      const adjust = this.group('Ajustar mechas');
-      adjust.append(h('p', { class: 'muted', text: count ? `${count} ${count > 1 ? 'mechas selecionadas' : 'mecha selecionada'}` : `Todas as ${editor.locks.length} mechas`, title: 'Selecione mechas para ajustar só elas' }));
+      adjust.append(h('p', { class: 'muted', text: count ? 'Os ajustes valem para as mechas selecionadas' : 'Sem seleção: os ajustes valem para todas (S seleciona)' }));
       this.slide(adjust, { label: 'Comprimento', value: lockLength(lock), min: 0.015, max: 1.1, step: 0.005, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setLength(v) });
-      this.slide(adjust, { label: 'Largura', value: lock.width, min: 0.001, max: 0.09, step: 0.001, scale: 1000, unit: 'mm', onStart: record, onInput: v => editor.setParam('width', v) });
-      this.slide(adjust, { label: 'Espessura', value: lock.volume, min: 0.12, max: 1, onStart: record, onInput: v => editor.setParam('volume', v), title: 'Espessura em relação à largura' });
+      this.slide(adjust, { label: 'Largura', value: lock.width, min: 0.004, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setParam('width', v) });
+      this.slide(adjust, { label: 'Volume', value: lock.volume, min: 0.12, max: 0.6, onStart: record, onInput: v => editor.setParam('volume', v), title: 'Quanto a mecha se arredonda (arco do cartão)' });
       this.slide(adjust, { label: 'Afunilar', value: lock.taper, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('taper', v), title: 'Quanto a mecha afina até a ponta' });
-      this.slide(adjust, { label: 'Curvar', value: lock.bend, min: -1, max: 1, onStart: record, onInput: v => editor.setParam('bend', v), title: 'Pontas para dentro (+) ou para fora (−)' });
-      this.slide(adjust, { label: 'Firmeza', value: lock.stiffness, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('stiffness', v), title: 'Quanto a mecha resiste à gravidade' });
-      this.segmented(adjust, 'Pontas', choices(shapes.tips), shapes.tips.findIndex(t => t[0] === (lock.tipShape ?? 'round')), i => editor.setTipShape(shapes.tips[i][0], { all: false }));
-      this.segmented(adjust, 'Forma', choices(shapes.forms), formOf(lock.curl), i => editor.setCurlPreset(shapes.forms[i][0], { all: false }));
-      if (lock.curl > 0) {
-        this.slide(adjust, { label: 'Cachos', value: lock.curl, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('curl', v), title: 'Quanto a mecha enrola' });
-        this.slide(adjust, { label: 'Voltas', value: lock.turns, min: 0.5, max: 14, step: 0.1, onStart: record, onInput: v => editor.setParam('turns', v) });
-      }
-      this.slide(adjust, { label: 'Torcer', value: lock.twist * 180 / Math.PI, min: -540, max: 540, step: 1, unit: '°', onStart: record, onInput: v => editor.setParam('twist', v * Math.PI / 180) });
+      this.segmented(adjust, 'Forma', choices(shapes.forms), formOf(lock.curl), i => { record(); editor.setForm(shapes.forms[i][0]); });
+      if (lock.curl > 0) this.slide(adjust, { label: 'Ondas', value: lock.turns, min: 0.5, max: 10, step: 0.1, onStart: record, onInput: v => editor.setParam('turns', v), title: 'Quantas voltas ao longo da mecha' });
+      this.slide(adjust, { label: 'Firmeza', value: lock.stiffness, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('stiffness', v), title: 'Quanto a mecha balança no movimento (0 solta, 1 firme)' });
       adjust.append(h('div', { class: 'actions' },
         count ? iconButton('close', 'Limpar seleção', () => editor.clearSelection()) : iconButton('select', 'Selecionar todas', () => editor.selectAll()),
-        iconButton('pin', 'Prender a ponta onde está', () => editor.pinTip()),
-        iconButton('unlock', 'Soltar pinos e prendedores', () => editor.unpin()),
-        count ? iconButton('trash', 'Apagar (Delete)', () => editor.deleteSelected(), { danger: true }) : null));
-    }
+        count ? iconButton('trash', 'Apagar as selecionadas (Delete)', () => editor.deleteSelected(), { danger: true }) : null,
+        iconButton('reset', 'Começar do zero (sem cabelo)', () => { if (confirm('Apagar todo o cabelo?')) editor.clearAll(); }, { danger: true })));
+    } else adjust.append(h('p', { class: 'muted', text: 'Sem cabelo. Escolha um penteado acima ou desenhe com o Pincel (B).' }));
 
-    // 4. Gravity and holding shapes against it.
-    const physics = this.group('Gravidade');
-    this.toggle(physics, 'Gravidade (G)', settings.gravityOn, on => { editor.setGravityOn(on); this.scheduleRender(); }, 'Ligada: o cabelo cai e assenta. Desligada: congela a pose atual.', 'hairGravitySwitch');
-    this.slide(physics, { label: 'Força', value: settings.gravity, min: 0, max: 1, onInput: value => { settings.gravity = value; } });
-    physics.append(h('p', { class: 'muted', id: 'hairPhysicsStatus' }), h('p', { class: 'status-line', id: 'lockStatus' }));
-    physics.append(h('div', { class: 'actions' },
-      iconButton('lock', 'Fixar forma (F): a forma atual das mechas selecionadas, ou de todas, resiste à gravidade', () => editor.setRest(), { id: 'lockSetRest' }),
-      iconButton('unlock', 'Soltar forma: as mechas voltam a cair com a gravidade', () => editor.releaseRest())));
-    this.updateHairPhysics();
+    // 4. The guide the brush draws on: how far from the head and how far down.
+    const guide = this.group('Guia do pincel', { open: false });
+    guide.append(h('p', { class: 'muted', text: 'A grade em volta da cabeça onde o Pincel desenha: mais volume afasta o cabelo da cabeça.' }));
+    this.slide(guide, { label: 'Volume', value: settings.guideVolume, min: 0.002, max: 0.05, step: 0.001, scale: 100, unit: 'cm', onInput: v => editor.setGuide({ volume: v }) });
+    this.slide(guide, { label: 'Comprimento', value: settings.guideLength, min: 0.1, max: 1, step: 0.01, scale: 100, unit: 'cm', onInput: v => editor.setGuide({ length: v }) });
+    this.toggle(guide, 'Mostrar a grade', settings.showGuide, on => { settings.showGuide = on; editor.updateHelpers(); });
 
-    // 5. How the hair is built (strands, locks, fused volume) and its volume settings.
-    const build = this.group('Representação', { open: false });
-    this.segmented(build, 'Cabelo em', [['Fios', 'strands'], ['Mechas', 'ribbons'], ['Volume', 'volume']], ['strand', 'lock', 'volume'].indexOf(representation), index => editor.setRepresentation(['strand', 'lock', 'volume'][index]));
-    if (representation === 'volume') {
-      const fusionControls = h('div', { class: 'hair-fusion-controls' }); build.append(fusionControls);
-      renderHairTools(fusionControls, editor, { onChange: () => this.scheduleRender() });
-    }
-
-    // 6. Viewport helpers.
-    const view = this.group('Exibição', { open: false });
-    this.toggle(view, 'Linha central', settings.showMidline, on => { settings.showMidline = on; editor.updateHelpers(); }, 'As raízes perto dela encaixam no meio mesmo com a linha escondida');
-    this.toggle(view, 'Couro cabeludo', settings.showScalp, on => { settings.showScalp = on; editor.updateHelpers(); });
+    // 5. Movement: the hair sways with spring bones in the game; see it walking.
+    const motion = this.group('Movimento', { open: false });
+    motion.append(h('p', { class: 'muted', text: 'No jogo o cabelo balança por ossos com mola. "Firmeza" em Ajustar mechas controla quanto.' }),
+      h('button', { type: 'button', class: 'button wide', onclick: () => { this.update('animation', 1); this.setSection('animacao'); } }, icon('play', 16), 'Ver o cabelo andando'));
 
     // 7. Files.
     const files = this.group('Arquivo', { open: false });
     const nameInput = h('input', { type: 'text', id: 'lockSlotName', value: this.lockSlot ?? 'Meu penteado', maxlength: 40, 'aria-label': 'Nome do penteado' });
-    const slots = LockEditor.slots();
+    const slots = HairEditor.slots();
     const slotSelect = h('select', { id: 'lockSlots', 'aria-label': 'Penteados salvos' }, slots.map(name => h('option', { value: name, text: name })));
     if (this.lockSlot && slots.includes(this.lockSlot)) slotSelect.value = this.lockSlot;
     const fileInput = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
@@ -834,55 +782,35 @@ export class StudioUI {
       fileInput);
     this.updateLockStatus();
   }
-  /** The active hair tool's options (the card over the viewport): the settings all tools share first, then the tool's own. */
+  /** The active hair tool's options (the card over the viewport): only what that tool uses. */
   renderHairToolOptions(options, activeTool) {
     const editor = this.renderer.lockEditor, settings = editor.settings;
     this.setHint(hints[activeTool] ?? hints.default);
-    this.toggle(options, 'Espelhar no outro lado', settings.mirror, on => { settings.mirror = on; });
-    this.slide(options, { label: 'Círculo', value: settings.combRadius, min: 0.03, max: 1, step: 0.01, onInput: v => { settings.combRadius = v; }, title: 'Tamanho do círculo do pente, do gel, do Preencher e da fivela' });
-    const own = h('div', { class: 'tool-card-section' });
-    // Fill imitates the locks around each new root unless asked not to; then the creation settings apply.
-    const imitate = activeTool === 'fill' && settings.fillCopy !== false;
-    const creation = ['draw', 'pull'].includes(activeTool) || (activeTool === 'fill' && !imitate), brush = ['clump', 'density', 'smooth', 'volume', 'mask'].includes(activeTool);
+    const circle = () => this.slide(options, { label: 'Círculo', value: settings.radius, min: 0.02, max: 0.6, step: 0.01, onInput: v => { settings.radius = v; }, title: 'Tamanho do círculo · [ e ] também mudam' });
+    const mirror = () => this.toggle(options, 'Espelhar no outro lado', settings.mirror, on => { settings.mirror = on; });
+    if (activeTool === 'brush') {
+      this.slide(options, { label: 'Largura', value: settings.width, min: 0.006, max: 0.06, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.width = v; }, title: 'Largura de cada mecha do traço' });
+      this.slide(options, { label: 'Mechas por traço', value: settings.strands, min: 1, max: 7, step: 1, onInput: v => { settings.strands = v; }, title: 'Quantas mechas lado a lado cada traço cria' });
+      this.segmented(options, 'Forma', choices(shapes.forms), ['straight', 'wavy', 'curl'].indexOf(settings.form), i => { settings.form = shapes.forms[i][0]; });
+      mirror();
+    }
     if (activeTool === 'fill') {
-      this.toggle(own, 'Imitar as mechas vizinhas', imitate, on => { settings.fillCopy = on; this.scheduleRender(); }, 'Forma, comprimento e largura das mechas ao redor');
-      if (!imitate) this.slide(own, { label: 'Comprimento', value: settings.brushLength, min: 0.04, max: 0.8, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushLength = v; } });
+      circle();
+      this.slide(options, { label: 'Distância entre mechas', value: settings.spacing, min: 0.01, max: 0.05, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.spacing = v; } });
+      this.toggle(options, 'Imitar as mechas vizinhas', settings.imitate, on => { settings.imitate = on; this.scheduleRender(); }, 'Direção, comprimento e largura das mechas ao redor');
+      if (!settings.imitate) this.slide(options, { label: 'Comprimento', value: settings.length, min: 0.04, max: 0.8, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.length = v; } });
+      mirror();
     }
-    if (activeTool === 'fill' || activeTool === 'density') this.slide(own, { label: 'Distância entre mechas', value: settings.brushSpacing, min: 0.008, max: 0.06, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.brushSpacing = v; } });
-    if (creation) {
-      this.slide(own, { label: 'Largura', value: settings.width, min: 0.001, max: 0.09, step: 0.001, scale: 1000, unit: 'mm', onInput: v => editor.setCreationWidth(v) });
-      this.slide(own, { label: 'Espessura', value: settings.volume, min: 0.12, max: 1, onInput: v => { settings.volume = v; }, title: 'Espessura em relação à largura' });
-      this.segmented(own, 'Pontas', choices(shapes.tips), shapes.tips.findIndex(t => t[0] === (settings.tipShape ?? 'round')), i => editor.setTipShape(shapes.tips[i][0], { apply: false }));
-      this.segmented(own, 'Forma', choices(shapes.forms), formOf(settings.curl), i => editor.setCurlPreset(shapes.forms[i][0], { apply: false }));
+    if (activeTool === 'retouch') circle();
+    if (activeTool === 'volume') {
+      circle();
+      this.slide(options, { label: 'Força', value: settings.strength, min: 0.05, max: 1, onInput: v => { settings.strength = v; } });
     }
-    if (activeTool === 'comb') {
-      const scopes = ['brush', 'selected', 'all'];
-      this.segmented(own, 'Alcance', [['Círculo do pincel', 'circle'], ['Mechas selecionadas', 'select'], ['Todo o cabelo', 'hair']], Math.max(0, scopes.indexOf(settings.combScope)), i => { settings.combScope = scopes[i]; });
-      this.slide(own, { label: 'Força', value: settings.combStrength, min: 0.1, max: 1, step: 0.05, onInput: v => { settings.combStrength = v; } });
+    if (activeTool === 'select' && editor.locks.length) {
+      options.append(h('div', { class: 'button-row two' },
+        h('button', { type: 'button', class: 'button', onclick: () => editor.selectAll() }, 'Todas'),
+        h('button', { type: 'button', class: 'button', disabled: !editor.selected.size, onclick: () => editor.clearSelection() }, 'Nenhuma')));
     }
-    if (brush) {
-      this.slide(own, { label: 'Tamanho', value: settings.brushRadius, min: 0.005, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushRadius = v; } });
-      this.slide(own, { label: 'Força', value: settings.brushStrength, min: 0.05, max: 1, onInput: v => { settings.brushStrength = v; } });
-      const falloff = h('select', { 'aria-label': 'Suavidade do pincel' }, [['smooth', 'Suave'], ['linear', 'Linear'], ['constant', 'Constante']].map(([value, text]) => h('option', { value, text })));
-      falloff.value = settings.brushFalloff; falloff.addEventListener('change', () => { settings.brushFalloff = falloff.value; }); own.append(row('Borda', falloff));
-      if (activeTool === 'mask') own.append(h('button', { type: 'button', class: 'button wide', onclick: () => editor.clearMask() }, 'Liberar toda a proteção'));
-    }
-    if (activeTool === 'tie') own.append(h('p', { class: 'muted', text: 'Laço: prende o trecho que ficou dentro · arraste o elástico para puxar' }));
-    if (activeTool === 'barrette') own.append(h('p', { class: 'muted', text: editor.selected.size ? `Prende as ${editor.selected.size} mechas selecionadas` : 'Sem seleção: prende as mechas dentro do círculo' }));
-    if (activeTool === 'band') this.segmented(own, 'Estilo', ['Arco', 'Tiara'], settings.bandStyle === 'tiara' ? 1 : 0, i => { settings.bandStyle = i ? 'tiara' : 'band'; });
-    if (['tie', 'clip', 'barrette', 'band'].includes(activeTool)) {
-      const colors = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Cor do prendedor' }, [null, ...holderPalette].map(value => h('button', {
-        type: 'button', class: `swatch${settings.holderColor === value ? ' on' : ''}${value === null ? ' auto' : ''}`, style: value === null ? '' : `--swatch:${hexOf(value)}`,
-        title: value === null ? 'Cor própria de cada peça' : hexOf(value), 'aria-label': value === null ? 'Cor própria de cada peça' : `Cor ${hexOf(value)}`, 'aria-pressed': String(settings.holderColor === value),
-        onclick: () => { settings.holderColor = value; this.scheduleRender(); },
-      })));
-      own.append(h('div', { class: 'stack' }, h('div', { class: 'stack-label', text: 'Cor' }), colors));
-    }
-    if (activeTool === 'draw' || activeTool === 'pull') {
-      this.toggle(own, 'Prender a ponta ao soltar', settings.pinOnRelease, on => { settings.pinOnRelease = on; }, 'Ou segure P ao soltar');
-      this.toggle(own, 'Manter a forma ao soltar', settings.fixOnRelease, on => { settings.fixOnRelease = on; }, 'A mecha não cai com a gravidade · ou segure F ao soltar');
-    }
-    if (own.childElementCount) options.append(own);
   }
 
   // ------------------------------------------------------------ clothes

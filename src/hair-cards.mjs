@@ -1,4 +1,4 @@
-import { CanvasTexture, Color, DoubleSide, MeshPhysicalMaterial, SRGBColorSpace } from 'three';
+import { CanvasTexture, Color, DoubleSide, FrontSide, MeshPhysicalMaterial, RepeatWrapping, SRGBColorSpace } from 'three';
 
 /**
  * Hair cards, the representation games use for hair (Epic, "Setting up cards
@@ -49,7 +49,8 @@ export function cardFromSweep(sweep, lock, { vertex = null } = {}) {
     const shade = jitter * (0.62 + 0.38 * smooth(0, 0.22, s));
     for (let k = 0; k < ACROSS; k++, v++) {
       const across = k - 1; // -1, 0, 1
-      const lift = across === 0 ? a * Math.min(0.6, arch) : 0;
+      // Flat at the root (it lies on the scalp), arched further on (a lock with volume).
+      const lift = across === 0 ? a * Math.min(0.6, arch) * smooth(0.04, 0.3, s) : 0;
       const px = line[o] + side[o] * a * across + out[o] * lift;
       const py = line[o + 1] + side[o + 1] * a * across + out[o + 1] * lift;
       const pz = line[o + 2] + side[o + 2] * a * across + out[o + 2] * lift;
@@ -95,17 +96,20 @@ export function hairStrandTexture() {
     const left = c * columnWidth;
     // A clump: a dense core of strands (the card reads as a lock, not as see-through wisps)
     // whose strands end at different lengths, and sparser loose strands at the edges.
-    const strands = 260 + c * 30;
+    const strands = 300 + c * 30;
     for (let s = 0; s < strands; s++) {
-      const edge = random() < 0.18;
-      const t = edge ? random() : 0.5 + (random() - 0.5) * 0.78;
-      const x0 = left + 4 + t * (columnWidth - 8);
-      // Most strands reach far down; a few stop early so the tip is ragged.
-      const end = height * (edge ? 0.45 + 0.5 * random() : 0.66 + 0.34 * Math.sqrt(random()));
+      // Dense in the middle, thinning out towards the card's sides and never at its very edge:
+      // a card has no straight side where it overlaps another (or the skin shows in a hard line).
+      const edge = random() < 0.2;
+      const t = edge ? 0.08 + 0.84 * random() : 0.5 + (random() + random() - 1) * 0.36;
+      const x0 = left + t * columnWidth;
+      // Strands stop at very different lengths over the last half, so a card ends in a ragged point, not a cut.
+      const end = height * (edge ? 0.35 + 0.55 * random() : 0.5 + 0.5 * Math.sqrt(random()));
       const strandWidth = 1.5 + random() * 2.5, light = Math.round(150 + random() * 105), wave = (random() - 0.5) * 8, phase = random() * 6.28;
-      const steps = 20;
+      // Strands start at slightly different heights, so the root end of a card is soft, not a cut line.
+      const start = height * 0.05 * random(), steps = 20;
       for (let k = 0; k < steps; k++) {
-        const ya = (k / steps) * end, yb = ((k + 1) / steps) * end;
+        const ya = start + (k / steps) * (end - start), yb = start + ((k + 1) / steps) * (end - start);
         const xa = x0 + Math.sin(ya / height * 5 + phase) * wave, xb = x0 + Math.sin(yb / height * 5 + phase) * wave;
         // Opaque along most of the strand, fading over its last fifth.
         const fade = 1 - smooth(0.78, 1, (k + 0.5) / steps);
@@ -114,12 +118,6 @@ export function hairStrandTexture() {
         g.beginPath(); g.moveTo(xa, ya); g.lineTo(xb, yb); g.stroke();
       }
     }
-    // A solid band at the root so a card starts covered (the scalp never shows at the parting of a lock).
-    const band = g.createLinearGradient(0, 0, 0, height * 0.18);
-    band.addColorStop(0, 'rgba(185,185,185,1)'); band.addColorStop(1, 'rgba(185,185,185,0)');
-    g.globalCompositeOperation = 'destination-over';
-    g.fillStyle = band; g.fillRect(left + columnWidth * 0.08, 0, columnWidth * 0.84, height * 0.18);
-    g.globalCompositeOperation = 'source-over';
   }
   atlas = new CanvasTexture(canvas);
   atlas.colorSpace = SRGBColorSpace;
@@ -127,6 +125,77 @@ export function hairStrandTexture() {
   atlas.anisotropy = 4;
   atlas.userData.shared = true;
   return atlas;
+}
+
+/**
+ * The hair cap: the scalp covered with the same strands, combed the way the
+ * hair goes, so the skin never shows between cards or at the parting, and the
+ * hairline fades out strand by strand (games put this under hair cards as a
+ * scalp texture). A mesh 0.8 mm over the scalp's quads (base-mesh vertices,
+ * `field` ≥ 0 inside the hairline); `flow(p, n)` gives the combing direction
+ * at a point (unit, in the skin's plane). UV: a tileable strand texture laid
+ * along the flow, 4 cm per tile. Colour RGBA: darker than the hair (it lies
+ * under it) and alpha fading out across the hairline.
+ */
+export function hairCapPart(state, flow) {
+  const { positions, normals, field, frame, data } = state;
+  const lift = 0.0008, tile = 0.04, fade = 0.03;
+  const index = new Map(), pos = [], normal = [], uv = [], color = [], faces = [];
+  const p = { x: 0, y: 0, z: 0 }, n = { x: 0, y: 0, z: 0 };
+  const vertex = v => {
+    if (index.has(v)) return index.get(v);
+    p.x = positions[v * 3]; p.y = positions[v * 3 + 1]; p.z = positions[v * 3 + 2];
+    n.x = normals[v * 3]; n.y = normals[v * 3 + 1]; n.z = normals[v * 3 + 2];
+    const along = flow(p, n), across = [n.y * along[2] - n.z * along[1], n.z * along[0] - n.x * along[2], n.x * along[1] - n.y * along[0]];
+    const at = pos.length / 3;
+    pos.push(p.x + n.x * lift, p.y + n.y * lift, p.z + n.z * lift);
+    normal.push(n.x, n.y, n.z);
+    // World position projected on the local (across, along) frame: continuous where the flow turns slowly.
+    uv.push((p.x * across[0] + p.y * across[1] + p.z * across[2]) / tile, (p.x * along[0] + p.y * along[1] + p.z * along[2]) / tile);
+    const alpha = smooth(-0.004, fade, field[v]);
+    color.push(0.62, 0.62, 0.62, alpha);
+    index.set(v, at);
+    return at;
+  };
+  for (const f of frame.faces) {
+    const ids = [0, 1, 2, 3].map(c => data.faces[f * 4 + c]);
+    if (!ids.every(v => field[v] >= -0.004)) continue;
+    const [a, b, c, d] = ids.map(vertex);
+    faces.push(a, b, c, a, c, d);
+  }
+  return { pos: new Float32Array(pos), normal: new Float32Array(normal), uv: new Float32Array(uv), color: new Float32Array(color), index: new Uint32Array(faces) };
+}
+
+let capAtlas;
+/** A tileable square of dense parallel strands (vertical, wrapping at every edge) for the hair cap. */
+export function hairCapTexture() {
+  if (capAtlas) return capAtlas;
+  if (typeof document === 'undefined') return null;
+  const size = 512, canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const g = canvas.getContext('2d');
+  g.lineCap = 'round';
+  let seed = 11;
+  const random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  for (let s = 0; s < 900; s++) {
+    const x = random() * size, y = random() * size, length = size * (0.3 + 0.5 * random()), light = Math.round(140 + random() * 115), width = 1.2 + random() * 2.2;
+    g.strokeStyle = `rgba(${light},${light},${light},${(0.7 + 0.3 * random()).toFixed(2)})`; g.lineWidth = width;
+    // Drawn at every wrapped offset so the tile repeats without seams.
+    for (const dx of [-size, 0, size]) for (const dy of [-size, 0, size]) { g.beginPath(); g.moveTo(x + dx, y + dy); g.lineTo(x + dx + (random() - 0.5) * 3, y + dy + length); g.stroke(); }
+  }
+  capAtlas = new CanvasTexture(canvas);
+  capAtlas.colorSpace = SRGBColorSpace;
+  capAtlas.wrapS = capAtlas.wrapT = RepeatWrapping;
+  capAtlas.anisotropy = 4;
+  capAtlas.userData.shared = true;
+  return capAtlas;
+}
+
+/** The hair cap's material: the cards' shading on the cap texture, alpha from the texture and the hairline fade. */
+export function hairCapMaterial(color) {
+  const material = hairCardMaterial(color);
+  Object.assign(material, { map: hairCapTexture(), side: FrontSide, alphaTest: 0.45 });
+  return material;
 }
 
 /** The hair card material (editor and game mesh alike); `highlight` tints the selected locks. */
@@ -137,8 +206,8 @@ export function hairCardMaterial(color, { highlight = false } = {}) {
   const material = new MeshPhysicalMaterial({
     color, vertexColors: true, map: hairStrandTexture(),
     alphaTest: 0.4, alphaToCoverage: true, side: DoubleSide,
-    roughness: 0.58, metalness: 0, specularIntensity: 0.35, specularColor: tint.clone().lerp(new Color(0xffffff), 0.45),
-    anisotropy: 0.45, anisotropyRotation: Math.PI / 2,
+    roughness: 0.82, metalness: 0, specularIntensity: 0.08, specularColor: tint.clone().lerp(new Color(0xffffff), 0.3),
+    anisotropy: 0.25, anisotropyRotation: Math.PI / 2,
   });
   if (highlight) { material.emissive = new Color(0xf27a2e); material.emissiveIntensity = 0.28; }
   return material;

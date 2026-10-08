@@ -7,7 +7,7 @@ import { LoopOnce, LoopRepeat } from 'three';
 import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
 import { oneShotClips } from './motion.mjs';
 import { SculptSession } from './sculpt.mjs';
-import { LockEditor } from './lock-editor.mjs';
+import { HairEditor } from './hair-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
 import { hairPresetData } from './hair-presets.mjs';
 import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPalette } from './state.mjs';
@@ -166,7 +166,8 @@ export class Renderer {
     this.camera = new Camera();
     this.scene.add(new AmbientLight(0xffffff, 1.2));
     const key = new DirectionalLight(0xfff2df, 2.6); key.position.set(-3, 7, 5); this.scene.add(key); this.keyLight = key;
-    const fill = new DirectionalLight(0xb2c9ff, 0.85); fill.position.set(3, 4, -4); this.scene.add(fill); this.fillLight = fill;
+    // A barely cool fill: a strongly blue one tinted dark hair and shadows blue on the neutral backdrop.
+    const fill = new DirectionalLight(0xdde5f2, 0.85); fill.position.set(3, 4, -4); this.scene.add(fill); this.fillLight = fill;
     const floor = new Mesh(new PlaneGeometry(200, 200), new MeshStandardMaterial({ color: 0x313236, roughness: 1 }));
     floor.rotation.x = -Math.PI / 2; floor.position.y = -0.015; this.scene.add(floor);
     const grid = new GridHelper(200, 200, 0x55575c, 0x46484d); grid.position.y = -0.012;
@@ -176,7 +177,7 @@ export class Renderer {
     this.crowdPrototypes = []; this.crowdVersion = 0;
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
-    this.lockEditor = new LockEditor(this); this.locksMode = false;
+    this.lockEditor = new HairEditor(this); this.locksMode = false;
     this.clothEditor = new ClothEditor(this);
     this.pivotRay = new Raycaster();
   }

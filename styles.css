@@ -163,6 +163,7 @@ button:disabled { cursor: default; }
 .button-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
 .button-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 6px; }
 .button-row .button { padding: 0 6px; }
+.button-row.two { grid-template-columns: 1fr 1fr; }
 .icon-button { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius); background: none; color: var(--text-2); }
 .icon-button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 .icon-button:disabled { opacity: .35; }
