@@ -18,22 +18,22 @@ function setup() {
 }
 const stretch = lock => Math.max(...Array.from({ length: N - 1 }, (_, i) => Math.abs(new Vector3().fromArray(lock.x, (i + 1) * 3).distanceTo(new Vector3().fromArray(lock.x, i * 3)) / lock.seg - 1)));
 
-test('live editor rejects incompatible fixed solids and preserves the displayed authored geometry', () => {
+// Locks overlapping each other meet through the density grid (Müller et al.
+// 2012 §3.5); only skin/clothing, stretching or pinned body contacts pause gravity.
+test('live editor keeps gravity on for overlapping fixed locks and never moves them', () => {
   const { editor, root } = setup();
   for (let i = 0; i < 2; i++) {
     const lock = combLock(editor.state, root, new Vector3(1, .5, .3), .2);
     lock.fixed = true; lock.styled = true; editor.locks.push(lock);
   }
-  const previous = editor.locks.map(lock => ({ x: [...lock.x], design: [...lock.rest], taper: lock.rootTaper, styled: lock.styled }));
+  const previous = editor.locks.map(lock => ({ x: [...lock.x], design: [...lock.rest] }));
   editor.setGravityOn(true);
-  assert.equal(editor.tickPhysics(1 / 60), false);
-  assert.equal(editor.settings.gravityOn, false);
-  assert.match(editor.physicsError, /pose anterior foi preservada/i);
+  editor.tickPhysics(1 / 60);
+  assert.equal(editor.settings.gravityOn, true);
+  assert.equal(editor.physicsError, null);
   for (const [i, lock] of editor.locks.entries()) {
     assert.deepEqual([...lock.x], previous[i].x);
     assert.deepEqual([...lock.rest], previous[i].design);
-    assert.equal(lock.rootTaper, previous[i].taper);
-    assert.equal(lock.styled, previous[i].styled);
   }
   editor.end();
 });

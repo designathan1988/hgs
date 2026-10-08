@@ -39,17 +39,20 @@ test('shared attachment is a zero-radius closed tip, not a hidden positive-volum
   assert.equal(hairContactAudit(s,lockSurface).penetrating,0);
 });
 
-test('actual swept solid contacts separate crossing free guides without moving roots or editing design', () => {
+// Locks meet each other through the density grid (Müller et al. 2012 §3.5):
+// overlap shrinks without exact contacts, roots and design stay untouched.
+test('density repulsion reduces the overlap of crossing free guides without moving roots or editing design', () => {
   const s=state([guide([-.09,.3,0],[1,0,0],.25),guide([.09,.3,.003],[-1,0,0],.25)]),p=new HairDynamics(s,{surface:lockSurface});
   const design=s.locks.map(l=>[...l.rest]), roots=s.locks.map(l=>l.rootP.toArray());
-  assert.ok(hairContactAudit(s,lockSurface).penetrating>0);
+  const before=hairContactAudit(s,lockSurface);assert.ok(before.penetrating>0);
   for(let i=0;i<90;i++)p.advance(1/60,{on:true,strength:1});
-  const audit=hairContactAudit(s,lockSurface);assert.ok(audit.maxPenetration<.0005,JSON.stringify(audit));assert.ok(stretch(s.locks)<.002);
+  const after=hairContactAudit(s,lockSurface);assert.ok(after.maxPenetration<before.maxPenetration,JSON.stringify({before,after}));assert.ok(stretch(s.locks)<.002);
+  assert.equal(p.stats.validPose,true);
   for(let k=0;k<s.locks.length;k++){assert.deepEqual([...s.locks[k].rest],design[k]);assert.ok(new Vector3().fromArray(s.locks[k].x).distanceTo(new Vector3(...roots[k]))<.000001);}
 });
 
-test('overlapping fully fixed solids are reported infeasible rather than moved or hidden', () => {
+test('fixed locks are never moved by the density grid and their overlap does not pause gravity', () => {
   const s=state([guide([0,.3,0],[1,0,0],.2,{fixed:true}),guide([0,.3,0],[1,0,0],.2,{fixed:true})]),p=new HairDynamics(s,{surface:lockSurface}),before=s.locks.map(l=>[...l.x]);
-  p.advance(1/60,{on:true,strength:1});assert.ok(p.stats.infeasibleContacts>0);assert.ok(p.stats.maxPenetration>.001);
+  p.advance(1/60,{on:true,strength:1});assert.equal(p.stats.infeasibleContacts,0);assert.equal(p.stats.validPose,true);
   assert.deepEqual(s.locks.map(l=>[...l.x]),before);assert.equal(s.locks.length,2);
 });

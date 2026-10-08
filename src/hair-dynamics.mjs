@@ -84,12 +84,31 @@ function contactPairs(pieces){
 }
 export function hairContactAudit(state,surface){const contacts=contactPairs(sweptHairPieces(state,surface));return{penetrating:contacts.length,maxPenetration:contacts.reduce((m,c)=>Math.max(m,c.depth),0),pairs:[...new Set(contacts.map(c=>`${c.a.lockIndex}:${c.b.lockIndex}`))]};}
 
+// Hair-hair interaction follows Müller, Kim & Chentanez 2012 §3.5 (after
+// Petrovic et al. 2005): explicit contact between every pair of locks is
+// expensive and, for thick overlapping locks, does not converge, so locks
+// interact through a density grid. Each particle splats trilinear weights and
+// its velocity onto the 8 surrounding nodes; friction blends a velocity
+// towards the averaged grid velocity (Eq. 10) and repulsion moves particles
+// down the density gradient (Eq. 11, pushing from denser to sparser, as the
+// pressure of Petrovic et al.). With ~70 thick locks rather than thousands of
+// strands a lock's own particles dominate the field around it, so its own
+// share is removed before the gradient is taken. Skin and clothing remain
+// hard contacts (§3.6: collision with the character is essential).
+const STRETCH_TOLERANCE=.01, BODY_TOLERANCE=.001;
 export class HairDynamics{
-  constructor(state,{surface,fixedStep=1/120,iterations=20,maskAt=()=>0}={}){
+  constructor(state,{surface,fixedStep=1/120,iterations=20,maskAt=()=>0,friction=.05,repulsionSpeed=null,cell=null}={}){
     if(typeof surface!=='function')throw new TypeError('HairDynamics requires the rendered lock surface function');
-    this.state=state;this.surface=surface;this.h=fixedStep;this.iterations=iterations;this.maskAt=maskAt;this.records=new Map();this.accumulator=0;this.time=0;this.bodyAudit=true;this.stats={steps:0,maxStretch:0,maxPenetration:0,penetrating:0,infeasibleContacts:0,droppedTime:0};this.sync();
+    this.state=state;this.surface=surface;this.h=fixedStep;this.iterations=iterations;this.maskAt=maskAt;this.records=new Map();this.accumulator=0;this.time=0;this.bodyAudit=true;
+    // s_friction of Eq. 10; repulsionSpeed is the separation speed Eq. 11 settles to
+    // under the velocity decay (default: one lock thickness per second); cell is
+    // the grid spacing (default: 1.5 lock thicknesses, so touching locks share cells).
+    this.friction=friction;this.repulsionOption=repulsionSpeed;this.cellOption=cell;
+    this.stats={steps:0,maxStretch:0,maxPenetration:0,penetrating:0,infeasibleContacts:0,droppedTime:0};this.sync();
   }
-  sync(){for(const lock of this.state.locks){lock.rootTaper=true;if(!this.records.has(lock)||this.records.get(lock).x.length!==lock.x.length){const n=lock.x.length/3;this.records.set(lock,{lock,x:Float64Array.from(lock.x),old:Float64Array.from(lock.x),last:Float32Array.from(lock.x),v:new Float64Array(lock.x.length),w:new Float64Array(n),lambda:new Float64Array(n-1),bendLambda:new Float64Array(Math.max(0,n-2)),n});this.bodyAudit=true;}const r=this.records.get(lock);if(r.last.some((v,i)=>v!==lock.x[i])){r.x.set(lock.x);r.v.fill(0);this.bodyAudit=true;}r.w.fill(lock.fixed||lock.hold?0:1);r.w[0]=0;for(const [i]of lock.pins)r.w[i]=0;for(let i=1;i<r.n;i++)if(this.maskAt(lock,new Vector3().fromArray(lock.x,i*3))>=1-1e-6)r.w[i]=0;}
+  sync(){let thickness=0,count=0;for(const lock of this.state.locks){thickness+=(lock.width??.05)*(lock.volume??.18);count++;}
+    this.thickness=Math.max(.002,count?thickness/count:.009);this.cell=this.cellOption??Math.max(.006,1.5*this.thickness);this.repulsionSpeed=this.repulsionOption??this.thickness;
+    for(const lock of this.state.locks){lock.rootTaper=true;if(!this.records.has(lock)||this.records.get(lock).x.length!==lock.x.length){const n=lock.x.length/3;this.records.set(lock,{lock,x:Float64Array.from(lock.x),old:Float64Array.from(lock.x),last:Float32Array.from(lock.x),v:new Float64Array(lock.x.length),w:new Float64Array(n),lambda:new Float64Array(n-1),bendLambda:new Float64Array(Math.max(0,n-2)),n});this.bodyAudit=true;}const r=this.records.get(lock);if(r.last.some((v,i)=>v!==lock.x[i])){r.x.set(lock.x);r.v.fill(0);this.bodyAudit=true;}r.w.fill(lock.fixed||lock.hold?0:1);r.w[0]=0;for(const [i]of lock.pins)r.w[i]=0;for(let i=1;i<r.n;i++)if(this.maskAt(lock,new Vector3().fromArray(lock.x,i*3))>=1-1e-6)r.w[i]=0;}
     for(const lock of this.records.keys())if(!this.state.locks.includes(lock))this.records.delete(lock);
   }
   pause(){this.accumulator=0;for(const r of this.records.values())r.v.fill(0);}
@@ -101,21 +120,39 @@ export class HairDynamics{
   fix(r){const l=r.lock;r.x.set(l.rootP.toArray(),0);for(const[i,p]of l.pins)r.x.set(p.toArray(),i*3);for(let i=1;i<r.n;i++)if(!r.w[i]&&!l.pins.has(i))r.x.set(r.old.subarray(i*3,i*3+3),i*3);}
   distance(r,a,b,length,compliance,lambda,index){const p=r.x,o=a*3,q=b*3,dx=p[q]-p[o],dy=p[q+1]-p[o+1],dz=p[q+2]-p[o+2],d=Math.hypot(dx,dy,dz);if(d<1e-12)return;const alpha=compliance/(this.h*this.h),sum=r.w[a]+r.w[b]+alpha;if(!sum)return;const change=(-(d-length)-alpha*lambda[index])/sum;lambda[index]+=change;const k=change/d;for(const[j,t]of[[o,-r.w[a]],[q,r.w[b]]]){p[j]+=dx*k*t;p[j+1]+=dy*k*t;p[j+2]+=dz*k*t;}}
   anchors(piece){const r=this.records.get(piece.lock),f=clamp(piece.u,0,1)*(r.n-1),i=Math.min(r.n-2,Math.floor(f)),t=f-i;return{r,indices:[i,i+1],weights:[1-t,t],p:[0,1,2].map(k=>r.x[i*3+k]*(1-t)+r.x[(i+1)*3+k]*t)};}
+  // Hard contacts are only skin and clothing; locks meet each other through the density grid.
   buildContacts(active=null){this.publish();const pieces=sweptHairPieces(this.state,this.surface,active), contacts=[];let infeasible=0;
-    for(const hit of contactPairs(pieces)){
-      const a=this.anchors(hit.a),b=this.anchors(hit.b),n=hit.normal,minimum=dot(sub(a.p,b.p),n)+hit.depth+MARGIN;
-      const mobility=[a,b].reduce((sum,p)=>sum+p.indices.reduce((s,i,k)=>s+p.r.w[i]*p.weights[k]**2,0),0);
-      if(mobility<1e-12){infeasible++;continue;}contacts.push({a,b,n,minimum,lambda:0});
-    }
     const head=this.state.collider?.head,hit={};
     if(head)for(const piece of pieces){const a=this.anchors(piece),center=piece.center;let radius=0;for(let i=0;i<piece.p.length;i+=3)radius=Math.max(radius,Math.hypot(piece.p[i]-center[0],piece.p[i+1]-center[1],piece.p[i+2]-center[2]));radius=Math.max(.012,radius+MARGIN+this.h*this.h*9.81);
       // Every layer is tested: the nearest skin surface must not hide a garment.
       // Following the initial/deformed-pose audit, a surface outside the swept
       // piece's enclosing sphere cannot intersect it, so a smaller query is exact.
-      for(const layer of head.layers){if(!layer.closest(...center,this.bodyAudit?Math.max(.07,radius):radius,hit))continue;const n=[hit.nx,hit.ny,hit.nz],minimum=dot([hit.x,hit.y,hit.z],n)+MARGIN+(dot(a.p,n)-projection(piece.p,n)[0]);const mobility=a.indices.reduce((s,i,k)=>s+a.r.w[i]*a.weights[k]**2,0);if(dot(a.p,n)>=minimum)continue;if(mobility<1e-12){infeasible++;continue;}contacts.push({a,b:null,n,minimum,lambda:0});}}
+      for(const layer of head.layers){if(!layer.closest(...center,this.bodyAudit?Math.max(.07,radius):radius,hit))continue;const n=[hit.nx,hit.ny,hit.nz],minimum=dot([hit.x,hit.y,hit.z],n)+MARGIN+(dot(a.p,n)-projection(piece.p,n)[0]);const mobility=a.indices.reduce((s,i,k)=>s+a.r.w[i]*a.weights[k]**2,0);if(dot(a.p,n)>=minimum)continue;
+        // A pinned piece grazing the skin within the tolerance cannot move and does not invalidate the pose.
+        if(mobility<1e-12){if(minimum-dot(a.p,n)>MARGIN+BODY_TOLERANCE)infeasible++;continue;}contacts.push({a,b:null,n,minimum,lambda:0});}}
     this.stats.infeasibleContacts=infeasible;return contacts;
   }
   projectContact(c){const point=p=>[0,1,2].map(k=>p.r.x[p.indices[0]*3+k]*p.weights[0]+p.r.x[p.indices[1]*3+k]*p.weights[1]);const a=point(c.a),b=c.b?point(c.b):[0,0,0],C=dot(sub(a,b),c.n)-c.minimum;let mass=0;for(const p of[c.a,c.b].filter(Boolean))for(let k=0;k<2;k++)mass+=p.r.w[p.indices[k]]*p.weights[k]**2;if(!mass)return;const next=Math.max(0,c.lambda-C/mass),change=next-c.lambda;c.lambda=next;for(const[p,sign]of[[c.a,1],[c.b,-1]])if(p)for(let k=0;k<2;k++){const i=p.indices[k],amount=sign*change*p.r.w[i]*p.weights[k];for(let j=0;j<3;j++)p.r.x[i*3+j]+=c.n[j]*amount;}}
+  /** Density-grid friction (Eq. 10) and repulsion (Eq. 11); `decay` is the per-step velocity decay. */
+  hairHair(decay){
+    const cell=this.cell,grid=new Map(),key=(i,j,k)=>`${i},${j},${k}`;
+    // Trilinear weights of p on its 8 grid nodes, with their derivatives (per metre).
+    const corners=(p,o,visit)=>{const fx=p[o]/cell,fy=p[o+1]/cell,fz=p[o+2]/cell,i=Math.floor(fx),j=Math.floor(fy),k=Math.floor(fz),tx=fx-i,ty=fy-j,tz=fz-k;
+      for(let c=0;c<8;c++){const dx=c&1,dy=c>>1&1,dz=c>>2&1,wx=dx?tx:1-tx,wy=dy?ty:1-ty,wz=dz?tz:1-tz,sx=(dx?1:-1)/cell,sy=(dy?1:-1)/cell,sz=(dz?1:-1)/cell;
+        visit(key(i+dx,j+dy,k+dz),wx*wy*wz,sx*wy*wz,wx*sy*wz,wx*wy*sz);}};
+    const records=[...this.records.values()];
+    for(const r of records)for(let i=0;i<r.n;i++)corners(r.x,i*3,(id,w)=>{let node=grid.get(id);if(!node)grid.set(id,node=[0,0,0,0]);node[0]+=w;node[1]+=w*r.v[i*3];node[2]+=w*r.v[i*3+1];node[3]+=w*r.v[i*3+2];});
+    const push=this.repulsionSpeed*(1-decay);
+    for(const r of records){
+      // This lock's own density, removed so a lock is not pushed by itself.
+      const own=new Map();for(let i=0;i<r.n;i++)corners(r.x,i*3,(id,w)=>own.set(id,(own.get(id)??0)+w));
+      for(let i=1;i<r.n;i++){if(!r.w[i])continue;const o=i*3;let vx=0,vy=0,vz=0,mass=0,density=0,gx=0,gy=0,gz=0;
+        corners(r.x,o,(id,w,dx,dy,dz)=>{const node=grid.get(id);if(node[0]>1e-12){vx+=w*node[1]/node[0];vy+=w*node[2]/node[0];vz+=w*node[3]/node[0];mass+=w;}const other=Math.max(0,node[0]-(own.get(id)??0));density+=w*other;gx+=dx*other;gy+=dy*other;gz+=dz*other;});
+        if(mass>1e-12){const f=this.friction;r.v[o]=(1-f)*r.v[o]+f*vx/mass;r.v[o+1]=(1-f)*r.v[o+1]+f*vy/mass;r.v[o+2]=(1-f)*r.v[o+2]+f*vz/mass;}
+        const g=Math.hypot(gx,gy,gz);if(density>1e-9&&g>1e-9){r.v[o]-=push*gx/g;r.v[o+1]-=push*gy/g;r.v[o+2]-=push*gz/g;}
+      }
+    }
+  }
   substep(strength){
     const started=performance.now();let contactMs=0;
     for(const r of this.records.values()){r.old.set(r.x);r.lambda.fill(0);r.bendLambda.fill(0);for(let i=1;i<r.n;i++)if(r.w[i]){const o=i*3;r.v[o+1]-=9.81*strength*this.h;for(let k=0;k<3;k++)r.x[o+k]+=r.v[o+k]*this.h;}this.fix(r);}
@@ -136,10 +173,15 @@ export class HairDynamics{
     const decay=Math.exp(-3*this.h);
     for(const r of this.records.values())for(let i=0;i<r.n;i++)for(let k=0;k<3;k++)r.v[i*3+k]=r.w[i]?(r.x[i*3+k]-r.old[i*3+k])/this.h*decay:0;
     for(const c of contacts)for(const[p,sign]of[[c.a,1],[c.b,-1]])if(p)for(const i of p.indices){const o=i*3,normal=scale(c.n,sign),speed=dot(vertex(p.r.v,o),normal);if(speed>0)for(let k=0;k<3;k++)p.r.v[o+k]-=normal[k]*speed;}
+    // Velocity corrections after the position step (§3.5: "executed after PBD integration").
+    const gridAt=performance.now();this.hairHair(decay);const gridMs=performance.now()-gridAt;
+    // Skin/clothing contacts left unsatisfied after the solve (metres).
+    let bodyViolation=0;for(const c of contacts){const a=[0,1,2].map(k=>c.a.r.x[c.a.indices[0]*3+k]*c.a.weights[0]+c.a.r.x[c.a.indices[1]*3+k]*c.a.weights[1]);bodyViolation=Math.max(bodyViolation,c.minimum-MARGIN-dot(a,c.n));}
     this.publish();let maxStretch=0;for(const r of this.records.values())for(let i=1;i<r.n;i++)maxStretch=Math.max(maxStretch,Math.abs(Math.hypot(r.x[i*3]-r.x[(i-1)*3],r.x[i*3+1]-r.x[(i-1)*3+1],r.x[i*3+2]-r.x[(i-1)*3+2])/r.lock.seg-1));this.stats.maxStretch=maxStretch;
-    const auditAt=performance.now(),audit=hairContactAudit(this.state,this.surface);Object.assign(this.stats,audit);this.stats.maxPenetration=audit.maxPenetration;this.stats.timings={contactMs,auditMs:performance.now()-auditAt,totalMs:performance.now()-started};this.bodyAudit=false;
-    this.stats.validPose=audit.penetrating===0&&this.stats.infeasibleContacts===0;
-    this.stats.error=this.stats.validPose?null:'O contato entre mechas não convergiu.';
+    this.stats.penetrating=0;this.stats.maxPenetration=Math.max(0,bodyViolation);this.stats.timings={contactMs,gridMs,totalMs:performance.now()-started};this.bodyAudit=false;
+    const touchesBody=bodyViolation>BODY_TOLERANCE,stretched=maxStretch>STRETCH_TOLERANCE;
+    this.stats.validPose=!touchesBody&&!stretched&&this.stats.infeasibleContacts===0;
+    this.stats.error=this.stats.validPose?null:touchesBody?'Mechas entraram no corpo ou na roupa.':stretched?'As mechas esticaram além do comprimento.':'Há contatos com o corpo incompatíveis com as fixações.';
   }
   publish(){for(const r of this.records.values()){r.lock.x.set(r.x);r.last.set(r.lock.x);}}
 }
