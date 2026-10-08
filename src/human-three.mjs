@@ -1,5 +1,5 @@
 import {
-  Bone, BufferGeometry, Color, Float32BufferAttribute, Group, MeshStandardMaterial,
+  Bone, BufferGeometry, Color, Float32BufferAttribute, Group, Matrix4, MeshStandardMaterial, Quaternion,
   Skeleton, SkinnedMesh, SRGBColorSpace, Uint16BufferAttribute, Uint32BufferAttribute, Vector3,
 } from 'three';
 import { loadHumanData, shapeHuman } from './parametric.mjs';
@@ -9,6 +9,8 @@ import { buildClips } from './motion.mjs';
 import { addFaceRig } from './face-mesh.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture } from './texture-cache.mjs';
+import { sanitizeSkin } from './skin.mjs';
+export { auditCharacter } from './skin.mjs';
 export { blendshapeNames } from './face-rig.mjs';
 export { faceWeights, applyFaceWeights } from './face-mesh.mjs';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
@@ -45,22 +47,59 @@ function boneHead(meta, groups, positions) {
   return head;
 }
 
+/**
+ * Rest orientation of a bone as Blender builds it from head, tail and roll
+ * (vec_roll_to_mat3): the smallest rotation taking +Y onto the bone vector,
+ * then the roll about that vector. The rig's roll is defined in Blender's
+ * frame (+Z up, -Y forward), the base OBJ imported as (x, -z, y); the result
+ * is turned back into this app's frame (+Y up, +Z forward) as a quaternion.
+ */
+function boneRest(direction, roll) {
+  const length = direction.length();
+  if (length < 1e-9) return new Quaternion();
+  const x = direction.x / length, y = -direction.z / length, z = direction.y / length; // Blender frame
+  let X, Y = [x, y, z], Z;
+  const theta = 1 + y;
+  if (theta > 1e-5) {
+    X = [1 - x * x / theta, -x, -x * z / theta];
+    Z = [-x * z / theta, -z, 1 - z * z / theta];
+  } else if (theta > 1e-9) {
+    const t = x * x + z * z, a = (x + z) * (x - z) / t, b = 2 * x * z / t;
+    X = [a, -x, b]; Z = [b, -z, -a];
+  } else { X = [-1, 0, 0]; Y = [0, -1, 0]; Z = [0, 0, 1]; }
+  const axis = new Vector3(...Y), spin = new Quaternion().setFromAxisAngle(axis, roll);
+  const toApp = v => new Vector3(v.x, v.z, -v.y);
+  const basis = new Matrix4().makeBasis(
+    toApp(new Vector3(...X).applyQuaternion(spin)).normalize(),
+    toApp(axis).normalize(),
+    toApp(new Vector3(...Z).applyQuaternion(spin)).normalize(),
+  );
+  return new Quaternion().setFromRotationMatrix(basis);
+}
+
 function makeSkeleton(data, positions) {
   const meta = data.skeleton.bones;
   const heads = meta.map(bone => boneHead(bone, data.base.vertexGroups, positions));
+  const tails = meta.map(bone => boneHead({ head: bone.tail }, data.base.vertexGroups, positions));
   const byName = new Map(meta.map((bone, i) => [bone.name, i]));
   const bones = meta.map(({ name }) => { const bone = new Bone(); bone.name = name; return bone; });
+  // World rest rotation of every bone (Root: head and tail coincide, identity).
+  const rest = meta.map((bone, i) => boneRest(tails[i].clone().sub(heads[i]), bone.roll ?? 0));
   const roots = [];
   for (let i = 0; i < bones.length; i++) {
     const parent = meta[i].parent == null ? undefined : byName.get(meta[i].parent);
-    bones[i].position.copy(heads[i]);
-    if (parent === undefined) roots.push(bones[i]);
-    else {
-      bones[i].position.sub(heads[parent]);
+    if (parent === undefined) {
+      bones[i].position.copy(heads[i]);
+      bones[i].quaternion.copy(rest[i]);
+      roots.push(bones[i]);
+    } else {
+      const inverse = rest[parent].clone().invert();
+      bones[i].position.copy(heads[i]).sub(heads[parent]).applyQuaternion(inverse);
+      bones[i].quaternion.copy(inverse).multiply(rest[i]);
       bones[parent].add(bones[i]);
     }
   }
-  return { bones, roots, heads, byName };
+  return { bones, roots, heads, tails, rest, byName };
 }
 
 function makeBodyGeometry(data, positions) {
@@ -225,6 +264,8 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
       if (mesh.geometry !== previous) previous.dispose();
     }
   }
+  // Every skinned mesh leaves with glTF-valid weights (one set of four, summing to 1, unused slots 0).
+  group.traverse(object => { if (object.isSkinnedMesh) sanitizeSkin(object.geometry, object.name); });
   const animations = buildClips(skeleton, spec.pose ?? 0, faceMeshes.map(mesh => mesh.name));
   group.animations = animations;
   const bounds = body.geometry.boundingBox;
@@ -338,6 +379,10 @@ export async function exportHumanGLB(human, { skeleton = 'unreal', animations = 
   const original = bones.map(bone => bone.name);
   const hidden = [], morphs = [];
   let restore = () => {};
+  // Joints are written at the bind pose, never at the current animation frame
+  // (the glTF node transforms are what engines import as the rest pose).
+  const posed = bones.map(bone => [bone.position.clone(), bone.quaternion.clone(), bone.scale.clone()]);
+  human.body.skeleton.pose();
   try {
     if (skeleton === 'mixamo') bones.forEach(bone => { bone.name = mixamoName(bone.name); });
     if (!cosmetic) human.group.traverse(object => { if (object.userData.role === 'corneal-wetness' && object.visible) { object.visible = false; hidden.push(object); } });
@@ -361,7 +406,7 @@ export async function exportHumanGLB(human, { skeleton = 'unreal', animations = 
     return await new GLTFExporter().parseAsync(human.group, { binary: true, animations: clips });
   } finally {
     restore();
-    bones.forEach((bone, i) => { bone.name = original[i]; });
+    bones.forEach((bone, i) => { bone.name = original[i]; bone.position.copy(posed[i][0]); bone.quaternion.copy(posed[i][1]); bone.scale.copy(posed[i][2]); });
     for (const object of hidden) object.visible = true;
     for (const [object, position, influences, dictionary] of morphs) {
       object.geometry.morphAttributes.position = position; object.morphTargetInfluences = influences; object.morphTargetDictionary = dictionary;

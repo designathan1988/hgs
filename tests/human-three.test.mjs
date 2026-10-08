@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Quaternion } from 'three';
 import { clipNames } from '../src/motion.mjs';
 import { createHuman } from '../src/human-three.mjs';
 
@@ -15,7 +16,10 @@ test('creates a continuous, rigged human body with a human height', async () => 
   assert.ok(human.animations.every(clip => clip.validate()));
   const idleArm = human.animations[0].tracks.find(track => track.name === 'upperarm_l.quaternion');
   assert.ok(idleArm);
-  assert.ok(Math.abs(idleArm.values[2]) > 0.05);
+  // Keys are relative to the bone's oriented rest: the idle arm hangs away from it.
+  const rest = human.body.skeleton.bones.find(bone => bone.name === 'upperarm_l').quaternion;
+  const key = new Quaternion().fromArray(idleArm.values, 0);
+  assert.ok(key.angleTo(rest) > 0.05);
   human.dispose();
 });
 

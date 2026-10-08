@@ -205,6 +205,19 @@ export function buildClips(skeleton, stance = 0, faceMeshes = []) {
         rotations.get(bone).splice(frame * 4, 4, q.x, q.y, q.z, q.w);
       }
     });
+    // The poses above are rotations relative to a world-aligned rest. Bones
+    // rest at R_b (world), so the local key is R_parent⁻¹ · D · R_b: the bone's
+    // world rotation becomes W_b · R_b and skinning (· R_b⁻¹) is unchanged.
+    if (skeleton.rest) for (const [bone, values] of rotations) {
+      const index = skeleton.byName.get(bone), parent = skeleton.bones[index].parent;
+      const parentRest = parent?.isBone ? skeleton.rest[skeleton.bones.indexOf(parent)].clone().invert() : new Quaternion();
+      const rest = skeleton.rest[index], q = new Quaternion();
+      for (let k = 0; k < values.length; k += 4) {
+        q.set(values[k], values[k + 1], values[k + 2], values[k + 3]);
+        q.premultiply(parentRest).multiply(rest);
+        values[k] = q.x; values[k + 1] = q.y; values[k + 2] = q.z; values[k + 3] = q.w;
+      }
+    }
     const tracks = [...rotations].map(([bone, values]) => new QuaternionKeyframeTrack(`${bone}.quaternion`, times, values));
     if (pelvis) {
       const values = poses.flatMap(pose => {
