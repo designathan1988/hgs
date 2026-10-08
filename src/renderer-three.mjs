@@ -1,6 +1,6 @@
 import {
-  AmbientLight, AnimationMixer, Color, DirectionalLight, GridHelper, Group, Mesh,
-  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, Scene, Vector3, WebGLRenderer,
+  AmbientLight, AnimationMixer, CanvasTexture, DirectionalLight, Fog, GridHelper, Group, Mesh,
+  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, SRGBColorSpace, Scene, Vector3, WebGLRenderer,
 } from 'three';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
@@ -19,6 +19,19 @@ const femaleOutfits = ['female_casualsuit01', 'female_casualsuit02', 'female_ele
 const maleOutfits = ['male_casualsuit01', 'male_casualsuit02', 'male_elegantsuit01', 'male_worksuit01'];
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
 const hex = value => parseInt(value.slice(1), 16);
+// Neutral grey studio: a colourless surround keeps skin, hair and fabric from
+// being tinted by simultaneous contrast; the floor fades into it with the fog.
+const BACKDROP = ['#4b4d52', '#36383c', '#26272a'], HORIZON = 0x2a2b2e;
+function studioBackdrop() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 4; canvas.height = 512;
+  const context = canvas.getContext('2d'), gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+  BACKDROP.forEach((color, i) => gradient.addColorStop(i / (BACKDROP.length - 1), color));
+  context.fillStyle = gradient; context.fillRect(0, 0, canvas.width, canvas.height);
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  return texture;
+}
 
 /** The locks a character's hair is built from: its edited locks, else its ready-made style. */
 export const hairLocksOf = person => person.locks ?? hairPresetData(person.hairPreset);
@@ -145,16 +158,20 @@ export class Renderer {
     this.canvas = canvas; this.onError = onError;
     this.renderer = new WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7));
-    this.renderer.setClearColor(0x202b34);
-    this.scene = new Scene(); this.scene.background = new Color(0x202b34);
+    this.renderer.setClearColor(HORIZON);
+    this.scene = new Scene();
+    this.scene.background = typeof document === 'undefined' ? null : studioBackdrop();
+    this.scene.fog = new Fog(HORIZON, 12, 60);
     this.viewCamera = new PerspectiveCamera(36, 1, 0.025, 180);
     this.camera = new Camera();
     this.scene.add(new AmbientLight(0xffffff, 1.2));
     const key = new DirectionalLight(0xfff2df, 2.6); key.position.set(-3, 7, 5); this.scene.add(key); this.keyLight = key;
     const fill = new DirectionalLight(0xb2c9ff, 0.85); fill.position.set(3, 4, -4); this.scene.add(fill); this.fillLight = fill;
-    const floor = new Mesh(new PlaneGeometry(200, 200), new MeshStandardMaterial({ color: 0x343a3f, roughness: 1 }));
+    const floor = new Mesh(new PlaneGeometry(200, 200), new MeshStandardMaterial({ color: 0x313236, roughness: 1 }));
     floor.rotation.x = -Math.PI / 2; floor.position.y = -0.015; this.scene.add(floor);
-    const grid = new GridHelper(200, 100, 0x4c555b, 0x3d454b); grid.position.y = -0.012; this.scene.add(grid);
+    const grid = new GridHelper(200, 200, 0x55575c, 0x46484d); grid.position.y = -0.012;
+    Object.assign(grid.material, { transparent: true, opacity: 0.45, depthWrite: false });
+    this.scene.add(grid);
     this.current = null; this.mixer = null; this.crowd = [];
     this.crowdPrototypes = []; this.crowdVersion = 0;
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
@@ -210,12 +227,9 @@ export class Renderer {
       expression: person.expression, expressionIntensity: person.expressionIntensity, faceShapes: person.faceShapes });
     this.faceBase = faceWeights(person.expression, person.expressionIntensity ?? 0.5, person.faceShapes);
     if (this.current && !this.frozen) applyFaceWeights(this.current.faceMeshes, this.faceBase);
-    const light = [
-      [2.3, 0.9, 0x26323a], [1.7, 1.3, 0x29333a], [2.6, 0.85, 0x202b34],
-      [3.2, 0.3, 0x171e2b], [2.8, 1.0, 0x30404a],
-    ][person.lighting ?? 2];
+    // Lighting presets change the lights only; the neutral backdrop stays (key, fill).
+    const light = [[2.3, 0.9], [1.7, 1.3], [2.6, 0.85], [3.2, 0.3], [2.8, 1.0]][person.lighting ?? 2];
     this.keyLight.intensity = light[0]; this.fillLight.intensity = light[1];
-    this.scene.background.setHex(light[2]);
     if (!this.current || !this.mixer || this.frozen) return;
     const clip = this.current.animations[person.animation ?? 0] ?? this.current.animations[0];
     const action = this.mixer.clipAction(clip);
@@ -285,7 +299,7 @@ export class Renderer {
     const prototypes = [];
     try {
       for (let type = 0; type < Math.min(count, ages.length); type++) {
-        onProgress(`Building crowd ${type + 1}/${Math.min(count, ages.length)}…`);
+        onProgress(`Montando multidão ${type + 1}/${Math.min(count, ages.length)}…`);
         const variant = randomCharacter((this.person.seed + type * 173 + 1) >>> 0);
         variant.gender = type % 2;
         variant.ageYears = ages[type];
