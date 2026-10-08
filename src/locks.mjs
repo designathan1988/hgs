@@ -1,10 +1,11 @@
 import {
-  BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, Float32BufferAttribute, MeshStandardMaterial, RepeatWrapping,
-  SkinnedMesh, Triangle, Uint16BufferAttribute, Uint32BufferAttribute, Vector2, Vector3,
+  BufferGeometry, CatmullRomCurve3, Float32BufferAttribute,
+  SkinnedMesh, Triangle, Uint16BufferAttribute, Uint32BufferAttribute, Vector3,
 } from 'three';
 import { defaultHairline, hairCollider, headFrame, scalpField, vertexNormals } from './scalp.mjs';
 import { fusedHairSurface, hairFusionGroups, normalizeHairFusion } from './hair-fusion.mjs';
 import { buildHairRig } from './hair-rig.mjs';
+import { cardFromSweep, hairCardMaterial } from './hair-cards.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -20,7 +21,9 @@ import { buildHairRig } from './hair-rig.mjs';
  *   are turned, never stretched); skin, clothing and the locks laid before
  *   are kept out by the lock's own thickness.
  * - "Set as rest" (styled) keeps a lock's current shape against gravity.
- * - The mesh is a closed elliptical tube swept along a centripetal
+ * - The game and editor mesh is a hair card per lock (hair-cards.mjs): a
+ *   textured strip along the lock's centre line. The closed tube below is
+ *   kept for the volume fusion and the tests. The tube is swept along a centripetal
  *   Catmull-Rom of the chain with rotation-minimising frames (double
  *   reflection, Wang et al. 2008), turned so the flat side faces the surface
  *   it lies on. Width, volume (thickness/width), taper, twist and a helical
@@ -745,6 +748,79 @@ const SIDES = 12;
  */
 export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = null } = {}) {
   if ((lock.density ?? 1) < 1) lock = { ...lock, width: lock.width * Math.sqrt(Math.max(0, lock.density)) };
+  const { M, ss, line, tan, RA, SA, fit, length } = lockSweep(lock, state, { detail });
+  const flatTip = lock.tipShape === 'flat', ring = sides + 1, count = M * ring + 1 + (flatTip ? 1 : 0);
+  const pos = new Float32Array(count * 3), normal = new Float32Array(count * 3), uv = new Float32Array(count * 2), color = new Float32Array(count * 3);
+  const cosT = new Float32Array(ring), sinT = new Float32Array(ring);
+  for (let k = 0; k <= sides; k++) { cosT[k] = Math.cos(k / sides * TAU); sinT[k] = Math.sin(k / sides * TAU); }
+  let v = 0;
+  for (let j = 0; j < M; j++) {
+    const o = j * 3, u = clamp(ss[j] / length, 0, 1);
+    const tx = tan[o], ty = tan[o + 1], tz = tan[o + 2];
+    const rx = RA[o], ry = RA[o + 1], rz = RA[o + 2], sx = SA[o], sy = SA[o + 1], sz = SA[o + 2];
+    const a = fit[j], b = fit[j] * sectionVolume(lock, u);
+    // Slope of the radius along the lock tilts the normals (taper, rounded tip).
+    const jp = Math.min(M - 1, j + 1), jm = Math.max(0, j - 1);
+    const slope = (fit[jp] - fit[jm]) / Math.max(1e-6, ss[jp] - ss[jm]);
+    const shade = 0.78 + 0.22 * smooth(0, 0.35, u);
+    for (let k = 0; k <= sides; k++, v++) {
+      const c = cosT[k], sn = sinT[k];
+      const px = line[o] + sx * a * c + rx * b * sn, py = line[o + 1] + sy * a * c + ry * b * sn, pz = line[o + 2] + sz * a * c + rz * b * sn;
+      let nx = sx * b * c + rx * a * sn, ny = sy * b * c + ry * a * sn, nz = sz * b * c + rz * a * sn;
+      const nl = Math.hypot(nx, ny, nz);
+      if (a < 1e-6 || nl < 1e-12) { nx = tx; ny = ty; nz = tz; } else {
+        nx = nx / nl - tx * slope; ny = ny / nl - ty * slope; nz = nz / nl - tz * slope;
+        const m = Math.hypot(nx, ny, nz); nx /= m; ny /= m; nz /= m;
+      }
+      pos[v * 3] = px; pos[v * 3 + 1] = py; pos[v * 3 + 2] = pz;
+      normal[v * 3] = nx; normal[v * 3 + 1] = ny; normal[v * 3 + 2] = nz;
+      uv[v * 2] = k / sides; uv[v * 2 + 1] = u;
+      color[v * 3] = color[v * 3 + 1] = color[v * 3 + 2] = shade;
+      vertex?.(px, py, pz, u);
+    }
+  }
+  // Close the sunken root end.
+  pos.set(line.subarray(0, 3), v * 3); normal.set([-tan[0], -tan[1], -tan[2]], v * 3); uv.set([0.5, 0], v * 2); color.set([0.78, 0.78, 0.78], v * 3);
+  vertex?.(line[0], line[1], line[2], 0);
+  if (flatTip) {
+    pos.set(line.subarray((M - 1) * 3, M * 3), (v + 1) * 3); normal.set(tan.subarray((M - 1) * 3, M * 3), (v + 1) * 3); uv.set([.5, 1], (v + 1) * 2); color.set([1, 1, 1], (v + 1) * 3);
+    vertex?.(line[(M - 1) * 3], line[(M - 1) * 3 + 1], line[(M - 1) * 3 + 2], 1);
+  }
+  const index = new Uint32Array((M - 1) * sides * 6 + sides * 3 + (flatTip ? sides * 3 : 0));
+  let n = 0;
+  for (let j = 0; j + 1 < M; j++) for (let k = 0; k < sides; k++) {
+    const a = j * ring + k, b = a + 1, c = a + ring, d = c + 1;
+    index[n++] = a; index[n++] = c; index[n++] = b; index[n++] = b; index[n++] = c; index[n++] = d;
+  }
+  for (let k = 0; k < sides; k++) { index[n++] = v; index[n++] = k; index[n++] = k + 1; }
+  if (flatTip) for (let k = 0; k < sides; k++) { index[n++] = v + 1; index[n++] = (M - 1) * ring + k + 1; index[n++] = (M - 1) * ring + k; }
+  return { pos, normal, uv, color, index };
+}
+
+/**
+ * A lock as a hair card (hair-cards.mjs): the same centre line and frames as
+ * the tube, a strip across its width facing out of the head.
+ */
+export function lockCard(lock, state, { detail = 1, vertex = null } = {}) {
+  if ((lock.density ?? 1) < 1) lock = { ...lock, width: lock.width * Math.sqrt(Math.max(0, lock.density)) };
+  const sweep = lockSweep(lock, state, { detail });
+  // A card keeps most of its width to the tip (the strands in its texture thin out there, not the card),
+  // and is half again as wide as the lock so neighbouring cards overlap and no scalp shows between them.
+  const half = sweep.ss.map(s => {
+    const u = clamp(s / sweep.length, 0, 1);
+    return 0.75 * lock.width * (1 - 0.45 * lock.taper * Math.pow(u, 1.4)) * (0.75 + 0.25 * smooth(0, Math.min(0.03, sweep.length * 0.2), s));
+  });
+  const u = sweep.ss.map(s => clamp(s / sweep.length, 0, 1));
+  return cardFromSweep({ M: sweep.M, line: sweep.line, tan: sweep.tan, side: sweep.SA, out: sweep.RA, half, u }, lock, { vertex });
+}
+
+/**
+ * The swept centre line of a lock: arc-length samples `ss` (the first one
+ * sunk into the scalp), points `line`, unit tangents `tan`, the thickness
+ * axis `RA` (facing out of the surface) and width axis `SA`, turned by the
+ * twist, and the tube's half-width `fit` per sample.
+ */
+function lockSweep(lock, state, { detail = 1 } = {}) {
   const length = lockLength(lock), w = lock.width;
   const sink = lock.rootTaper ? 0 : Math.max(0.002, 0.5 * w * lock.volume * 0.9);
   const ctrl = [lock.rootP.clone().addScaledVector(lock.rootN, -sink)];
@@ -833,12 +909,8 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
     }
     tangents(); frames(nudge);
   }
-  const flatTip = lock.tipShape === 'flat', ring = sides + 1, count = M * ring + 1 + (flatTip ? 1 : 0);
-  const pos = new Float32Array(count * 3), normal = new Float32Array(count * 3), uv = new Float32Array(count * 2), color = new Float32Array(count * 3);
   // Curls narrow the lock from where they start (ringlets are slimmer than a flat lock).
   const radii = ss.map(s => 0.5 * (turns ? w + (curlWidth(lock) - w) * curlIn(lock, Math.max(0, s) / length) : w) * profile(lock, Math.max(0, s), length));
-  const cosT = new Float32Array(ring), sinT = new Float32Array(ring);
-  for (let k = 0; k <= sides; k++) { cosT[k] = Math.cos(k / sides * TAU); sinT[k] = Math.sin(k / sides * TAU); }
   // Cross-section axes per sample: R (thickness, facing the surface) and S
   // (width), turned by the twist.
   const RA = new Float32Array(M * 3), SA = new Float32Array(M * 3);
@@ -869,48 +941,7 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
   }
   for (let pass = 0; pass < 3; pass++) for (let j = 1; j + 1 < M; j++) scale[j] = Math.min(scale[j], (scale[j - 1] + scale[j] + scale[j + 1]) / 3);
   const fit = radii.map((r, j) => r * scale[j]);
-  let v = 0;
-  for (let j = 0; j < M; j++) {
-    const o = j * 3, u = clamp(ss[j] / length, 0, 1);
-    const tx = tan[o], ty = tan[o + 1], tz = tan[o + 2];
-    const rx = RA[o], ry = RA[o + 1], rz = RA[o + 2], sx = SA[o], sy = SA[o + 1], sz = SA[o + 2];
-    const a = fit[j], b = fit[j] * sectionVolume(lock, u);
-    // Slope of the radius along the lock tilts the normals (taper, rounded tip).
-    const jp = Math.min(M - 1, j + 1), jm = Math.max(0, j - 1);
-    const slope = (fit[jp] - fit[jm]) / Math.max(1e-6, ss[jp] - ss[jm]);
-    const shade = 0.78 + 0.22 * smooth(0, 0.35, u);
-    for (let k = 0; k <= sides; k++, v++) {
-      const c = cosT[k], sn = sinT[k];
-      const px = line[o] + sx * a * c + rx * b * sn, py = line[o + 1] + sy * a * c + ry * b * sn, pz = line[o + 2] + sz * a * c + rz * b * sn;
-      let nx = sx * b * c + rx * a * sn, ny = sy * b * c + ry * a * sn, nz = sz * b * c + rz * a * sn;
-      const nl = Math.hypot(nx, ny, nz);
-      if (a < 1e-6 || nl < 1e-12) { nx = tx; ny = ty; nz = tz; } else {
-        nx = nx / nl - tx * slope; ny = ny / nl - ty * slope; nz = nz / nl - tz * slope;
-        const m = Math.hypot(nx, ny, nz); nx /= m; ny /= m; nz /= m;
-      }
-      pos[v * 3] = px; pos[v * 3 + 1] = py; pos[v * 3 + 2] = pz;
-      normal[v * 3] = nx; normal[v * 3 + 1] = ny; normal[v * 3 + 2] = nz;
-      uv[v * 2] = k / sides; uv[v * 2 + 1] = u;
-      color[v * 3] = color[v * 3 + 1] = color[v * 3 + 2] = shade;
-      vertex?.(px, py, pz, u);
-    }
-  }
-  // Close the sunken root end.
-  pos.set(line.subarray(0, 3), v * 3); normal.set([-tan[0], -tan[1], -tan[2]], v * 3); uv.set([0.5, 0], v * 2); color.set([0.78, 0.78, 0.78], v * 3);
-  vertex?.(line[0], line[1], line[2], 0);
-  if (flatTip) {
-    pos.set(line.subarray((M - 1) * 3, M * 3), (v + 1) * 3); normal.set(tan.subarray((M - 1) * 3, M * 3), (v + 1) * 3); uv.set([.5, 1], (v + 1) * 2); color.set([1, 1, 1], (v + 1) * 3);
-    vertex?.(line[(M - 1) * 3], line[(M - 1) * 3 + 1], line[(M - 1) * 3 + 2], 1);
-  }
-  const index = new Uint32Array((M - 1) * sides * 6 + sides * 3 + (flatTip ? sides * 3 : 0));
-  let n = 0;
-  for (let j = 0; j + 1 < M; j++) for (let k = 0; k < sides; k++) {
-    const a = j * ring + k, b = a + 1, c = a + ring, d = c + 1;
-    index[n++] = a; index[n++] = c; index[n++] = b; index[n++] = b; index[n++] = c; index[n++] = d;
-  }
-  for (let k = 0; k < sides; k++) { index[n++] = v; index[n++] = k; index[n++] = k + 1; }
-  if (flatTip) for (let k = 0; k < sides; k++) { index[n++] = v + 1; index[n++] = (M - 1) * ring + k + 1; index[n++] = (M - 1) * ring + k; }
-  return { pos, normal, uv, color, index };
+  return { M, ss, line, tan, RA, SA, fit, length };
 }
 
 /** BufferGeometry from lockSurface data (several are merged). */
@@ -948,40 +979,8 @@ export function updateGeometry(geometry, part) {
   return true;
 }
 
-let grooves;
-/**
- * Soft strand grooves for the lock surface (a tangent-space normal map that
- * varies around the lock): painted-hair finish without any transparency.
- */
-export function lockNormalMap() {
-  if (grooves) return grooves;
-  if (typeof document === 'undefined') return null;
-  const width = 256, height = 64, canvas = document.createElement('canvas');
-  canvas.width = width; canvas.height = height;
-  const g = canvas.getContext('2d'), image = g.createImageData(width, height);
-  for (let x = 0; x < width; x++) {
-    const u = x / width;
-    const slope = 0.55 * Math.cos(u * TAU * 9) * 0.6 + 0.25 * Math.cos(u * TAU * 23 + 1.3) + 0.12 * Math.cos(u * TAU * 41 + 0.4);
-    for (let y = 0; y < height; y++) {
-      const ny = 0.04 * Math.sin((y / height) * TAU * 3 + u * 40);
-      const nx = slope * 0.55, nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny)), o = (y * width + x) * 4;
-      image.data[o] = Math.round((nx * 0.5 + 0.5) * 255); image.data[o + 1] = Math.round((ny * 0.5 + 0.5) * 255);
-      image.data[o + 2] = Math.round((nz * 0.5 + 0.5) * 255); image.data[o + 3] = 255;
-    }
-  }
-  g.putImageData(image, 0, 0);
-  grooves = new CanvasTexture(canvas);
-  grooves.wrapS = grooves.wrapT = RepeatWrapping; grooves.repeat.set(2, 1);
-  grooves.userData.shared = true;
-  return grooves;
-}
-
-export function lockMaterial(color, { highlight = false } = {}) {
-  const map = lockNormalMap();
-  const material = new MeshStandardMaterial({ color, vertexColors: true, roughness: 0.46, metalness: 0, normalMap: map, normalScale: new Vector2(0.45, 0.45) });
-  if (highlight) { material.emissive = new Color(0xf27a2e); material.emissiveIntensity = 0.22; }
-  return material;
-}
+/** The locks' material: hair cards (hair-cards.mjs). */
+export const lockMaterial = hairCardMaterial;
 
 /**
  * The game mesh for a locks hairstyle: every lock merged into one skinned
@@ -996,21 +995,21 @@ export function locksMesh(context, state, color, rig = buildHairRig(context, sta
   let joints = [], weights = [];
   const point = new Vector3();
   const groups = hairFusionGroups(state), fused = new Set(groups.flatMap(g => g.locks));
-  const lod = context.lod ?? 'high', sides = lod === 'low' ? 8 : lod === 'medium' ? 10 : SIDES;
+  const lod = context.lod ?? 'high';
   const sweep = detail => {
     joints = []; weights = [];
-    return state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockSurface(lock, state, {
-      detail, sides,
+    return state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockCard(lock, state, {
+      detail,
       vertex: (x, y, z, u) => { const [j, w] = rig.weightsFor(lock, u, point.set(x, y, z)); joints.push(...j); weights.push(...w); },
     }));
   };
-  const detail = lod === 'low' ? 0.45 : lod === 'medium' ? 0.65 : 0.85;
+  const detail = lod === 'low' ? 0.3 : lod === 'medium' ? 0.45 : 0.6;
   let parts = sweep(detail);
-  // Rings along a lock grow with `detail`; the sunken root ring, the 9 rings of
-  // the tip cap and the two cap centres do not. Over the level's budget, sweep
-  // once more with the along-the-lock rings scaled to fit.
+  // Rows along a card grow with `detail`; the sunken root row and the 9 rows
+  // of the tip do not. Over the level's budget, sweep once more with the
+  // along-the-lock rows scaled to fit.
   const swept = parts.reduce((n, part) => n + part.pos.length / 3, 0), budget = HAIR_BUDGET[lod] ?? HAIR_BUDGET.high;
-  const fixed = parts.length * (10 * (sides + 1) + 2);
+  const fixed = parts.length * 10 * 3;
   if (swept > budget && swept > fixed) parts = sweep(detail * Math.max(0.05, (budget - fixed) / (swept - fixed)));
   for (const group of groups) {
     const part = fusedHairSurface(state, group.locks, lockSurface, { group: group.id });
@@ -1026,59 +1025,6 @@ export function locksMesh(context, state, color, rig = buildHairRig(context, sta
   if (state.fusion?.enabled) mesh.userData.fusion = { groups: groups.flatMap(g => g.ids), surfaces: parts.filter(p => p.stats).map(p => p.stats) };
   return mesh;
 }
-
-/**
- * Scalp tint under the roots, so gaps between locks read as hair, not skin:
- * near the roots and only inside the hairline (it fades in above it and
- * never reaches the forehead, brows or face).
- */
-export function locksScalpColors(state) {
-  const { positions, frame, field } = state, roots = state.locks.filter(l => (l.density ?? 1) > 0).map(l => l.rootP);
-  const alpha = new Float32Array(positions.length / 3);
-  if (!roots.length || !state.scalp) return alpha;
-  for (let v = 0; v < alpha.length; v++) {
-    if (!frame.used[v] || !(field[v] > 0)) continue;
-    let best = Infinity;
-    for (const r of roots) best = Math.min(best, (positions[v * 3] - r.x) ** 2 + (positions[v * 3 + 1] - r.y) ** 2 + (positions[v * 3 + 2] - r.z) ** 2);
-    alpha[v] = (1 - smooth(0.035, 0.06, Math.sqrt(best))) * smooth(0, 0.06, field[v]);
-  }
-  return alpha;
-}
-
-/**
- * Underlay geometry from the body's rest geometry: the scalp quads under the
- * roots, lifted 1.2 mm, coloured a shade of the hair with per-vertex alpha.
- */
-export function locksUnderlayGeometry(bodyGeometry, alpha, color) {
-  const pos = bodyGeometry.getAttribute('position'), normals = bodyGeometry.getAttribute('normal');
-  const joints = bodyGeometry.getAttribute('skinIndex'), weights = bodyGeometry.getAttribute('skinWeight');
-  const baseIds = bodyGeometry.userData.baseIds, tint = new Color(color).multiplyScalar(0.7);
-  const out = { pos: [], normal: [], joints: [], weights: [], color: [], index: [] };
-  for (let quad = 0; quad < bodyGeometry.index.count; quad += 6) {
-    const first = bodyGeometry.index.array[quad];
-    const a = [0, 1, 2, 3].map(k => alpha[baseIds[first + k]] ?? 0);
-    if (Math.max(...a) <= 0.01) continue;
-    const at = out.pos.length / 3;
-    for (let k = 0; k < 4; k++) {
-      const v = first + k;
-      out.pos.push(pos.getX(v) + normals.getX(v) * 0.0012, pos.getY(v) + normals.getY(v) * 0.0012, pos.getZ(v) + normals.getZ(v) * 0.0012);
-      out.normal.push(normals.getX(v), normals.getY(v), normals.getZ(v));
-      out.color.push(tint.r, tint.g, tint.b, a[k]);
-      for (let j = 0; j < 4; j++) { out.joints.push(joints.getComponent(v, j)); out.weights.push(weights.getComponent(v, j)); }
-    }
-    out.index.push(at, at + 1, at + 2, at, at + 2, at + 3);
-  }
-  if (!out.index.length) return null;
-  const geometry = new BufferGeometry();
-  geometry.setAttribute('position', new Float32BufferAttribute(out.pos, 3));
-  geometry.setAttribute('normal', new Float32BufferAttribute(out.normal, 3));
-  geometry.setAttribute('skinIndex', new Uint16BufferAttribute(out.joints, 4));
-  geometry.setAttribute('skinWeight', new Float32BufferAttribute(out.weights, 4));
-  geometry.setAttribute('color', new Float32BufferAttribute(out.color, 4));
-  geometry.setIndex(out.index);
-  return geometry;
-}
-export const underlayMaterial = () => new MeshStandardMaterial({ vertexColors: true, transparent: true, depthWrite: false, roughness: 0.95 });
 
 /**
  * Comb a new lock over the scalp, as groom tools lay hair on the head: from

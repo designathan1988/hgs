@@ -10,7 +10,8 @@ import { eyePalette } from './state.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
-import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial, lockNormalMap, geometryFrom } from './locks.mjs';
+import { prepareLocks, locksMesh, geometryFrom } from './locks.mjs';
+import { hairStrandTexture } from './hair-cards.mjs';
 import { accessoryMaterial, accessoryParts } from './hair-accessories.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 import { buildHairRig } from './hair-rig.mjs';
@@ -265,7 +266,8 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
         material.map = texture;
         if (source.hair) { material.normalMap = await sharedTexture(`normal:${source.url}`, () => hairNormalMap(base.image)); material.normalScale.set(0.7, 0.7); }
       }
-      if (mesh.name === 'Hair' && mesh.userData.style === 'locks') { material.normalMap = lockNormalMap(); material.normalScale.set(0.45, 0.45); }
+      // Hair cards: the strand atlas is drawn on the page (the worker has no canvas).
+      if (mesh.name === 'Hair' && mesh.userData.style === 'locks') material.map = hairStrandTexture();
       signal?.throwIfAborted(); material.needsUpdate = true;
     }
   }));
@@ -780,13 +782,7 @@ export async function dressHuman(context, spec) {
         const mesh = locksMesh(context, state, color, rig);
         context.group.add(mesh);
         mesh.bind(context.body.skeleton, context.body.bindMatrix);
-        const under = context.lod === 'low' ? null : locksUnderlayGeometry(context.body.geometry, locksScalpColors(state), color);
-        if (under) {
-          const scalp = new SkinnedMesh(under, underlayMaterial());
-          scalp.name = 'ScalpUnderlay';
-          context.group.add(scalp);
-          scalp.bind(context.body.skeleton, context.body.bindMatrix);
-        }
+        // No painted scalp under the cards: the hair's own cards cover the head.
         // Ties, clips and bands hold their points to the head: their mesh moves wholly with `head`.
         const parts = accessoryParts(state);
         if (parts.length) {

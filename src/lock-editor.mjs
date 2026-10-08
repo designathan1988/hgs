@@ -3,9 +3,9 @@ import {
   MeshBasicMaterial, Plane, QuadraticBezierCurve3, Quaternion, Raycaster, SphereGeometry, Vector3,
 } from 'three';
 import {
-  LOCK_POINTS as N, arcLengthAt, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface,
-  locksScalpColors, locksUnderlayGeometry, makeLock, normalizeLocks, prepareLocks, resamplePolyline, rootFromHit,
-  serializeLocks, setLockLength, setLockShape, constrainLockPose, bendLock, underlayMaterial, updateGeometry, combLock, rootFrame, collisionRadius,
+  LOCK_POINTS as N, arcLengthAt, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface, lockCard,
+  makeLock, normalizeLocks, prepareLocks, resamplePolyline, rootFromHit,
+  serializeLocks, setLockLength, setLockShape, constrainLockPose, bendLock, updateGeometry, combLock, rootFrame, collisionRadius,
 } from './locks.mjs';
 import { applyHairBrush, fusedHairSurface, hairBrushFalloff, hairBrushTools, hairFusionGroups, hairMaskAt, normalizeHairFusion } from './hair-fusion.mjs';
 import { accessoryColors, accessoryMaterial, accessoryParts, accessoryPins, bandAcross, barretteLocks, clipLocks, pruneAccessories, removeAccessory, tieGather, tieLocks } from './hair-accessories.mjs';
@@ -69,8 +69,6 @@ export class LockEditor {
     this.pinMarks.renderOrder = 10; this.pinMarks.count = 0; this.pinMarks.frustumCulled = false;
     this.scalpOverlay = new Mesh(this.scalpGeometry(), new MeshBasicMaterial({ color: 0x46d39a, transparent: true, opacity: 0.16, depthWrite: false, side: DoubleSide }));
     this.scalpOverlay.renderOrder = 3;
-    this.underlay = new Mesh(new BufferGeometry(), underlayMaterial());
-    this.underlay.renderOrder = 2;
     this.hoverMark = new Mesh(this.handleGeometry, new MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.95 }));
     this.hoverMark.renderOrder = 11; this.hoverMark.visible = false;
     // The head's centre line over the scalp: roots near it snap onto it.
@@ -79,7 +77,7 @@ export class LockEditor {
     // Ties, clips, barrettes and bands (hair-accessories.mjs), rebuilt from the points they hold.
     this.accessoryMesh = new Mesh(new BufferGeometry(), accessoryMaterial());
     this.accessoryMesh.frustumCulled = false;
-    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark, this.midline, this.accessoryMesh);
+    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.hoverMark, this.midline, this.accessoryMesh);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers();
   }
   end() {
@@ -182,11 +180,8 @@ export class LockEditor {
     const baseIds = this.human.body.geometry.userData.baseIds;
     return { root: rootFromHit(this.state, [hit.face.a, hit.face.b, hit.face.c].map(v => baseIds[v]), hit.point), point: hit.point.clone() };
   }
-  updateUnderlay() {
-    if (!this.underlay) return;
-    this.underlay.geometry.dispose();
-    this.underlay.geometry = locksUnderlayGeometry(this.human.body.geometry, locksScalpColors(this.state), this.color) ?? new BufferGeometry();
-  }
+  /** No painted scalp under the hair any more (cards cover the head); kept as a no-op for the callers. */
+  updateUnderlay() {}
   /** Rebuild lock meshes whose chain moved (or all). */
   syncMeshes(all = false) {
     const locks = this.locks;
@@ -200,7 +195,8 @@ export class LockEditor {
       const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1},${lock.tipShape ?? 'round'},${lock.ribbonNormal ?? ''},${lock.rootTaper}`;
       if (!all && lock.built && key === lock.builtKey && !moved(lock.built, lock.x)) return;
       lock.built = Float32Array.from(lock.x); lock.builtKey = key;
-      const part = lockSurface(lock, this.state);
+      // The same hair card as the character's game mesh.
+      const part = lockCard(lock, this.state, { detail: 0.6 });
       if (!updateGeometry(mesh.geometry, part)) { mesh.geometry.dispose(); mesh.geometry = geometryFrom([part]); }
       this.fusionDirty = true;
     });
