@@ -147,8 +147,9 @@ save('franja', 'Franja', state => {
 save('curto', 'Curto', state => {
   // Combed back over the scalp; every row covers the roots behind it.
   const params = { ...base, taper: 0.9, stiffness: 0.85 };
-  // The last rows cover the nape (roots exist only on the scalp, so they start behind the ears).
-  for (const [el, count, length] of [[1.3, 6, 0.17], [0.98, 12, 0.15], [0.7, 16, 0.12], [0.44, 20, 0.1], [0.16, 20, 0.075], [-0.14, 18, 0.06], [-0.36, 14, 0.05]]) {
+  // The last rows cover the sideburns and the nape down to its hairline, tapering shorter (roots
+  // exist only on the scalp: the face and the front of the neck get none).
+  for (const [el, count, length] of [[1.3, 6, 0.17], [0.98, 12, 0.15], [0.7, 16, 0.12], [0.44, 20, 0.1], [0.16, 20, 0.075], [-0.14, 18, 0.06], [-0.36, 14, 0.05], [-0.62, 14, 0.04], [-0.88, 12, 0.03]]) {
     for (let k = 0; k < count; k++) {
       const th = (k + (el > 1 ? 0.5 : 0)) / count * Math.PI * 2;
       const d = V(Math.sin(th) * Math.cos(el), Math.sin(el), Math.cos(th) * Math.cos(el));

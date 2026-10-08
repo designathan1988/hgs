@@ -1037,7 +1037,7 @@ export function locksScalpColors(state) {
   const alpha = new Float32Array(positions.length / 3);
   if (!roots.length || !state.scalp) return alpha;
   for (let v = 0; v < alpha.length; v++) {
-    if (!frame.used[v] || frame.headWeight[v] < 0.3 || !(field[v] > 0)) continue;
+    if (!frame.used[v] || !(field[v] > 0)) continue;
     let best = Infinity;
     for (const r of roots) best = Math.min(best, (positions[v * 3] - r.x) ** 2 + (positions[v * 3 + 1] - r.y) ** 2 + (positions[v * 3 + 2] - r.z) ** 2);
     alpha[v] = (1 - smooth(0.035, 0.06, Math.sqrt(best))) * smooth(0, 0.06, field[v]);

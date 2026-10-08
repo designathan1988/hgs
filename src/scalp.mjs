@@ -8,14 +8,24 @@ import { SurfaceCollider } from './collision.mjs';
  * and the head skin weights hair is bound with.
  */
 const TAU = Math.PI * 2;
-export const HAIRLINE_POINTS = 16;
+export const HAIRLINE_POINTS = 32;
 const round = (v, digits = 1000) => Math.round(v * digits) / digits;
 
-/** A natural hairline: high on the forehead, above the ears, low at the nape (radians of elevation). */
+/**
+ * Hairline landmarks, [azimuth from the front in degrees, elevation in
+ * radians], the same on both sides: the frontal line, the temporal point,
+ * the sideburn down the front of the ear to below the helix root, the ear
+ * itself (excluded by its own mask, see headFrame), the postauricular line
+ * dropping below the earlobe and the nape low on the neck.
+ */
+const HAIRLINE_LANDMARKS = [[0, 0.42], [22.5, 0.39], [45, 0.3], [56, 0.12], [64, -0.3], [96, -0.3], [106, -0.55], [118, -0.85], [150, -0.98], [165, -1.05], [180, -1.05]];
+
+/** A natural hairline (radians of elevation at HAIRLINE_POINTS azimuths). */
 export function defaultHairline() {
   return Array.from({ length: HAIRLINE_POINTS }, (_, k) => {
-    const c = Math.cos(k / HAIRLINE_POINTS * TAU);
-    return round(c > 0 ? 0.08 + (0.42 - 0.08) * c : 0.08 + (-0.62 - 0.08) * -c);
+    const deg = Math.abs((k / HAIRLINE_POINTS * 360 + 180) % 360 - 180);
+    const j = HAIRLINE_LANDMARKS.findIndex(([a]) => a >= deg), [a1, e1] = HAIRLINE_LANDMARKS[j], [a0, e0] = HAIRLINE_LANDMARKS[Math.max(0, j - 1)];
+    return round(a1 === a0 ? e1 : e0 + (e1 - e0) * (deg - a0) / (a1 - a0));
   });
 }
 
@@ -25,9 +35,23 @@ export function defaultHairline() {
  */
 export function headFrame(data, positions) {
   const count = positions.length / 3;
-  const headBone = data.skeleton.bones.findIndex(bone => bone.name === 'head');
-  const headWeight = new Float32Array(count);
-  for (let v = 0; v < count; v++) for (let k = 0; k < 4; k++) if (data.joints[v * 4 + k] === headBone) headWeight[v] += data.weights[v * 4 + k] / 65535;
+  const headBone = data.skeleton.bones.findIndex(bone => bone.name === 'head'), neckBone = data.skeleton.bones.findIndex(bone => bone.name === 'neck_01');
+  const headWeight = new Float32Array(count), neckWeight = new Float32Array(count);
+  for (let v = 0; v < count; v++) for (let k = 0; k < 4; k++) {
+    if (data.joints[v * 4 + k] === headBone) headWeight[v] += data.weights[v * 4 + k] / 65535;
+    if (data.joints[v * 4 + k] === neckBone) neckWeight[v] += data.weights[v * 4 + k] / 65535;
+  }
+  // The ears: the vertices MakeHuman's ear translation targets move whole
+  // (the falloff ring around them moves less and stays skin).
+  const ear = new Uint8Array(count), morpher = data.morpher;
+  for (const side of ['l', 'r']) {
+    const target = morpher?.localByName?.get(`ears/${side}-ear-trans-up`);
+    if (!target) continue;
+    const size = e => Math.hypot(morpher.lDelta[e * 3], morpher.lDelta[e * 3 + 1], morpher.lDelta[e * 3 + 2]);
+    let most = 0;
+    for (let e = target.start; e < target.start + target.count; e++) most = Math.max(most, size(e));
+    for (let e = target.start; e < target.start + target.count; e++) if (size(e) >= most * 0.9) ear[morpher.lIdx[e]] = 1;
+  }
   const bodyGroup = data.base.faceGroups.indexOf('body');
   const faces = [];
   for (let f = 0; f < data.faceGroup.length; f++) if (data.faceGroup[f] === bodyGroup) faces.push(f);
@@ -37,7 +61,7 @@ export function headFrame(data, positions) {
   for (let v = 0; v < count; v++) if (used[v] && headWeight[v] > 0.6) for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], positions[v * 3 + k]); max[k] = Math.max(max[k], positions[v * 3 + k]); }
   const R = (max[1] - min[1]) / 2;
   const C = new Vector3(0, (min[1] + max[1]) / 2 + R * 0.12, (min[2] + max[2]) / 2 - R * 0.08);
-  return { C, R, headWeight, faces, used };
+  return { C, R, headWeight, neckWeight, ear, faces, used };
 }
 
 export function anglesOf(frame, x, y, z) {
@@ -54,11 +78,16 @@ export function hairlineAt(hairline, theta) {
   return 0.5 * ((2 * p1) + (-p0 + p2) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f + (-p0 + 3 * p1 - 3 * p2 + p3) * f * f * f);
 }
 
-/** Signed scalp coverage per base vertex (radians above the hairline; −1 off the head). */
+/**
+ * Signed scalp coverage per base vertex (radians above the hairline; −1 off
+ * the scalp): head and upper-neck skin near the head (the nape hairline lies
+ * on the neck), never the ears.
+ */
 export function scalpField(frame, positions, hairline) {
-  const count = positions.length / 3, field = new Float32Array(count).fill(-1);
+  const count = positions.length / 3, field = new Float32Array(count).fill(-1), { C, R } = frame;
   for (let v = 0; v < count; v++) {
-    if (!frame.used[v] || frame.headWeight[v] < 0.3) continue;
+    if (!frame.used[v] || frame.ear[v] || frame.headWeight[v] + frame.neckWeight[v] < 0.3) continue;
+    if (Math.hypot(positions[v * 3] - C.x, positions[v * 3 + 1] - C.y, positions[v * 3 + 2] - C.z) > R * 1.6) continue;
     const { theta, phi } = anglesOf(frame, positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
     field[v] = phi - hairlineAt(hairline, theta);
   }

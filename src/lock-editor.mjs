@@ -16,6 +16,8 @@ export const holderTools = ['tie', 'clip', 'barrette', 'band'];
 export const lockTools = ['brush', 'comb', 'pull', 'move', 'select', 'grow', 'cut', 'pin', 'gel', ...holderTools, ...hairBrushTools];
 const SLOT_PREFIX = 'hgs.locks.';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+/** Dead zone of the stabilized Draw stroke, in screen pixels (Blender's Stabilize Stroke radius). */
+const STROKE_STABILIZE = 8;
 const storage = {
   keys() { try { return Object.keys(localStorage); } catch { return []; } },
   get(key) { try { return localStorage.getItem(key); } catch { return null; } },
@@ -327,6 +329,20 @@ export class LockEditor {
     this.bodyProbe.geometry = body.geometry;
     return this.bodyProbe;
   }
+  /** The body and the outfit (rest pose, the surfaces the hair collider keeps hair off), for strokes that run over them. */
+  surfaceProbes() {
+    const surface = this.context?.outfitSurface;
+    if (!surface) return [this.probe()];
+    if (this.outfitProbe?.userData.source !== surface) {
+      this.outfitProbe?.geometry.dispose();
+      const geometry = new BufferGeometry();
+      geometry.setAttribute('position', new Float32BufferAttribute(surface.positions, 3));
+      geometry.setIndex(Array.from(surface.index));
+      this.outfitProbe = new Mesh(geometry, new MeshBasicMaterial({ side: DoubleSide }));
+      this.outfitProbe.userData.source = surface;
+    }
+    return [this.probe(), this.outfitProbe];
+  }
   pickLock(ndc, camera) {
     this.raycaster.setFromCamera(ndc, camera);
     const [hit] = this.raycaster.intersectObjects(this.meshes, false);
@@ -455,7 +471,9 @@ export class LockEditor {
       if (!scalpHit && !this.pickHair(ndc, camera)) return false;
       this.checkpoint();
       if (!shift) this.selected.clear();
-      this.drag = { tool, lastNdc: { x: ndc.x, y: ndc.y }, created: new Set() };
+      // Each stroke lays its sites on the lattice turned at random, so a second pass plants between the first one's roots.
+      const base = this.fillSites(), axis = new Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(), turn = new Quaternion().setFromAxisAngle(axis, Math.random() * Math.PI * 2);
+      this.drag = { tool, lastNdc: { x: ndc.x, y: ndc.y }, created: new Set(), sites: { dirs: base.dirs.map(d => d.clone().applyQuaternion(turn)), hits: new Array(base.dirs.length) } };
       this.fillAt(ndc, camera, this.drag); this.step(); this.onChange();
       return true;
     }
@@ -537,7 +555,7 @@ export class LockEditor {
     if (twin) { this.locks.push(twin); this.selected.add(this.locks.length - 1); }
     const lifted = lock.rootP.clone().addScaledVector(lock.rootN, Math.max(.002, lock.width * lock.volume * .55));
     const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), lifted);
-    this.drag = { tool: 'stroke', lock, twin, plane, path: [lock.rootP.clone(), lifted], lastNdc: { x: ndc.x, y: ndc.y }, created: new Set([lock, twin].filter(Boolean)) };
+    this.drag = { tool: 'stroke', lock, twin, plane, path: [lock.rootP.clone(), lifted], lastNdc: { x: ndc.x, y: ndc.y }, lazy: { x: ndc.x, y: ndc.y }, created: new Set([lock, twin].filter(Boolean)) };
     this.updateStrokeShape(); this.syncMeshes(); this.updateHelpers(); this.onChange();
     return true;
   }
@@ -729,8 +747,10 @@ export class LockEditor {
   fillAt(ndc, camera, drag) {
     const hit = this.pickScalp(ndc, camera) ?? this.pickHair(ndc, camera);
     if (!hit) return;
-    const sites = this.fillSites(), C = this.state.frame.C, toward = hit.point.clone().sub(C).normalize(), spacing = this.settings.brushSpacing * 0.9;
-    const free = point => !this.locks.some(lock => (lock.density ?? 1) > 0 && lock.rootP.distanceTo(point) < spacing);
+    const sites = drag.sites ?? this.fillSites(), C = this.state.frame.C, toward = hit.point.clone().sub(C).normalize(), spacing = this.settings.brushSpacing * 0.9;
+    // Within a stroke the roots keep the spacing (Density's minimum distance); against roots already
+    // there only a root on top of another is refused, so passing again adds hair (the Add brush).
+    const free = point => !this.locks.some(lock => (lock.density ?? 1) > 0 && lock.rootP.distanceTo(point) < (drag.created.has(lock) ? spacing : spacing * 0.35));
     const add = lock => { this.locks.push(lock); this.selected.add(this.locks.length - 1); drag.created.add(lock); };
     for (let k = 0; k < sites.dirs.length && this.locks.length < 400; k++) {
       // A cheap cone around the cursor before casting a site onto the scalp.
@@ -987,14 +1007,42 @@ export class LockEditor {
         return;
       }
       drag.widthBase = null;
-      const scalpHit = this.pickScalp(ndc, camera);
+      // Stabilized stroke (Blender's Stabilize Stroke): the drawing point
+      // trails the cursor by a dead zone of STROKE_STABILIZE pixels, so hand
+      // tremor never zigzags the lock or flips it between a collar and the
+      // skin behind it.
+      // Without a canvas (no pixels to measure) the cursor is used as it is.
+      const canvas = this.renderer?.canvas;
+      let at = { x: ndc.x, y: ndc.y };
+      if (canvas?.clientWidth && canvas.clientHeight) {
+        const away = Math.hypot((ndc.x - drag.lazy.x) * canvas.clientWidth / 2, (ndc.y - drag.lazy.y) * canvas.clientHeight / 2);
+        if (away <= STROKE_STABILIZE) return;
+        const follow = (away - STROKE_STABILIZE) / away;
+        at = drag.lazy = { x: drag.lazy.x + (ndc.x - drag.lazy.x) * follow, y: drag.lazy.y + (ndc.y - drag.lazy.y) * follow };
+      }
+      // On the scalp the lock lies on it; once the cursor leaves it, the rest
+      // of the stroke is drawn on the view plane through the point where the
+      // lock left the head (Blender's Draw tool, Surface depth "Only First"),
+      // never jumping back in depth to the root's plane. Where the body comes
+      // in front of that plane (the back below the nape, a shoulder) the lock
+      // lies on the skin at the same offset (Surface depth), so the path stays
+      // continuous and never runs into the body.
+      const offset = Math.max(.0015, drag.lock.width * drag.lock.volume * .55);
+      const scalpHit = drag.offScalp ? null : this.pickScalp(at, camera);
       let point;
       if (scalpHit?.root) {
-        const normal = rootFrame(this.state, scalpHit.root).n;
-        point = scalpHit.point.clone().addScaledVector(normal, Math.max(.0015, drag.lock.width * drag.lock.volume * .55));
+        point = scalpHit.point.clone().addScaledVector(rootFrame(this.state, scalpHit.root).n, offset);
       } else {
-        this.raycaster.setFromCamera(ndc, camera);
+        if (!drag.offScalp) { drag.offScalp = true; drag.plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), drag.path.at(-1)); }
+        this.raycaster.setFromCamera(at, camera);
         point = this.raycaster.ray.intersectPlane(drag.plane, new Vector3());
+        const [skin] = this.raycaster.intersectObjects(this.surfaceProbes(), false);
+        if (skin?.face && (!point || skin.distance < this.raycaster.ray.origin.distanceTo(point))) {
+          // The side facing the cursor (outfit faces are not consistently wound).
+          const normal = skin.face.normal.clone();
+          if (normal.dot(this.raycaster.ray.direction) > 0) normal.negate();
+          point = skin.point.clone().addScaledVector(normal, offset);
+        }
       }
       if (!point || point.distanceTo(drag.path.at(-1)) < .001 * this.state.frame.R / .11) return;
       if (drag.path.length < 1024) drag.path.push(point);
