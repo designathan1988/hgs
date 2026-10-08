@@ -62,7 +62,7 @@ document.body.append(combRing);
 function showRing(event) {
   // The circle marks the hair a tool takes: the comb, gel, and a tie or barrette with nothing selected.
   const editor = renderer?.lockEditor, tool = editor?.settings.tool;
-  const on = Boolean(ui.locking && ((tool === 'comb' && editor.settings.combScope !== 'all') || tool === 'gel' || (tool === 'brush' && editor.settings.brushCreation === 'fill') || (['tie', 'barrette'].includes(tool) && !editor.selected.size)));
+  const on = Boolean(ui.locking && ((tool === 'comb' && editor.settings.combScope !== 'all') || tool === 'gel' || (tool === 'brush' && editor.settings.brushCreation === 'fill') || (tool === 'barrette' && !editor.selected.size)));
   combRing.style.display = on ? 'block' : 'none';
   if (!on) return;
   const size = editor.settings.combRadius * canvas.getBoundingClientRect().height;

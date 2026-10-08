@@ -108,10 +108,16 @@ function hairDirection(picks) {
  * nearest to the band that it can reach, on the bundle's rim; past it, the
  * lock hangs from the band.
  */
-export function tieLocks(state, locks, center, { color = accessoryColors.tie } = {}) {
+export function tieLocks(state, locks, center, options = {}) {
+  return tieGather(state, locks.map(lock => ({ lock, k: holdIndex(lock, center) })).filter(p => p.k !== null), center, options);
+}
+
+/** The point of each lock is already chosen (`picks`: { lock, k }); the band goes round them at `center` (their middle when omitted). */
+export function tieGather(state, picks, center = null, { color = accessoryColors.tie } = {}) {
   state.accessories ??= [];
-  const picks = locks.map(lock => ({ lock, k: holdIndex(lock, center) })).filter(p => p.k !== null);
+  picks = picks.filter(({ lock, k }) => holdable(lock, k) && k < N - 1);
   if (!picks.length) return null;
+  center ??= mean(picks.map(({ lock, k }) => at(lock, k)));
   const axis = hairDirection(picks), u = perpendicular(axis), v = new Vector3().crossVectors(axis, u);
   const radius = 0.5 * Math.sqrt(picks.reduce((sum, { lock }) => sum + (lock.width * lock.volume) ** 2, 0));
   const id = nextId(state), d = new Vector3();

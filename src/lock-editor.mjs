@@ -8,7 +8,7 @@ import {
   serializeLocks, setLockLength, setLockShape, constrainLockPose, bendLock, underlayMaterial, updateGeometry, combLock, rootFrame, collisionRadius,
 } from './locks.mjs';
 import { applyHairBrush, fusedHairSurface, hairBrushFalloff, hairBrushTools, hairFusionGroups, hairMaskAt, normalizeHairFusion } from './hair-fusion.mjs';
-import { accessoryColors, accessoryMaterial, accessoryParts, bandAcross, barretteLocks, clipLocks, pruneAccessories, removeAccessory, tieLocks } from './hair-accessories.mjs';
+import { accessoryColors, accessoryMaterial, accessoryParts, accessoryPins, bandAcross, barretteLocks, clipLocks, pruneAccessories, removeAccessory, tieGather, tieLocks } from './hair-accessories.mjs';
 import { prepareWorkerModule } from './generation.mjs';
 import { HairDynamics } from './hair-dynamics.mjs';
 
@@ -446,6 +446,7 @@ export class LockEditor {
       this.applyGel(ndc, camera, ctrl);
       return true;
     }
+    if (tool === 'tie') return this.beginTie(ndc, camera);
     if (holderTools.includes(tool)) return this.placeHolder(tool, ndc, camera);
     if (tool === 'brush') {
       const scalpHit = this.pickScalp(ndc, camera);
@@ -812,6 +813,85 @@ export class LockEditor {
     this.invalidatePhysics(); this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange();
     return true;
   }
+  /**
+   * Elastic. A drag starting on a tie pulls it; elsewhere it draws a loop on
+   * screen round the hair to tie (released, each lock is held at its first
+   * free point inside the loop, and the band goes round them). A click without
+   * a loop ties the selection, or the locks under the circle, there.
+   */
+  beginTie(ndc, camera) {
+    const near = this.tieNear(ndc, camera);
+    if (near) {
+      this.checkpoint();
+      const held = accessoryPins(this.state, near.id);
+      this.drag = { tool: 'tieMove', from: { x: ndc.x, y: ndc.y }, depth: near.depth, pins: held.flatMap(h => h.pins.map(([, p]) => [p, p.clone()])), locks: held.map(h => h.lock) };
+      return true;
+    }
+    this.drag = { tool: 'lasso', camera, start: { x: ndc.x, y: ndc.y }, points: [{ x: ndc.x, y: ndc.y }] };
+    this.updateLasso();
+    return true;
+  }
+  /** The tie whose centre is within ~3 % of the view of the cursor. */
+  tieNear(ndc, camera) {
+    let best = null, limit = 0.06;
+    for (const acc of this.state.accessories ?? []) {
+      if (acc.type !== 'tie') continue;
+      const held = accessoryPins(this.state, acc.id);
+      if (!held.length) continue;
+      const s = held.reduce((c, h) => c.add(h.pins[0][1]), new Vector3()).divideScalar(held.length).project(camera);
+      const d = Math.hypot((s.x - ndc.x) * camera.aspect, s.y - ndc.y);
+      if (d < limit) { limit = d; best = { id: acc.id, depth: s.z }; }
+    }
+    return best;
+  }
+  /** The loop being drawn, over everything. */
+  updateLasso() {
+    const drag = this.drag;
+    if (!this.lassoLine) {
+      this.lassoLine = new Line(new BufferGeometry(), new LineBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.9 }));
+      this.lassoLine.renderOrder = 12; this.lassoLine.frustumCulled = false; this.group.add(this.lassoLine);
+    }
+    const points = [...drag.points, drag.points[0]].map(p => new Vector3(p.x, p.y, 0.5).unproject(drag.camera).toArray()).flat();
+    this.lassoLine.geometry.dispose(); this.lassoLine.geometry = new BufferGeometry();
+    this.lassoLine.geometry.setAttribute('position', new Float32BufferAttribute(points, 3));
+    this.lassoLine.visible = true;
+  }
+  /** Even-odd rule (a ray crossing the loop's edges an odd number of times starts inside); a vertex counts once. */
+  static insideLoop(loop, x, y) {
+    let inside = false;
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+      const a = loop[i], b = loop[j];
+      if ((a.y > y) !== (b.y > y) && x < a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y)) inside = !inside;
+    }
+    return inside;
+  }
+  finishLasso(drag) {
+    this.lassoLine.visible = false;
+    const loop = drag.points, camera = drag.camera;
+    let area = 0;
+    for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) area += (loop[j].x - loop[i].x) * (loop[j].y + loop[i].y);
+    // A click (no loop): the selection, or the locks under the circle, are tied where clicked.
+    if (loop.length < 3 || Math.abs(area) < 1e-4) { this.placeHolder('tie', drag.start, camera); return; }
+    const picks = [], s = new Vector3(), free = (lock, i) => !lock.pins.has(i - 1) && !lock.pins.has(i) && !lock.pins.has(i + 1);
+    for (const lock of this.locks) for (let i = 3; i < N - 1; i++) {
+      s.fromArray(lock.x, i * 3).project(camera);
+      if (s.z > 1 || !LockEditor.insideLoop(loop, s.x, s.y)) continue;
+      if (free(lock, i)) { picks.push({ lock, k: i }); break; }
+    }
+    if (!picks.length) return;
+    this.checkpoint();
+    const result = tieGather(this.state, picks, null, { color: this.settings.holderColor ?? accessoryColors.tie });
+    if (!result) { this.undoStack.pop(); return; }
+    for (const lock of result.locks) { this.state.sim.hang(lock, new Map(), this.settings.gravity); lock.rest.set(lock.x); lock.styled = true; }
+    this.invalidatePhysics(); this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers();
+  }
+  /** Pull a tie: its held points follow the cursor at the tie's depth and the locks settle from their roots again. */
+  moveTie(drag, ndc, camera) {
+    const a = new Vector3(drag.from.x, drag.from.y, drag.depth).unproject(camera), d = new Vector3(ndc.x, ndc.y, drag.depth).unproject(camera).sub(a);
+    for (const [pin, start] of drag.pins) pin.copy(start).add(d);
+    for (const lock of drag.locks) this.state.sim.hang(lock, new Map(), this.settings.gravity);
+    this.invalidatePhysics(); this.dirty = true; this.step();
+  }
   /** Where a tie or barrette goes: on the hair or head under the cursor, else in the plane through the chosen locks facing the view. */
   holderPoint(ndc, camera, locks) {
     const hit = this.pickHair(ndc, camera) ?? this.pickScalp(ndc, camera);
@@ -975,6 +1055,15 @@ export class LockEditor {
       this.applyGel(ndc, camera, drag.invert);
       return;
     }
+    if (drag.tool === 'lasso') {
+      const last = drag.points.at(-1);
+      if (Math.hypot(ndc.x - last.x, ndc.y - last.y) > 0.004) { drag.points.push({ x: ndc.x, y: ndc.y }); this.updateLasso(); }
+      return;
+    }
+    if (drag.tool === 'tieMove') {
+      this.moveTie(drag, ndc, camera);
+      return;
+    }
     if (drag.tool === 'move') {
       const hit = this.pickScalp({ x: drag.rootNdc.x + ndc.x - drag.start.x, y: drag.rootNdc.y + ndc.y - drag.start.y }, camera);
       if (!hit?.root) return;
@@ -1013,6 +1102,9 @@ export class LockEditor {
       this.scheduleFusion(); this.updateUnderlay(); this.updateHelpers(); this.onChange();
       return;
     }
+    if (drag.tool === 'lasso') this.finishLasso(drag);
+    // A pulled tie: the settled shapes become the locks' shapes.
+    if (drag.tool === 'tieMove') for (const lock of drag.locks) { lock.rest.set(lock.x); lock.styled = true; }
     const lock = drag.lock;
     if (drag.tool === 'stroke') {
       for (const l of [lock, drag.twin].filter(Boolean)) { l.hold = null; l.rest.set(l.x); l.styled = fix || this.settings.fixOnRelease || !this.settings.autoSettle; l.fixed = Boolean(fix || this.settings.fixOnRelease); if (pin || this.settings.pinOnRelease) l.pins.set(N - 1, new Vector3().fromArray(l.x, (N - 1) * 3)); }

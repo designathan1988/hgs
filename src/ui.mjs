@@ -44,7 +44,7 @@ const hints = {
   density: 'Pincel: acrescenta mechas · Ctrl rareia',
   select: 'Clique ou pinte sobre as mechas · Shift soma · Ctrl tira',
   pin: 'Clique num ponto da mecha para fixá-lo ou soltá-lo',
-  tie: 'Selecione a parte (ou use o círculo) e clique onde vai o elástico',
+  tie: 'Desenhe um laço em volta do cabelo para prender · arraste o elástico para puxar',
   clip: 'Clique sobre o cabelo onde vai o grampo',
   barrette: 'Selecione a parte (ou use o círculo) e clique onde vai a fivela',
   band: 'Clique no alto da cabeça por onde o arco passa',
@@ -508,7 +508,8 @@ export class StudioUI {
       if (activeTool === 'mask') options.append(h('button', { type: 'button', class: 'button wide', onclick: () => editor.clearMask() }, 'Liberar toda a proteção'));
     }
     const holder = ['tie', 'clip', 'barrette', 'band'].includes(activeTool);
-    if (activeTool === 'tie' || activeTool === 'barrette') {
+    if (activeTool === 'tie') options.append(h('p', { class: 'muted', text: 'Laço: prende o trecho que ficou dentro · arraste o elástico para puxar' }));
+    if (activeTool === 'barrette') {
       options.append(h('p', { class: 'muted', text: editor.selected.size ? `Prende as ${editor.selected.size} mechas selecionadas` : 'Sem seleção: prende as mechas dentro do círculo' }));
       if (!editor.selected.size) this.slide(options, { label: 'Círculo', value: settings.combRadius, min: 0.03, max: 1, step: 0.01, onInput: v => { settings.combRadius = v; } });
     }
