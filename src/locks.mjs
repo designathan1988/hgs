@@ -940,13 +940,29 @@ export function lockMaterial(color, { highlight = false } = {}) {
  * like the skin under it, the free part of long locks to the hair joints.
  * Without a rig (a mesh not attached to a character) only skin weights are used.
  */
+// Hair vertex budget per detail level (MetaHuman hair-card guide: LOD0, LOD1, LOD3).
+const HAIR_BUDGET = { high: 30000, medium: 15000, low: 3000 };
+
 export function locksMesh(context, state, color, rig = buildHairRig(context, state, { joints: false })) {
-  const joints = [], weights = [], point = new Vector3();
+  let joints = [], weights = [];
+  const point = new Vector3();
   const groups = hairFusionGroups(state), fused = new Set(groups.flatMap(g => g.locks));
-  const parts = state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockSurface(lock, state, {
-    detail: context.lod === 'low' ? 0.45 : context.lod === 'medium' ? 0.65 : 0.85, sides: context.lod === 'low' ? 8 : context.lod === 'medium' ? 10 : SIDES,
-    vertex: (x, y, z, u) => { const [j, w] = rig.weightsFor(lock, u, point.set(x, y, z)); joints.push(...j); weights.push(...w); },
-  }));
+  const lod = context.lod ?? 'high', sides = lod === 'low' ? 8 : lod === 'medium' ? 10 : SIDES;
+  const sweep = detail => {
+    joints = []; weights = [];
+    return state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockSurface(lock, state, {
+      detail, sides,
+      vertex: (x, y, z, u) => { const [j, w] = rig.weightsFor(lock, u, point.set(x, y, z)); joints.push(...j); weights.push(...w); },
+    }));
+  };
+  const detail = lod === 'low' ? 0.45 : lod === 'medium' ? 0.65 : 0.85;
+  let parts = sweep(detail);
+  // Rings along a lock grow with `detail`; the sunken root ring, the 9 rings of
+  // the tip cap and the two cap centres do not. Over the level's budget, sweep
+  // once more with the along-the-lock rings scaled to fit.
+  const swept = parts.reduce((n, part) => n + part.pos.length / 3, 0), budget = HAIR_BUDGET[lod] ?? HAIR_BUDGET.high;
+  const fixed = parts.length * (10 * (sides + 1) + 2);
+  if (swept > budget && swept > fixed) parts = sweep(detail * Math.max(0.05, (budget - fixed) / (swept - fixed)));
   for (const group of groups) {
     const part = fusedHairSurface(state, group.locks, lockSurface, { group: group.id });
     // Official Three.js SkinnedMesh contract: four joint indices and weights

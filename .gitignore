@@ -2,3 +2,4 @@ node_modules/
 tests/_*.mjs
 .claude/
 __pycache__/
+/exports/

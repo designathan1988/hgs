@@ -1,6 +1,6 @@
 import {
   Bone, BufferGeometry, Color, Float32BufferAttribute, Group, Matrix4, MeshStandardMaterial, Quaternion,
-  Skeleton, SkinnedMesh, SRGBColorSpace, Uint16BufferAttribute, Uint32BufferAttribute, Vector3,
+  Scene, Skeleton, SkinnedMesh, SRGBColorSpace, Uint16BufferAttribute, Uint32BufferAttribute, Vector3,
 } from 'three';
 import { loadHumanData, shapeHuman } from './parametric.mjs';
 import { dressHuman, tintedSkinTexture } from './appearance.mjs';
@@ -369,54 +369,161 @@ export function mixamoName(name) {
  * blendshapes onto a separate Head mesh so the body carries no morph data,
  * and store opaque textures as JPEG. Returns a function that undoes it.
  */
+/**
+ * Skinned parts merged into one skinned mesh: attributes unified (UV 0 and
+ * COLOR_0 white where a part has none — glTF always multiplies COLOR_0, so
+ * white is neutral), one draw group per part group and its material. Parts
+ * with morphs must share the same named targets (glTF: every primitive of a
+ * mesh has the same morph targets in the same order).
+ */
+function mergeSkinned(parts, name, skeleton, bindMatrix) {
+  const indexCount = g => g.index ? g.index.count : g.getAttribute('position').count;
+  let vertices = 0, indices = 0;
+  for (const { geometry } of parts) { vertices += geometry.getAttribute('position').count; indices += indexCount(geometry); }
+  const position = new Float32Array(vertices * 3), normal = new Float32Array(vertices * 3), uv = new Float32Array(vertices * 2);
+  const color = new Float32Array(vertices * 4).fill(1), skinIndex = new Uint16Array(vertices * 4), skinWeight = new Float32Array(vertices * 4);
+  const index = vertices > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
+  const targets = parts[0].geometry.morphAttributes.position ?? [];
+  const morphPosition = targets.map(() => new Float32Array(vertices * 3)), morphNormal = targets.map(() => new Float32Array(vertices * 3));
+  const geometry = new BufferGeometry(), materials = [];
+  const copy = (attribute, out, offset, size) => { if (!attribute) return; for (let i = 0; i < attribute.count; i++) for (let k = 0; k < size; k++) out[(offset + i) * size + k] = k < attribute.itemSize ? attribute.getComponent(i, k) : 1; };
+  let v0 = 0, i0 = 0;
+  for (const part of parts) {
+    const g = part.geometry, n = g.getAttribute('position').count;
+    if (!g.getAttribute('normal')) g.computeVertexNormals();
+    copy(g.getAttribute('position'), position, v0, 3); copy(g.getAttribute('normal'), normal, v0, 3); copy(g.getAttribute('uv'), uv, v0, 2);
+    copy(g.getAttribute('color'), color, v0, 4); copy(g.getAttribute('skinIndex'), skinIndex, v0, 4); copy(g.getAttribute('skinWeight'), skinWeight, v0, 4);
+    targets.forEach((_, t) => { copy(g.morphAttributes.position?.[t], morphPosition[t], v0, 3); copy(g.morphAttributes.normal?.[t], morphNormal[t], v0, 3); });
+    const count = indexCount(g);
+    for (let i = 0; i < count; i++) index[i0 + i] = (g.index ? g.index.getX(i) : i) + v0;
+    const groups = g.groups.length ? g.groups : [{ start: 0, count, materialIndex: 0 }];
+    for (const group of groups) {
+      const material = Array.isArray(part.material) ? part.material[group.materialIndex] : part.material;
+      let slot = materials.indexOf(material);
+      if (slot < 0) { slot = materials.length; materials.push(material); }
+      // Adjacent ranges with the same material are one draw call.
+      const start = i0 + group.start, length = Math.min(group.count, count - group.start), last = geometry.groups.at(-1);
+      if (last && last.materialIndex === slot && last.start + last.count === start) last.count += length;
+      else geometry.addGroup(start, length, slot);
+    }
+    v0 += n; i0 += count;
+  }
+  geometry.setAttribute('position', new Float32BufferAttribute(position, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(normal, 3));
+  geometry.setAttribute('uv', new Float32BufferAttribute(uv, 2));
+  geometry.setAttribute('color', new Float32BufferAttribute(color, 4));
+  geometry.setAttribute('skinIndex', new Uint16BufferAttribute(skinIndex, 4));
+  geometry.setAttribute('skinWeight', new Float32BufferAttribute(skinWeight, 4));
+  geometry.setIndex(vertices > 65535 ? new Uint32BufferAttribute(index, 1) : new Uint16BufferAttribute(index, 1));
+  if (targets.length) {
+    const named = (arrays, t) => { const attribute = new Float32BufferAttribute(arrays[t], 3); attribute.name = targets[t].name; return attribute; };
+    geometry.morphAttributes.position = targets.map((_, t) => named(morphPosition, t));
+    geometry.morphAttributes.normal = targets.map((_, t) => named(morphNormal, t));
+    geometry.morphTargetsRelative = true;
+  }
+  geometry.computeBoundingBox(); geometry.computeBoundingSphere();
+  const mesh = new SkinnedMesh(geometry, materials);
+  mesh.name = name;
+  mesh.bind(skeleton, bindMatrix);
+  if (targets.length) mesh.updateMorphTargets();
+  return mesh;
+}
+
+/**
+ * Game-oriented export geometry, applied temporarily: weld the per-corner
+ * vertices, split the face skin that blendshapes move (position or normal)
+ * from the rest of the body, and merge the character into two skinned meshes
+ * as engines prefer (Unity: one skinned mesh renderer per character): `Body`
+ * (no morphs, one group per part and material) and `Head` (face skin, mouth,
+ * brows and lashes with the 32 blendshapes). Opaque textures go as JPEG.
+ * Returns a function that undoes it.
+ */
 function optimizeForExport(human, clips) {
-  const undo = [];
-  const meshes = [];
-  human.group.traverse(object => { if (object.isSkinnedMesh) meshes.push(object); });
+  const undo = [], meshes = [], parts = [];
+  human.group.traverse(object => { if (object.isSkinnedMesh && object.visible) meshes.push(object); });
   for (const mesh of meshes) {
-    const original = mesh.geometry;
-    const morphs = original.morphAttributes.position;
+    const morphs = mesh.geometry.morphAttributes.position;
     // Welding copies attributes without their names; morph names are the
     // blendshape names, so put them back.
-    const named = geometry => { geometry.morphAttributes.position?.forEach((attribute, i) => { attribute.name = morphs[i].name; }); return geometry; };
-    let welded = named(mergeVertices(original, 1e-6));
+    const named = geometry => { for (const key of ['position', 'normal']) geometry.morphAttributes[key]?.forEach((attribute, i) => { attribute.name = morphs[i].name; }); return geometry; };
+    const welded = named(mergeVertices(mesh.geometry, 1e-6));
     if (mesh === human.body && morphs?.length) {
-      // Faces touching any moved vertex form the head; the rest keeps no morphs.
+      // Faces touching any vertex a blendshape moves or re-shades form the head.
       const moving = new Uint8Array(welded.getAttribute('position').count);
-      for (const target of welded.morphAttributes.position) for (let i = 0; i < target.count; i++) {
+      for (const key of ['position', 'normal']) for (const target of welded.morphAttributes[key] ?? []) for (let i = 0; i < target.count; i++) {
         if (Math.abs(target.getX(i)) + Math.abs(target.getY(i)) + Math.abs(target.getZ(i)) > 1e-7) moving[i] = 1;
       }
       const index = welded.index.array, headFaces = [], bodyFaces = [];
       for (let i = 0; i < index.length; i += 3) (moving[index[i]] || moving[index[i + 1]] || moving[index[i + 2]] ? headFaces : bodyFaces).push(index[i], index[i + 1], index[i + 2]);
       const head = welded.clone(); head.setIndex(headFaces);
       const rest = welded.clone(); rest.setIndex(bodyFaces); rest.morphAttributes = {};
-      const compact = geometry => { const copy = geometry.toNonIndexed(); const result = mergeVertices(copy, 1e-6); copy.dispose(); return named(result); };
-      const headGeometry = compact(head), bodyGeometry = compact(rest);
+      const compact = geometry => { const flat = geometry.toNonIndexed(); const result = mergeVertices(flat, 1e-6); flat.dispose(); return named(result); };
+      parts.push({ geometry: compact(head), material: mesh.material, source: mesh, morph: true });
+      parts.push({ geometry: compact(rest), material: mesh.material, source: mesh, morph: false });
       head.dispose(); rest.dispose(); welded.dispose();
-      welded = bodyGeometry;
-      const headMesh = new SkinnedMesh(headGeometry, mesh.material);
-      headMesh.name = 'Head';
-      mesh.parent.add(headMesh);
-      headMesh.bind(mesh.skeleton, mesh.bindMatrix);
-      headMesh.updateMorphTargets();
-      headMesh.morphTargetInfluences.splice(0, Infinity, ...mesh.morphTargetInfluences);
-      for (const clip of clips) for (const track of clip.tracks) if (track.name.startsWith(`${mesh.name}.morphTargetInfluences`)) track.name = track.name.replace(mesh.name, 'Head');
-      undo.push(() => { headMesh.removeFromParent(); headGeometry.dispose(); });
-    }
-    const influences = mesh.morphTargetInfluences, dictionary = mesh.morphTargetDictionary;
-    mesh.geometry = welded;
-    if (mesh === human.body && morphs?.length) { mesh.morphTargetInfluences = undefined; mesh.morphTargetDictionary = undefined; }
-    undo.push(() => { mesh.geometry = original; mesh.morphTargetInfluences = influences; mesh.morphTargetDictionary = dictionary; welded.dispose(); });
-    for (const key of ['map', 'normalMap']) {
-      const texture = mesh.material?.[key];
+    } else parts.push({ geometry: welded, material: mesh.material, source: mesh, morph: Boolean(welded.morphAttributes.position?.length) });
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) for (const key of ['map', 'normalMap']) {
+      const texture = material?.[key];
       // Opaque colour and normal maps compress far better as JPEG.
-      if (texture && !mesh.material.transparent && !mesh.material.alphaTest && texture.userData.mimeType === undefined) {
+      if (texture && !material.transparent && !material.alphaTest && texture.userData.mimeType === undefined) {
         texture.userData.mimeType = 'image/jpeg';
         undo.push(() => { delete texture.userData.mimeType; });
       }
     }
   }
+  const skeleton = human.body.skeleton, bindMatrix = human.body.bindMatrix, merged = [];
+  const bodies = parts.filter(part => !part.morph), faces = parts.filter(part => part.morph);
+  if (bodies.length) merged.push(mergeSkinned(bodies, 'Body', skeleton, bindMatrix));
+  if (faces.length) {
+    const head = mergeSkinned(faces, 'Head', skeleton, bindMatrix), source = faces[0].source;
+    for (const [shape, i] of Object.entries(head.morphTargetDictionary)) head.morphTargetInfluences[i] = source.morphTargetInfluences[source.morphTargetDictionary[shape]] ?? 0;
+    merged.push(head);
+  }
+  for (const part of parts) part.geometry.dispose();
+  for (const mesh of meshes) { mesh.visible = false; undo.push(() => { mesh.visible = true; }); }
+  for (const mesh of merged) { human.group.add(mesh); undo.push(() => { mesh.removeFromParent(); mesh.geometry.dispose(); }); }
+  // Facial tracks of every face part now drive the one Head mesh, once per shape.
+  const faceNodes = new Set(faces.map(part => part.source.name));
+  for (const clip of clips) {
+    const seen = new Set();
+    clip.tracks = clip.tracks.filter(track => {
+      const [node, ...rest] = track.name.split('.');
+      if (!faceNodes.has(node) || !rest[0]?.startsWith('morphTargetInfluences')) return true;
+      const renamed = ['Head', ...rest].join('.');
+      if (seen.has(renamed)) return false;
+      seen.add(renamed); track.name = renamed; return true;
+    });
+  }
   return () => { for (const step of undo.reverse()) step(); };
+}
+
+/**
+ * VRMC_springBone 1.0 for the hair joint chains (glTF exporter plugin): the
+ * chains, colliders and groups of `definition`, with bone names turned into
+ * node indices once the nodes are written.
+ */
+function springBonePlugin(definition, boneByName) {
+  return writer => ({
+    name: 'VRMC_springBone',
+    afterParse() {
+      const node = name => writer.nodeMap.get(boneByName.get(name));
+      const kept = definition.colliders.map(collider => node(collider.bone) === undefined ? null : { node: node(collider.bone), shape: collider.shape });
+      const remap = new Map(); const colliders = [];
+      kept.forEach((collider, i) => { if (collider) { remap.set(i, colliders.length); colliders.push(collider); } });
+      const springs = definition.springs.map(spring => ({
+        name: spring.name, colliderGroups: spring.colliderGroups,
+        joints: spring.joints.map(joint => ({ ...joint, node: node(joint.node) })),
+      })).filter(spring => spring.joints.every(joint => joint.node !== undefined));
+      if (!springs.length) return;
+      writer.json.extensions ??= {};
+      writer.json.extensions.VRMC_springBone = {
+        specVersion: '1.0', colliders,
+        colliderGroups: definition.colliderGroups.map(group => ({ name: group.name, colliders: group.colliders.filter(i => remap.has(i)).map(i => remap.get(i)) })),
+        springs,
+      };
+      writer.extensionsUsed.VRMC_springBone = true;
+    },
+  });
 }
 
 /**
@@ -427,7 +534,9 @@ function optimizeForExport(human, clips) {
 export async function exportHumanGLB(human, { skeleton = 'unreal', animations = true, blendshapes = true, cosmetic = true, optimize = true } = {}) {
   const bones = human.body.skeleton.bones;
   const original = bones.map(bone => bone.name);
-  const hidden = [], morphs = [];
+  const boneByName = new Map(bones.map((bone, i) => [original[i], bone]));
+  const springs = human.group.userData.hairSprings ?? null;
+  const hidden = [], morphs = [], stashed = [];
   let restore = () => {};
   // Joints are written at the bind pose, never at the current animation frame
   // (the glTF node transforms are what engines import as the rest pose).
@@ -438,9 +547,16 @@ export async function exportHumanGLB(human, { skeleton = 'unreal', animations = 
     if (!cosmetic) human.group.traverse(object => { if (object.userData.role === 'corneal-wetness' && object.visible) { object.visible = false; hidden.push(object); } });
     if (!blendshapes) human.group.traverse(object => {
       if (!object.geometry?.morphAttributes?.position) return;
-      morphs.push([object, object.geometry.morphAttributes.position, object.morphTargetInfluences, object.morphTargetDictionary]);
-      object.geometry.morphAttributes.position = undefined; delete object.geometry.morphAttributes.position;
+      morphs.push([object, object.geometry.morphAttributes, object.morphTargetInfluences, object.morphTargetDictionary]);
+      object.geometry.morphAttributes = {};
       object.morphTargetInfluences = undefined; object.morphTargetDictionary = undefined;
+    });
+    // userData is app state (vertex ids, sculpt keys, local asset URLs); the
+    // exporter would write it as extras, so it is left out of the file.
+    human.group.traverse(object => {
+      for (const owner of [object, object.geometry, ...(Array.isArray(object.material) ? object.material : [object.material])]) {
+        if (owner?.userData && Object.keys(owner.userData).length) { stashed.push([owner, owner.userData]); owner.userData = {}; }
+      }
     });
     const rename = new Map(original.map((name, i) => [name, bones[i].name]));
     const clips = !animations ? [] : human.animations.map(clip => {
@@ -453,13 +569,20 @@ export async function exportHumanGLB(human, { skeleton = 'unreal', animations = 
       return copy;
     });
     if (optimize) restore = optimizeForExport(human, clips);
-    return await new GLTFExporter().parseAsync(human.group, { binary: true, animations: clips });
+    // The character's parts are the scene's root nodes: a skinned mesh under a
+    // parent node gets NODE_SKINNED_MESH_NON_ROOT (its transform is ignored).
+    const scene = new Scene();
+    scene.children.push(...human.group.children);
+    const exporter = new GLTFExporter();
+    if (springs) exporter.register(springBonePlugin(springs, boneByName));
+    return await exporter.parseAsync(scene, { binary: true, animations: clips, maxTextureSize: 2048 });
   } finally {
     restore();
+    for (const [owner, userData] of stashed) owner.userData = userData;
     bones.forEach((bone, i) => { bone.name = original[i]; bone.position.copy(posed[i][0]); bone.quaternion.copy(posed[i][1]); bone.scale.copy(posed[i][2]); });
     for (const object of hidden) object.visible = true;
-    for (const [object, position, influences, dictionary] of morphs) {
-      object.geometry.morphAttributes.position = position; object.morphTargetInfluences = influences; object.morphTargetDictionary = dictionary;
+    for (const [object, attributes, influences, dictionary] of morphs) {
+      object.geometry.morphAttributes = attributes; object.morphTargetInfluences = influences; object.morphTargetDictionary = dictionary;
     }
   }
 }
