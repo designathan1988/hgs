@@ -104,10 +104,9 @@ button { cursor: pointer; }
 .group[open] summary .icon { transform: rotate(90deg); }
 .group-body { padding-bottom: 14px; }
 
-/* Slider field: label and typed value on one line, the track below. */
-.field { margin-bottom: 10px; }
-.field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; }
-.field-head label { color: #d7d4cf; font-size: 12.5px; }
+/* Slider field: label, track and typed value on one line (a long label is cut, its full text in the tooltip). */
+.field { display: grid; grid-template-columns: minmax(0, 38%) minmax(0, 1fr) auto; align-items: center; column-gap: 8px; margin-bottom: 6px; }
+.field > label { color: #d7d4cf; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .value-box { display: inline-flex; align-items: baseline; gap: 3px; color: var(--muted); }
 .value { width: 52px; height: 22px; padding: 0 4px; border: 1px solid transparent; border-radius: 5px; background: none; color: var(--text); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
 .value::-webkit-outer-spin-button, .value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
@@ -128,6 +127,14 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .row input[type=color] { width: 44px; height: 26px; padding: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: none; }
 .stack { margin-bottom: 12px; }
 .stack-label { margin-bottom: 7px; color: #d7d4cf; font-size: 12.5px; }
+/* Icon choices sit on the label's line. */
+.stack.inline { display: grid; grid-template-columns: minmax(0, 38%) minmax(0, 1fr); align-items: center; column-gap: 8px; margin-bottom: 8px; }
+.stack.inline .stack-label { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.segmented.icons button { display: grid; place-items: center; padding: 0; }
+/* A row of icon actions (names in tooltips). */
+.actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.actions .icon-button { width: 36px; height: 30px; background: var(--surface); }
+.actions .icon-button.danger:hover:not(:disabled) { color: var(--danger); }
 
 .segmented { display: flex; gap: 2px; padding: 2px; border-radius: var(--radius); background: var(--bg); }
 .segmented button { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -169,6 +176,8 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .metric-list span { color: var(--muted); }
 .metric-list b { font-weight: 550; }
 .status-line { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+/* A status with nothing to tell takes no room. */
+.status-line:empty, p.muted:empty { display: none; }
 .status-line::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--ok); vertical-align: 1px; }
 .status-line[data-state=simulating]::before { background: #e0b04c; }
 .status-line[data-state=paused]::before { background: var(--faint); }
@@ -179,13 +188,16 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .style-card:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-hover); }
 .style-card.on { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
 .pictogram svg { width: 44px; height: 44px; display: block; }
-.tool-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 12px; }
-.tool { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 0 6px; border: 1px solid transparent; border-radius: 10px; background: var(--surface); color: var(--muted); font-size: 11px; }
+/* Tool palettes: icons only, the name in the tooltip and the active tool's name over its options. */
+.tool-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-bottom: 10px; }
+.tool { display: grid; place-items: center; height: 36px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: var(--surface); color: var(--muted); }
+.tool:disabled { opacity: .35; }
+.tool-name { margin-bottom: 8px; color: var(--text); font-size: 12.5px; font-weight: 600; }
 .tool:hover { color: var(--text); background: var(--surface-hover); }
 .tool.on { color: var(--accent); border-color: #f0894c66; background: var(--accent-soft); }
 /* Hair tools: a small caption over each row of tools of one purpose, and the active tool's options below. */
 .tool-label { margin: 0 0 4px; font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-.tool-label + .tool-row { margin-bottom: 10px; }
+.tool-label + .tool-row { margin-bottom: 8px; }
 .tool-options { margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 
 /* Popovers from the top bar and the viewport toolbar. */

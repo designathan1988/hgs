@@ -61,15 +61,14 @@ const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face
 // representation only, so they are listed only there.
 const hairToolGroups = [
   ['Criar', [['draw', 'Desenhar', 'sculpt'], ['fill', 'Preencher', 'plus'], ['pull', 'Puxar', 'pull'], ['density', 'Adensar', 'crowd']]],
-  ['Dar forma', [['comb', 'Pentear', 'hair'], ['clump', 'Agrupar', 'users'], ['grow', 'Alongar', 'grow'], ['cut', 'Cortar', 'cut']]],
-  ['Selecionar e mover', [['select', 'Selecionar', 'select'], ['move', 'Mover', 'move']]],
+  ['Dar forma', [['comb', 'Pentear', 'comb'], ['clump', 'Agrupar', 'users'], ['grow', 'Alongar', 'grow'], ['cut', 'Cortar', 'cut'], ['select', 'Selecionar', 'select'], ['move', 'Mover raiz', 'move']]],
   ['Prender', [['tie', 'Elástico', 'tie'], ['clip', 'Grampo', 'clip'], ['barrette', 'Fivela', 'barrette'], ['band', 'Arco', 'band'], ['gel', 'Gel', 'gel'], ['pin', 'Pino', 'pin']]],
 ];
 const holderNames = { tie: 'Elástico', clip: 'Grampo', barrette: 'Fivela', band: 'Arco', tiara: 'Tiara' };
 const holderPalette = [0x262626, 0x5a3a28, 0x8a5a3c, 0xc9a227, 0xb8bcc2, 0xb3261e, 0xe48aa8, 0x2f5fb3];
-const hairSurfaceTools = ['Volume', [['smooth', 'Suavizar', 'sculpt'], ['volume', 'Inflar', 'grow'], ['mask', 'Proteger', 'lock']]];
+const hairSurfaceTools = ['Volume', [['smooth', 'Suavizar', 'smooth'], ['volume', 'Inflar', 'inflate'], ['mask', 'Proteger', 'lock']]];
 // Made-to-measure clothes tools: [tool, name, icon].
-const clothTools = [[null, 'Girar', 'resume'], ['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar', 'sculpt'], ['clothErase', 'Apagar', 'cut'], ['clothSculpt', 'Esculpir', 'sculpt'], ['clothPin', 'Fixar', 'pin'], ['clothUnpin', 'Soltar', 'unlock']];
+const clothTools = [[null, 'Girar', 'resume'], ['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar cobertura', 'plus'], ['clothErase', 'Apagar cobertura', 'minus'], ['clothSculpt', 'Esculpir', 'sculpt'], ['clothPin', 'Fixar', 'pin'], ['clothUnpin', 'Soltar', 'unlock']];
 const clothHints = {
   look: 'Roda: zoom no cursor · botão direito: girar · botão do meio: mover',
   edges: 'Arraste a barra, a manga, o decote, a cintura ou a perna da peça para cima ou para baixo · Ctrl+Z desfaz',
@@ -387,8 +386,8 @@ export class StudioUI {
     const gravitySwitch = document.getElementById('hairGravitySwitch');
     if (gravitySwitch) gravitySwitch.checked = Boolean(editor.settings.gravityOn);
     if (stats?.error || editor.physicsError) node.textContent = `Falha na simulação: ${stats?.error ?? editor.physicsError}`;
-    else if (!editor.settings.gravityOn) node.textContent = 'Gravidade desligada: pose congelada';
-    else if (!stats) node.textContent = 'Preparando simulação contínua';
+    else if (!editor.settings.gravityOn) node.textContent = '';
+    else if (!stats) node.textContent = 'Preparando a gravidade…';
     else if (stats.infeasibleContacts) node.textContent = 'Um ponto preso está dentro do corpo. Solte o pino ou mova a mecha.';
     else node.textContent = 'Gravidade ligada';
   }
@@ -413,7 +412,8 @@ export class StudioUI {
     const node = document.getElementById('lockStatus'), editor = this.renderer?.lockEditor;
     if (!node || !editor?.active) return;
     const s = editor.summary();
-    node.textContent = `${s.count} mechas${s.selected ? ` · ${s.selected} selecionada${s.selected > 1 ? 's' : ''}` : ''}${s.fixed ? ` · ${s.fixed} fixadas` : ''}${s.styled > s.fixed ? ` · ${s.styled - s.fixed} formas preservadas` : ''}${s.gravityOn ? '' : ' · gravidade desligada'}`;
+    // The count and selection are in "Ajustar mechas" and the switch shows gravity: only held shapes are told here.
+    node.textContent = s.fixed ? `${s.fixed} ${s.fixed > 1 ? 'mechas' : 'mecha'} com forma fixa` : '';
     const undo = document.getElementById('lockUndo'), redo = document.getElementById('lockRedo');
     if (undo) undo.disabled = !editor.undoStack.length;
     if (redo) redo.disabled = !editor.redoStack.length;
@@ -445,7 +445,9 @@ export class StudioUI {
       this.iconButton('undo', 'Desfazer (Ctrl+Z)', () => editor.undo(), 'lockUndo'),
       this.iconButton('redo', 'Refazer (Ctrl+Y)', () => editor.redo(), 'lockRedo'));
     const representation = editor.state.fusion?.enabled ? 'volume' : editor.state.fusion?.representation ?? settings.hairRepresentation ?? 'lock';
-    const shapes = { tips: [['round', 'Redondas'], ['point', 'Finas'], ['flat', 'Retas']], forms: [['straight', 'Lisa'], ['wavy', 'Ondulada'], ['curl', 'Cacheada']] };
+    // [value, name, icon]: the choices show their icons, the names in the tooltips.
+    const shapes = { tips: [['round', 'Redondas', 'tipRound'], ['point', 'Finas', 'tipPoint'], ['flat', 'Retas', 'tipFlat']], forms: [['straight', 'Lisa', 'straight'], ['wavy', 'Ondulada', 'wavy'], ['curl', 'Cacheada', 'curly']] };
+    const choices = list => list.map(([, name, glyph]) => [name, glyph]);
     const formOf = curl => curl > 0.6 ? 2 : curl > 0 ? 1 : 0;
 
     // 1. The hairstyle to start from and its colour.
@@ -471,10 +473,12 @@ export class StudioUI {
     };
     for (const [label, list] of [...hairToolGroups, ...(representation === 'volume' ? [hairSurfaceTools] : [])]) {
       tools.append(h('div', { class: 'tool-label', text: label }), h('div', { class: 'tool-row', role: 'group', 'aria-label': label }, list.map(([id, name, glyph]) => h('button', {
-        type: 'button', class: `tool${activeTool === id ? ' on' : ''}`, 'data-lock-tool': id, title: `${name} — ${hints[id]}`, 'aria-pressed': String(activeTool === id), onclick: () => pick(id),
-      }, icon(glyph, 20), h('span', { text: name })))));
+        type: 'button', class: `tool${activeTool === id ? ' on' : ''}`, 'data-lock-tool': id, title: `${name} — ${hints[id]}`, 'aria-label': name, 'aria-pressed': String(activeTool === id), onclick: () => pick(id),
+      }, icon(glyph, 20)))));
     }
-    const options = h('div', { class: 'tool-options' });
+    // The active tool's name heads its options.
+    const toolName = Object.fromEntries([...hairToolGroups, hairSurfaceTools].flatMap(([, list]) => list.map(([id, name]) => [id, name])));
+    const options = h('div', { class: 'tool-options' }, h('div', { class: 'tool-name', text: toolName[activeTool] ?? '' }));
     // Fill imitates the locks around each new root unless asked not to; then the creation settings apply.
     const imitate = activeTool === 'fill' && settings.fillCopy !== false;
     const creation = ['draw', 'pull'].includes(activeTool) || (activeTool === 'fill' && !imitate), brush = ['clump', 'density', 'smooth', 'volume', 'mask'].includes(activeTool);
@@ -487,12 +491,12 @@ export class StudioUI {
     if (creation) {
       this.slide(options, { label: 'Largura', value: settings.width, min: 0.001, max: 0.09, step: 0.001, scale: 1000, unit: 'mm', onInput: v => editor.setCreationWidth(v) });
       this.slide(options, { label: 'Espessura', value: settings.volume, min: 0.12, max: 1, onInput: v => { settings.volume = v; }, title: 'Espessura em relação à largura' });
-      this.segmented(options, 'Pontas', shapes.tips.map(t => t[1]), shapes.tips.findIndex(t => t[0] === (settings.tipShape ?? 'round')), i => editor.setTipShape(shapes.tips[i][0], { apply: false }));
-      this.segmented(options, 'Forma', shapes.forms.map(f => f[1]), formOf(settings.curl), i => editor.setCurlPreset(shapes.forms[i][0], { apply: false }));
+      this.segmented(options, 'Pontas', choices(shapes.tips), shapes.tips.findIndex(t => t[0] === (settings.tipShape ?? 'round')), i => editor.setTipShape(shapes.tips[i][0], { apply: false }));
+      this.segmented(options, 'Forma', choices(shapes.forms), formOf(settings.curl), i => editor.setCurlPreset(shapes.forms[i][0], { apply: false }));
     }
     if (activeTool === 'comb') {
       const scopes = ['brush', 'selected', 'all'];
-      this.segmented(options, 'Alcance', ['Pincel', 'Selecionadas', 'Todo o cabelo'], Math.max(0, scopes.indexOf(settings.combScope)), i => { settings.combScope = scopes[i]; this.render(); });
+      this.segmented(options, 'Alcance', [['Círculo do pincel', 'circle'], ['Mechas selecionadas', 'select'], ['Todo o cabelo', 'hair']], Math.max(0, scopes.indexOf(settings.combScope)), i => { settings.combScope = scopes[i]; this.render(); });
       if (settings.combScope !== 'all') this.slide(options, { label: 'Tamanho', value: settings.combRadius, min: 0.03, max: 1, step: 0.01, onInput: v => { settings.combRadius = v; } });
       this.slide(options, { label: 'Força', value: settings.combStrength, min: 0.1, max: 1, step: 0.05, onInput: v => { settings.combStrength = v; } });
     }
@@ -540,25 +544,25 @@ export class StudioUI {
     const record = () => editor.checkpoint();
     if (lock) {
       const adjust = this.group('Ajustar mechas');
-      adjust.append(h('p', { class: 'muted', text: count ? `${count} ${count > 1 ? 'mechas selecionadas' : 'mecha selecionada'}` : `Todas as ${editor.locks.length} mechas · selecione para ajustar só algumas` }));
+      adjust.append(h('p', { class: 'muted', text: count ? `${count} ${count > 1 ? 'mechas selecionadas' : 'mecha selecionada'}` : `Todas as ${editor.locks.length} mechas`, title: 'Selecione mechas para ajustar só elas' }));
       this.slide(adjust, { label: 'Comprimento', value: lockLength(lock), min: 0.015, max: 1.1, step: 0.005, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setLength(v) });
       this.slide(adjust, { label: 'Largura', value: lock.width, min: 0.001, max: 0.09, step: 0.001, scale: 1000, unit: 'mm', onStart: record, onInput: v => editor.setParam('width', v) });
       this.slide(adjust, { label: 'Espessura', value: lock.volume, min: 0.12, max: 1, onStart: record, onInput: v => editor.setParam('volume', v), title: 'Espessura em relação à largura' });
       this.slide(adjust, { label: 'Afunilar', value: lock.taper, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('taper', v), title: 'Quanto a mecha afina até a ponta' });
       this.slide(adjust, { label: 'Curvar', value: lock.bend, min: -1, max: 1, onStart: record, onInput: v => editor.setParam('bend', v), title: 'Pontas para dentro (+) ou para fora (−)' });
       this.slide(adjust, { label: 'Firmeza', value: lock.stiffness, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('stiffness', v), title: 'Quanto a mecha resiste à gravidade' });
-      this.segmented(adjust, 'Pontas', shapes.tips.map(t => t[1]), shapes.tips.findIndex(t => t[0] === (lock.tipShape ?? 'round')), i => editor.setTipShape(shapes.tips[i][0], { all: false }));
-      this.segmented(adjust, 'Forma', shapes.forms.map(f => f[1]), formOf(lock.curl), i => editor.setCurlPreset(shapes.forms[i][0], { all: false }));
+      this.segmented(adjust, 'Pontas', choices(shapes.tips), shapes.tips.findIndex(t => t[0] === (lock.tipShape ?? 'round')), i => editor.setTipShape(shapes.tips[i][0], { all: false }));
+      this.segmented(adjust, 'Forma', choices(shapes.forms), formOf(lock.curl), i => editor.setCurlPreset(shapes.forms[i][0], { all: false }));
       if (lock.curl > 0) {
         this.slide(adjust, { label: 'Cachos', value: lock.curl, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('curl', v), title: 'Quanto a mecha enrola' });
         this.slide(adjust, { label: 'Voltas', value: lock.turns, min: 0.5, max: 14, step: 0.1, onStart: record, onInput: v => editor.setParam('turns', v) });
       }
       this.slide(adjust, { label: 'Torcer', value: lock.twist * 180 / Math.PI, min: -540, max: 540, step: 1, unit: '°', onStart: record, onInput: v => editor.setParam('twist', v * Math.PI / 180) });
-      adjust.append(h('div', { class: 'button-grid' },
-        count ? h('button', { type: 'button', class: 'button', onclick: () => editor.clearSelection() }, 'Limpar seleção') : h('button', { type: 'button', class: 'button', onclick: () => editor.selectAll() }, 'Selecionar todas'),
-        h('button', { type: 'button', class: 'button', onclick: () => editor.pinTip(), title: 'Prende a ponta onde ela está' }, icon('pin', 16), 'Prender ponta'),
-        h('button', { type: 'button', class: 'button', onclick: () => editor.unpin() }, 'Soltar pinos'),
-        count ? h('button', { type: 'button', class: 'button danger', onclick: () => editor.deleteSelected(), title: 'Delete' }, icon('trash', 16), 'Apagar') : null));
+      adjust.append(h('div', { class: 'actions' },
+        count ? this.iconButton('close', 'Limpar seleção', () => editor.clearSelection()) : this.iconButton('select', 'Selecionar todas', () => editor.selectAll()),
+        this.iconButton('pin', 'Prender a ponta onde está', () => editor.pinTip()),
+        this.iconButton('unlock', 'Soltar pinos e prendedores', () => editor.unpin()),
+        count ? h('button', { type: 'button', class: 'icon-button danger', title: 'Apagar (Delete)', 'aria-label': 'Apagar', onclick: () => editor.deleteSelected() }, icon('trash', 18)) : null));
     }
 
     // 4. Gravity and holding shapes against it.
@@ -569,13 +573,13 @@ export class StudioUI {
     physics.append(h('p', { class: 'muted', id: 'hairPhysicsStatus' }));
     this.updateHairPhysics();
     physics.append(h('p', { class: 'status-line', id: 'lockStatus' }));
-    physics.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', id: 'lockSetRest', onclick: () => editor.setRest(), title: 'A forma atual das mechas selecionadas (ou de todas) resiste à gravidade · tecla F' }, icon('lock', 16), 'Fixar forma (F)'),
-      h('button', { type: 'button', class: 'button', onclick: () => editor.releaseRest(), title: 'As mechas voltam a cair com a gravidade' }, icon('unlock', 16), 'Soltar forma')));
+    physics.append(h('div', { class: 'actions' },
+      this.iconButton('lock', 'Fixar forma (F): a forma atual das mechas selecionadas, ou de todas, resiste à gravidade', () => editor.setRest(), 'lockSetRest'),
+      this.iconButton('unlock', 'Soltar forma: as mechas voltam a cair com a gravidade', () => editor.releaseRest())));
 
     // 5. How the hair is built (strands, locks, fused volume) and its volume settings.
     const build = this.group('Representação', { open: false });
-    this.segmented(build, null, ['Fios', 'Mechas', 'Volume'], ['strand', 'lock', 'volume'].indexOf(representation), index => editor.setRepresentation(['strand', 'lock', 'volume'][index]));
+    this.segmented(build, 'Cabelo em', [['Fios', 'strands'], ['Mechas', 'ribbons'], ['Volume', 'volume']], ['strand', 'lock', 'volume'].indexOf(representation), index => editor.setRepresentation(['strand', 'lock', 'volume'][index]));
     if (representation === 'volume') {
       const fusionControls = h('div', { class: 'hair-fusion-controls' }); build.append(fusionControls);
       renderHairTools(fusionControls, editor, { onChange: () => this.render() });
@@ -598,14 +602,13 @@ export class StudioUI {
     });
     files.append(
       this.row('Nome', nameInput),
-      h('div', { class: 'button-grid' },
-        h('button', { type: 'button', class: 'button', id: 'lockSave', onclick: () => { const name = nameInput.value.trim() || 'Meu penteado'; this.lockSlot = name; this.ready(editor.saveSlot(name) ? `Penteado "${name}" salvo` : 'Armazenamento indisponível'); this.render(); } }, icon('save', 16), 'Salvar'),
-        h('button', { type: 'button', class: 'button', onclick: () => this.downloadLocks(editor, nameInput.value) }, icon('file', 16), 'Exportar .json')),
       slots.length ? this.row('Salvos', slotSelect) : null,
-      h('div', { class: 'button-grid' },
-        h('button', { type: 'button', class: 'button', id: 'lockLoad', disabled: !slots.length, onclick: () => { const name = slotSelect.value; if (!name) return; this.lockSlot = name; this.ready(editor.loadSlot(name) ? `Penteado "${name}" carregado` : 'Penteado não encontrado'); } }, icon('folder', 16), 'Carregar'),
-        h('button', { type: 'button', class: 'button', onclick: () => fileInput.click() }, 'Importar .json'),
-        slots.length ? h('button', { type: 'button', class: 'button danger', onclick: () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { editor.deleteSlot(name); this.render(); } } }, icon('trash', 16), 'Excluir') : null),
+      h('div', { class: 'actions' },
+        this.iconButton('save', 'Salvar com este nome', () => { const name = nameInput.value.trim() || 'Meu penteado'; this.lockSlot = name; this.ready(editor.saveSlot(name) ? `Penteado "${name}" salvo` : 'Armazenamento indisponível'); this.render(); }, 'lockSave'),
+        h('button', { type: 'button', class: 'icon-button', id: 'lockLoad', disabled: !slots.length, title: 'Carregar o salvo escolhido', 'aria-label': 'Carregar', onclick: () => { const name = slotSelect.value; if (!name) return; this.lockSlot = name; this.ready(editor.loadSlot(name) ? `Penteado "${name}" carregado` : 'Penteado não encontrado'); } }, icon('folder', 18)),
+        this.iconButton('export', 'Exportar arquivo .json', () => this.downloadLocks(editor, nameInput.value)),
+        this.iconButton('file', 'Importar arquivo .json', () => fileInput.click()),
+        slots.length ? h('button', { type: 'button', class: 'icon-button danger', title: 'Excluir o salvo escolhido', 'aria-label': 'Excluir', onclick: () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { editor.deleteSlot(name); this.render(); } } }, icon('trash', 18)) : null),
       fileInput);
     this.updateLockStatus();
   }
@@ -635,17 +638,16 @@ export class StudioUI {
     });
     files.append(
       this.row('Nome', nameInput),
-      h('div', { class: 'button-grid' },
-        h('button', { type: 'button', class: 'button', id: 'outfitSave', onclick: () => { const name = nameInput.value.trim() || 'Minha roupa'; this.outfitSlot = name; this.ready(storage.set(OUTFIT_PREFIX + name, JSON.stringify(this.outfitData())) ? `Roupa "${name}" salva` : 'Armazenamento indisponível'); this.render(); } }, icon('save', 16), 'Salvar'),
-        h('button', { type: 'button', class: 'button', onclick: () => {
+      slots.length ? this.row('Salvas', slotSelect) : null,
+      h('div', { class: 'actions' },
+        this.iconButton('save', 'Salvar com este nome', () => { const name = nameInput.value.trim() || 'Minha roupa'; this.outfitSlot = name; this.ready(storage.set(OUTFIT_PREFIX + name, JSON.stringify(this.outfitData())) ? `Roupa "${name}" salva` : 'Armazenamento indisponível'); this.render(); }, 'outfitSave'),
+        h('button', { type: 'button', class: 'icon-button', id: 'outfitLoad', disabled: !slots.length, title: 'Carregar a salva escolhida', 'aria-label': 'Carregar', onclick: () => { const name = slotSelect.value; if (!name) return; this.outfitSlot = name; const json = storage.get(OUTFIT_PREFIX + name); this.ready(json && this.loadOutfit(json) ? `Roupa "${name}" carregada` : 'Roupa não encontrada'); } }, icon('folder', 18)),
+        this.iconButton('export', 'Exportar arquivo .json', () => {
           const url = URL.createObjectURL(new Blob([JSON.stringify(this.outfitData())], { type: 'application/json' }));
           const a = document.createElement('a'); a.href = url; a.download = `${slug(nameInput.value || 'roupa')}.roupa.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
-        } }, icon('file', 16), 'Exportar .json')),
-      slots.length ? this.row('Salvas', slotSelect) : null,
-      h('div', { class: 'button-grid' },
-        h('button', { type: 'button', class: 'button', id: 'outfitLoad', disabled: !slots.length, onclick: () => { const name = slotSelect.value; if (!name) return; this.outfitSlot = name; const json = storage.get(OUTFIT_PREFIX + name); this.ready(json && this.loadOutfit(json) ? `Roupa "${name}" carregada` : 'Roupa não encontrada'); } }, icon('folder', 16), 'Carregar'),
-        h('button', { type: 'button', class: 'button', onclick: () => fileInput.click() }, 'Importar .json'),
-        slots.length ? h('button', { type: 'button', class: 'button danger', onclick: () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { storage.remove(OUTFIT_PREFIX + name); this.render(); } } }, icon('trash', 16), 'Excluir') : null),
+        }),
+        this.iconButton('file', 'Importar arquivo .json', () => fileInput.click()),
+        slots.length ? h('button', { type: 'button', class: 'icon-button danger', title: 'Excluir a salva escolhida', 'aria-label': 'Excluir', onclick: () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { storage.remove(OUTFIT_PREFIX + name); this.render(); } } }, icon('trash', 18)) : null),
       fileInput);
   }
   downloadLocks(editor, name) {
@@ -761,14 +763,14 @@ export class StudioUI {
         this.garmentCheckpoint();
         this.updateGarment({ authoringMode: index ? 'pattern' : 'surface', ...(index && !currentGarment.patternData ? { patternData: createPatternTemplate(currentGarment.type, currentGarment) } : {}) }, 0);
       });
-      method.append(h('p', { class: 'muted', text: drafted ? 'Desenhe contornos e costuras no molde; ajuste a forma e a fixação em 3D.' : 'Pinte a cobertura ou arraste as bordas sobre o corpo. Os moldes salvos ficam preservados ao alternar.' }));
     }
     // Tools in the viewport, as in the hair editor.
     const tools = this.group('Ferramentas');
     tools.append(h('div', { class: 'tool-row', role: 'group', 'aria-label': 'Ferramenta de roupa' }, clothTools.map(([tool, name, glyph]) => h('button', {
-      type: 'button', class: `tool${(this.clothTool ?? null) === tool ? ' on' : ''}`, disabled: (drafted && ['edges', 'clothAdd', 'clothErase'].includes(tool)) || (!drafted && ['clothPin', 'clothUnpin'].includes(tool)), 'data-cloth-tool': tool ?? 'look', title: `${name} — ${clothHints[tool ?? 'look']}`, 'aria-pressed': String((this.clothTool ?? null) === tool),
+      type: 'button', class: `tool${(this.clothTool ?? null) === tool ? ' on' : ''}`, disabled: (drafted && ['edges', 'clothAdd', 'clothErase'].includes(tool)) || (!drafted && ['clothPin', 'clothUnpin'].includes(tool)), 'data-cloth-tool': tool ?? 'look', title: `${name} — ${clothHints[tool ?? 'look'] ?? ''}`, 'aria-label': name, 'aria-pressed': String((this.clothTool ?? null) === tool),
       onclick: () => { this.setClothTool(tool); this.render(); },
-    }, icon(glyph, 20), h('span', { text: name })))));
+    }, icon(glyph, 20)))));
+    tools.append(h('div', { class: 'tool-name', text: clothTools.find(([tool]) => tool === (this.clothTool ?? null))?.[1] ?? '' }));
     if (this.clothBrush) {
       const settings = this.renderer.sculpt.settings;
       this.slide(tools, { label: 'Tamanho do pincel', value: settings.radius, min: 0.01, max: 0.15, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.radius = v; } });
@@ -789,14 +791,15 @@ export class StudioUI {
     if (this.clothTool === 'edges') this.renderer?.clothEditor.show(garments[this.garmentIndex] ?? null);
     const pieces = this.group('Peças');
     pieces.append(h('div', { class: 'chips' }, garments.map((g, i) => h('button', { type: 'button', class: `chip${i === this.garmentIndex ? ' on' : ''}`, onclick: () => { this.garmentIndex = i; this.render(); }, text: `${i + 1}. ${garmentLabels[g.type]}` }))));
-    pieces.append(h('div', { class: 'button-grid' },
-      this.iconButton('undo', 'Desfazer (Ctrl+Z)', () => this.undoGarment()), this.iconButton('redo', 'Refazer (Ctrl+Y)', () => this.redoGarment())));
     const addSelect = h('select', { 'aria-label': 'Nova peça' }, garmentTypes.map(type => h('option', { value: type, text: garmentLabels[type] })));
-    pieces.append(this.row('Nova peça', addSelect), h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', disabled: garments.length >= 8, onclick: () => this.setGarments([...garments, newGarment(addSelect.value)], garments.length) }, icon('plus', 16), 'Adicionar'),
-      h('button', { type: 'button', class: 'button danger', disabled: !garments.length, onclick: () => this.setGarments(garments.filter((_, i) => i !== this.garmentIndex), this.garmentIndex - 1) }, icon('trash', 16), 'Remover'),
-      h('button', { type: 'button', class: 'button', disabled: this.garmentIndex < 1, title: 'Mais perto da pele', onclick: () => { const g = [...garments], i = this.garmentIndex; [g[i - 1], g[i]] = [g[i], g[i - 1]]; this.setGarments(g, i - 1); } }, 'Para dentro'),
-      h('button', { type: 'button', class: 'button', disabled: this.garmentIndex >= garments.length - 1, title: 'Mais por fora', onclick: () => { const g = [...garments], i = this.garmentIndex; [g[i + 1], g[i]] = [g[i], g[i + 1]]; this.setGarments(g, i + 1); } }, 'Para fora')));
+    const act = (glyph, title, disabled, onclick, danger = false) => h('button', { type: 'button', class: `icon-button${danger ? ' danger' : ''}`, title, 'aria-label': title, disabled, onclick }, icon(glyph, 18));
+    pieces.append(this.row('Nova peça', addSelect), h('div', { class: 'actions' },
+      act('undo', 'Desfazer (Ctrl+Z)', false, () => this.undoGarment()),
+      act('redo', 'Refazer (Ctrl+Y)', false, () => this.redoGarment()),
+      act('plus', 'Adicionar a peça escolhida', garments.length >= 8, () => this.setGarments([...garments, newGarment(addSelect.value)], garments.length)),
+      act('trash', 'Remover a peça atual', !garments.length, () => this.setGarments(garments.filter((_, i) => i !== this.garmentIndex), this.garmentIndex - 1), true),
+      act('inward', 'Para dentro (mais perto da pele)', this.garmentIndex < 1, () => { const g = [...garments], i = this.garmentIndex; [g[i - 1], g[i]] = [g[i], g[i - 1]]; this.setGarments(g, i - 1); }),
+      act('outward', 'Para fora (mais por fora)', this.garmentIndex >= garments.length - 1, () => { const g = [...garments], i = this.garmentIndex; [g[i + 1], g[i]] = [g[i], g[i + 1]]; this.setGarments(g, i + 1); })));
     const garment = garments[this.garmentIndex];
     if (!garment) return;
     const pattern = this.group('Moldes 2D e costura');
@@ -891,9 +894,9 @@ export class StudioUI {
     }))));
     this.slide(brush, { label: 'Raio', value: settings.radius, min: 0.005, max: 0.15, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.radius = v; } });
     this.slide(brush, { label: 'Força', value: settings.strength, min: 0.05, max: 1, onInput: v => { settings.strength = v; } });
-    this.toggle(brush, 'Simetria (espelhar em X)', settings.symmetry, on => { settings.symmetry = on; });
-    this.toggle(brush, 'Inverter (afundar, desinflar)', settings.invert, on => { settings.invert = on; }, 'Também segurando Ctrl');
-    this.toggle(brush, 'Esconder roupas ao esculpir o corpo', Boolean(this.undressBody), on => {
+    this.toggle(brush, 'Simetria', settings.symmetry, on => { settings.symmetry = on; }, 'Espelha o pincel do outro lado (eixo X)');
+    this.toggle(brush, 'Inverter', settings.invert, on => { settings.invert = on; }, 'Afunda e desinfla · também segurando Ctrl');
+    this.toggle(brush, 'Esconder roupas', Boolean(this.undressBody), on => {
       this.undressBody = on;
       const undress = on && settings.target === 'body';
       if (this.renderer.undressed !== undress) { this.renderer.undressed = undress; this.queueCharacter(); }
@@ -947,13 +950,13 @@ export class StudioUI {
     const options = this.exportOptions;
     const glb = this.group('GLB para jogos');
     const choose = (label, key, entries) => this.segmented(glb, label, entries.map(e => e[1]), entries.findIndex(e => e[0] === options[key]), i => { options[key] = entries[i][0]; });
-    choose('Esqueleto', 'skeleton', [['unreal', 'Unreal'], ['mixamo', 'Mixamo / Unity']]);
+    choose('Esqueleto', 'skeleton', [['unreal', 'Unreal'], ['mixamo', 'Mixamo']]);
     choose('Detalhe', 'lod', [['high', 'Alto'], ['medium', 'Médio'], ['low', 'Baixo']]);
-    choose('Sobrancelhas e cílios', 'groom', [['cards', 'Cartões (leve)'], ['strands', 'Fios']]);
-    this.toggle(glb, 'Animações (16 clipes)', options.animations, on => { options.animations = on; });
-    this.toggle(glb, 'Blendshapes faciais (ARKit)', options.blendshapes, on => { options.blendshapes = on; });
-    this.toggle(glb, 'Otimizar (soldar vértices, JPEG)', options.optimize, on => { options.optimize = on; });
-    this.toggle(glb, 'Camadas de brilho dos olhos', options.cosmetic, on => { options.cosmetic = on; });
+    choose('Pelos do rosto', 'groom', [['cards', 'Cartões'], ['strands', 'Fios']]);
+    this.toggle(glb, 'Animações', options.animations, on => { options.animations = on; }, '16 clipes');
+    this.toggle(glb, 'Expressões faciais', options.blendshapes, on => { options.blendshapes = on; }, '32 blendshapes com nomes ARKit');
+    this.toggle(glb, 'Otimizar', options.optimize, on => { options.optimize = on; }, 'Solda vértices, junta as malhas em Body e Head e usa JPEG');
+    this.toggle(glb, 'Brilho dos olhos', options.cosmetic, on => { options.cosmetic = on; }, 'Camadas extras de brilho dos olhos');
     glb.append(h('button', { type: 'button', class: 'button primary wide big', onclick: () => this.exportGLB() }, icon('export', 18), 'Exportar GLB'));
     const summary = this.group('Personagem atual', { open: false });
     const group = this.renderer?.current?.group;
@@ -1064,7 +1067,8 @@ export class StudioUI {
       if (!Number.isFinite(v)) return;
       begin(); range.value = v; number.value = (v * scale).toFixed(digits); onInput(v); end();
     });
-    const node = h('div', { class: 'field', title }, h('div', { class: 'field-head' }, h('label', { for: id, text: label }), h('span', { class: 'value-box' }, number, unit ? h('span', { class: 'unit', text: unit.trim() }) : null)), range);
+    // Label, track and value on one line; a cut label shows whole in the tooltip.
+    const node = h('div', { class: 'field', title: title ?? label }, h('label', { for: id, text: label }), range, h('span', { class: 'value-box' }, number, unit ? h('span', { class: 'unit', text: unit.trim() }) : null));
     parent.append(node);
     return range;
   }
@@ -1072,11 +1076,17 @@ export class StudioUI {
   range(parent, key, label, min, max, step = 0.01, unit = '') {
     return this.slide(parent, { label, value: this.person[key], min, max, step, unit, key, onInput: v => this.update(key, v) });
   }
+  /** One choice among a few, on its label's line. An item [name, icon] shows the icon only; names are in the tooltips. */
   segmented(parent, label, names, selected, onPick) {
-    const row = h('div', { class: 'segmented', role: 'group', 'aria-label': label ?? undefined }, names.map((name, i) => h('button', {
-      type: 'button', class: selected === i ? 'on' : '', 'aria-pressed': String(selected === i), onclick: () => { onPick(i); this.render(); }, text: name,
-    })));
-    parent.append(label ? h('div', { class: 'stack' }, h('div', { class: 'stack-label', text: label }), row) : row);
+    const icons = names.some(Array.isArray);
+    const row = h('div', { class: `segmented${icons ? ' icons' : ''}`, role: 'group', 'aria-label': label ?? undefined }, names.map((item, i) => {
+      const [name, glyph] = Array.isArray(item) ? item : [item, null];
+      return h('button', {
+        type: 'button', class: selected === i ? 'on' : '', 'aria-pressed': String(selected === i), title: name, 'aria-label': glyph ? name : undefined,
+        onclick: () => { onPick(i); this.render(); }, text: glyph ? undefined : name,
+      }, glyph ? icon(glyph, 18) : null);
+    }));
+    parent.append(label ? h('div', { class: 'stack inline', title: label }, h('div', { class: 'stack-label', text: label }), row) : row);
   }
   toggle(parent, label, checked, onChange, title) {
     const box = h('input', { type: 'checkbox', role: 'switch' }); box.checked = Boolean(checked);
