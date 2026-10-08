@@ -256,6 +256,11 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 .style-card:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-2); }
 .style-card.on { border-color: var(--accent-line); color: var(--text); background: var(--accent-soft); }
 .pictogram svg { width: 44px; height: 44px; display: block; }
+/* Hair parts: one click adds a part. */
+.part-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+.part-card { display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text-2); font-size: 12px; text-align: left; }
+.part-card .icon { color: var(--accent); }
+.part-card:hover { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
 /* Hair volume settings (hair-tools-ui.mjs). */
 .hair-fusion-controls { display: grid; gap: 9px; color: var(--text-2); font-size: 12.5px; }
 .hair-fusion-controls p { margin: 0; color: var(--muted); font-size: 12px; }

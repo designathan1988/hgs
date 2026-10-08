@@ -4,14 +4,11 @@ import { CanvasTexture, Color, DoubleSide, FrontSide, MeshPhysicalMaterial, Repe
  * Hair cards, the representation games use for hair (Epic, "Setting up cards
  * and meshes for grooms"): each lock is a strip that follows its centre line,
  * textured with many strands whose alpha cuts the strip into hair. Alpha test
- * with alpha-to-coverage (MSAA) softens the cut edges without sorting, and
- * an anisotropic highlight runs along the strands (KHR_materials_anisotropy,
- * exported to the GLB).
+ * with alpha-to-coverage (MSAA) softens the cut edges without sorting; the
+ * highlight is dim and tinted by the hair's colour.
  *
  * UV: u across the card (one quarter of the atlas per variant), v from the root
- * (0) to the tip (1). Without a tangent attribute three.js builds the tangent
- * frame from the UV derivatives (tangent = ∂p/∂u, across the card), so the
- * anisotropy is turned a quarter turn to lie along v, the strands.
+ * (0) to the tip (1).
  */
 export const CARD_VARIANTS = 4;
 const ACROSS = 3; // vertices across a card: left edge, raised middle, right edge
@@ -37,7 +34,9 @@ export function cardFromSweep(sweep, lock, { vertex = null } = {}) {
   const { M, line, tan, side, out, half, u } = sweep;
   const count = M * ACROSS;
   const pos = new Float32Array(count * 3), normal = new Float32Array(count * 3), uv = new Float32Array(count * 2), color = new Float32Array(count * 3);
-  const hash = lockHash(lock), variant = Math.floor(hash * CARD_VARIANTS) % CARD_VARIANTS;
+  // The base layer uses the dense (most opaque) variants, the hair over it all four.
+  const hash = lockHash(lock), variants = String(lock.group ?? '').startsWith('base') ? 2 : CARD_VARIANTS;
+  const variant = Math.floor(hash * variants) % variants;
   const u0 = (variant + 0.04) / CARD_VARIANTS, u1 = (variant + 0.96) / CARD_VARIANTS;
   // Each lock a little lighter or darker than its neighbours; roots darker (shadowed by the hair above).
   const jitter = 0.9 + 0.2 * ((hash * 7.31) % 1);
@@ -96,7 +95,8 @@ export function hairStrandTexture() {
     const left = c * columnWidth;
     // A clump: a dense core of strands (the card reads as a lock, not as see-through wisps)
     // whose strands end at different lengths, and sparser loose strands at the edges.
-    const strands = 300 + c * 30;
+    // Variants 0-1 dense (the base layer: near opaque), 2-3 lighter (breakup layers over it).
+    const strands = c < 2 ? 380 : 250;
     for (let s = 0; s < strands; s++) {
       // Dense in the middle, thinning out towards the card's sides and never at its very edge:
       // a card has no straight side where it overlaps another (or the skin shows in a hard line).
@@ -206,8 +206,9 @@ export function hairCardMaterial(color, { highlight = false } = {}) {
   const material = new MeshPhysicalMaterial({
     color, vertexColors: true, map: hairStrandTexture(),
     alphaTest: 0.4, alphaToCoverage: true, side: DoubleSide,
-    roughness: 0.82, metalness: 0, specularIntensity: 0.08, specularColor: tint.clone().lerp(new Color(0xffffff), 0.3),
-    anisotropy: 0.25, anisotropyRotation: Math.PI / 2,
+    // No anisotropy: tested in the app, its stretched highlight turned locks that cross at many angles
+    // (a ponytail gathering, the base) into silver patches; a dim, hair-tinted highlight reads as hair.
+    roughness: 0.82, metalness: 0, specularIntensity: 0.1, specularColor: tint.clone().lerp(new Color(0xffffff), 0.12),
   });
   if (highlight) { material.emissive = new Color(0xf27a2e); material.emissiveIntensity = 0.28; }
   return material;

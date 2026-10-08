@@ -115,6 +115,26 @@ test('fill plants evenly spaced locks under the circle; cut shortens, erase remo
   e.end();
 });
 
+test('every ready-made part adds locks as its own group, outside the head and not standing up over it', () => {
+  const e = editor();
+  let headTop = -Infinity;
+  for (const item of e.scalpIndex()) headTop = Math.max(headTop, item.p.y);
+  for (const id of ['base', 'bangs', 'sidebangs', 'sides', 'backShort', 'backMid', 'backLong', 'ponytail', 'pigtails']) {
+    const before = e.locks.length, made = e.addPart(id);
+    assert.ok(made > 0, `${id} made locks`);
+    const added = e.locks.slice(before);
+    assert.ok(added.every(lock => lock.group.startsWith(`${id}-`)), `${id} is one group`);
+    for (const lock of added) {
+      let top = -Infinity;
+      for (let i = 0; i < N; i++) top = Math.max(top, lock.x[i * 3 + 1]);
+      assert.ok(top - headTop < 0.03, `${id}: a lock rises ${((top - headTop) * 100).toFixed(1)} cm over the head`);
+    }
+    e.removeGroup(e.locks.at(-1).group);
+    assert.equal(e.locks.length, before, `${id} removed as a group`);
+  }
+  e.end();
+});
+
 test('a drawn hairstyle saves and loads unchanged', () => {
   const e = editor(), cam = camera(e);
   drag(e, cam, stroke(e, 1)); drag(e, cam, stroke(e, -1, 0.3));

@@ -1,5 +1,6 @@
 import { blendshapeNames } from './face-rig.mjs';
 import { HairEditor, hairTools } from './hair-editor.mjs';
+import { hairParts, partName } from './hair-parts.mjs';
 import { lockLength } from './locks.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
 import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment } from './tailor.mjs';
@@ -711,6 +712,23 @@ export class StudioUI {
     }, hairPictogram(p.id), h('span', { text: p.name })))));
     style.append(swatches({ label: 'Cor', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
     this.toggle(style, 'Base de fios sobre o couro', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Cobre o couro entre as mechas com fios penteados na mesma direção');
+
+    // 1b. Parts: build a hairstyle from pieces (base, bangs, sides, back, tails), each added over the hair there.
+    const parts = this.group('Montar com peças');
+    parts.append(h('p', { class: 'muted', text: 'Comece por Careca e some peças: cada uma entra por cima das anteriores.' }));
+    this.partLength ??= {};
+    parts.append(h('div', { class: 'part-grid' }, hairParts.map(part => h('button', {
+      type: 'button', class: 'part-card', title: `Adicionar ${part.name.toLowerCase()}`,
+      onclick: () => { this.hairDirty = true; const made = editor.addPart(part.id, { length: this.partLength[part.id] }); if (!made) this.toast('Não coube nesta cabeça', 'error'); },
+    }, icon('plus', 14), h('span', { text: part.name })))));
+    const groups = editor.partGroups();
+    if (groups.length) {
+      parts.append(h('div', { class: 'holder-list' }, groups.map(({ group, kind, count }) => h('div', { class: 'holder-item' },
+        h('span', { class: 'holder-dot', style: `--swatch:${this.person.colors.hair ?? hairPalette[this.person.hairColor]}` }),
+        h('span', { text: `${kind ? partName(kind) : 'Desenhado'} · ${count} ${count === 1 ? 'mecha' : 'mechas'}` }),
+        iconButton('select', 'Selecionar esta peça', () => { editor.selectGroup(group); this.pickTool('select'); }, { size: 14 }),
+        iconButton('close', 'Remover esta peça', () => { this.hairDirty = true; editor.removeGroup(group); }, { size: 14 })))));
+    }
 
     // 2. The ties, clips and bands on the hair, each with a button to take it off.
     if (editor.state.accessories?.length) {

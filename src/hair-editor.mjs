@@ -8,6 +8,7 @@ import {
 import { hairCapMaterial, hairCardMaterial } from './hair-cards.mjs';
 import { HairGuide } from './hair-guide.mjs';
 import { normalizeHairFusion } from './hair-fusion.mjs';
+import { hairParts, makePart } from './hair-parts.mjs';
 import { accessoryMaterial, accessoryParts, pruneAccessories, removeAccessory } from './hair-accessories.mjs';
 
 /**
@@ -224,10 +225,22 @@ export class HairEditor {
     this.scalpVertices = list;
     return list;
   }
-  /** The root on the scalp nearest a point. */
+  /**
+   * The root for a point over the head: the scalp directly under it (seen
+   * from the head centre), so a lock starts below where its stroke starts
+   * and never climbs to it; past the hairline, the nearest scalp point.
+   */
   nearestRoot(point) {
-    let best = null, bestD = Infinity;
-    for (const item of this.scalpIndex()) { const d = item.p.distanceToSquared(point); if (d < bestD) { bestD = d; best = item; } }
+    const C = this.state.frame.C, d = point.clone().sub(C).normalize(), v = new Vector3();
+    let under = null, bestDot = -Infinity, near = null, bestD = Infinity;
+    for (const item of this.scalpIndex()) {
+      const dot = v.copy(item.p).sub(C).normalize().dot(d);
+      if (dot > bestDot) { bestDot = dot; under = item; }
+      const dist = item.p.distanceToSquared(point);
+      if (dist < bestD) { bestD = dist; near = item; }
+    }
+    // Within ~4° of a scalp vertex the point is over the scalp.
+    const best = bestDot > Math.cos(0.07) ? under : near;
     return best ? rootFromHit(this.state, best.tri, best.p) : null;
   }
   mirrorPoint(p) { const C = this.state.frame.C; return new Vector3(2 * C.x - p.x, p.y, p.z); }
@@ -278,8 +291,10 @@ export class HairEditor {
           q.fromArray(other.x, j * 3);
           d.copy(q).sub(p);
           const along = d.dot(n);
-          if (d.addScaledVector(n, -along).lengthSq() > reach * reach) continue;
+          // Only hair right there: close along the outward direction too, and facing the same way.
+          if (Math.abs(along) > 0.03 || d.addScaledVector(n, -along).lengthSq() > reach * reach) continue;
           const hq = guide.frame(q, m);
+          if (m.dot(n) < 0.6) continue;
           if (hq + LAYER_GAP > h + need) need = hq + LAYER_GAP - h;
         }
       }
@@ -615,6 +630,36 @@ export class HairEditor {
     this.strokeLine.geometry.dispose(); this.strokeLine.geometry = geometry; this.strokeLine.visible = true;
   }
   hideStroke() { if (this.strokeLine) this.strokeLine.visible = false; }
+
+  // -------------------------------------------------------------------- parts
+  /** Add a ready-made part (hair-parts.mjs) as its own group, laid over the hair there; returns the locks made. */
+  addPart(id, options) {
+    const made = makePart(this, id, options);
+    if (!made.length) return 0;
+    this.checkpoint();
+    const used = new Set(this.locks.map(lock => lock.group));
+    let n = 1;
+    while (used.has(`${id}-${n}`)) n++;
+    for (const lock of made) lock.group = `${id}-${n}`;
+    this.addLocks(made);
+    this.syncMeshes(); this.updateCap(); this.onChange();
+    return made.length;
+  }
+  /** The parts in the hair: group id, part kind and lock count (the hand-drawn hair is 'main'). */
+  partGroups() {
+    const counts = new Map();
+    for (const lock of this.locks) { const g = lock.group ?? 'main'; counts.set(g, (counts.get(g) ?? 0) + 1); }
+    return [...counts].map(([group, count]) => ({ group, kind: hairParts.find(p => group.startsWith(`${p.id}-`))?.id ?? null, count }));
+  }
+  removeGroup(group) {
+    this.checkpoint();
+    for (const lock of this.locks) if ((lock.group ?? 'main') === group) lock.erased = true;
+    this.selected.clear(); this.purge(); this.syncMeshes(true); this.updateCap(); this.onChange();
+  }
+  selectGroup(group) {
+    this.selected = new Set(this.locks.map((lock, i) => (lock.group ?? 'main') === group ? i : -1).filter(i => i >= 0));
+    this.syncMeshes(); this.onChange();
+  }
 
   // ----------------------------------------------------------- adjust locks
   targets() { const chosen = [...this.selected].map(i => this.locks[i]).filter(Boolean); return chosen.length ? chosen : this.locks; }
