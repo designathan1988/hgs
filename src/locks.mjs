@@ -43,14 +43,15 @@ export const lockLimits = Object.freeze({
 
 /** Bounded, serialisable copy of a locks hairstyle (positions relative to each root, metres at head radius R). */
 export function normalizeLocks(value) {
-  const result = { format: 'hgs-locks', v: 1, R: 0.11, scalp: 1, locks: [] };
+  const result = { format: 'hgs-locks', v: 1, R: 0.11, scalp: 1, locks: [], accessories: [] };
   if (!value || typeof value !== 'object') return result;
   const finite = (x, a, b, fallback) => Number.isFinite(x) ? clamp(x, a, b) : fallback;
   result.R = finite(value.R, 0.03, 0.4, 0.11);
   result.scalp = value.scalp === 0 || value.scalp === false ? 0 : 1;
   if (value.v >= 2 || value.fusion) { result.v = 2; result.fusion = normalizeHairFusion(value.fusion); }
   if (!Array.isArray(value.locks)) return result;
-  for (const lock of value.locks.slice(0, 400)) {
+  const kept = new Map();
+  for (const [index, lock] of value.locks.slice(0, 400).entries()) {
     if (!lock || typeof lock !== 'object') continue;
     const r = lock.r;
     if (!r || !Array.isArray(r.v) || r.v.length !== 3 || !r.v.every(Number.isInteger) || !Array.isArray(r.w) || r.w.length !== 3 || !r.w.every(Number.isFinite)) continue;
@@ -84,7 +85,22 @@ export function normalizeLocks(value) {
       out.rt = Boolean(lock.rt);
       out.rn = Array.isArray(lock.rn) && lock.rn.length === 3 && lock.rn.every(Number.isFinite) && Math.hypot(...lock.rn) > .000001 ? lock.rn.map(v => round(clamp(v, -1, 1), 1e6)) : null;
     }
+    kept.set(index, result.locks.length);
     result.locks.push(out);
+  }
+  // Hair ties and holders (hair-accessories.mjs): type, colour, the pins each
+  // holds as [lock, point] (locks renumbered as kept above), a band's direction.
+  for (const acc of Array.isArray(value.accessories) ? value.accessories.slice(0, 32) : []) {
+    if (!acc || !['tie', 'clip', 'barrette', 'band'].includes(acc.t)) continue;
+    const h = (Array.isArray(acc.h) ? acc.h : []).filter(pair => Array.isArray(pair) && pair.length === 2 && pair.every(Number.isInteger) && kept.has(pair[0]) && pair[1] >= 2 && pair[1] < N)
+      .slice(0, 800).map(([lock, point]) => [kept.get(lock), point]);
+    const out = { t: acc.t, c: Number.isInteger(acc.c) ? clamp(acc.c, 0, 0xffffff) : 0x262626, h };
+    if (acc.t === 'band') {
+      if (!Array.isArray(acc.d) || acc.d.length !== 3 || !acc.d.every(Number.isFinite) || Math.hypot(...acc.d) < 1e-6) continue;
+      const length = Math.hypot(...acc.d);
+      out.d = acc.d.map(v => round(v / length, 1e6)); out.s = acc.s === 'tiara' ? 'tiara' : 'band';
+    } else if (!h.length) continue;
+    result.accessories.push(out);
   }
   return result;
 }
@@ -97,10 +113,10 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
   const normals = vertexNormals(data, positions, frame);
   const field = scalpField(frame, positions, defaultHairline());
   const collider = hairCollider(data, positions, normals, frame, context.skeleton, outfit ? context.outfitSurface ?? null : null);
-  const state = { frame, normals, field, collider, data, positions, locks: [], scalp: saved.scalp, sim: null, fusion: saved.fusion ? normalizeHairFusion(saved.fusion) : null };
-  const scale = frame.R / saved.R;
+  const state = { frame, normals, field, collider, data, positions, locks: [], accessories: [], scalp: saved.scalp, sim: null, fusion: saved.fusion ? normalizeHairFusion(saved.fusion) : null };
+  const scale = frame.R / saved.R, kept = new Map();
   if (state.fusion) { state.fusion.smoothness *= scale; state.fusion.resolution *= scale; }
-  for (const item of saved.locks) {
+  for (const [index, item] of saved.locks.entries()) {
     if (item.r.v.some(v => v * 3 + 2 >= positions.length)) continue;
     const lock = makeLock(state, item.r, null, {
       width: item.w * scale, volume: item.vo, taper: item.ta, curl: item.cu, turns: item.tu, twist: item.tw, stiffness: item.st, bend: item.be,
@@ -118,7 +134,16 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
     if (saved.v >= 2) { lock.id = item.id; lock.group = item.g; lock.density = item.dn; lock.tipShape = item.ti; lock.fixed = item.fx; lock.bendEmbedded = item.bi; lock.rootTaper = item.rt; lock.ribbonNormal = item.rn ? [...item.rn] : null; }
     else lock.fixed = item.fx ?? lock.styled;
     for (const [i, x, y, z] of item.pins) lock.pins.set(i, new Vector3(x, y, z).multiplyScalar(scale).add(root));
+    kept.set(index, lock);
     state.locks.push(lock);
+  }
+  // Each pin an accessory holds carries its id (`pin.holder`).
+  for (const [n, acc] of saved.accessories.entries()) {
+    const id = `acc-${n}`;
+    let held = 0;
+    for (const [l, i] of acc.h) { const pin = kept.get(l)?.pins.get(i); if (pin) { pin.holder = id; held++; } }
+    if (!held && acc.t !== 'band') continue;
+    state.accessories.push({ id, type: acc.t, color: acc.c, ...(acc.t === 'band' ? { style: acc.s, dir: [...acc.d] } : {}) });
   }
   state.sim = new LockShaper(state);
   return state;
@@ -138,6 +163,11 @@ export function serializeLocks(state) {
         ...(state.fusion ? { id: lock.id, g: lock.group ?? 'main', dn: lock.density ?? 1, ti: lock.tipShape ?? 'round', fx: Boolean(lock.fixed), bi: Boolean(lock.bendEmbedded), rt: Boolean(lock.rootTaper), rn: lock.ribbonNormal ? [...lock.ribbonNormal] : null } : {}),
       };
     }),
+    accessories: (state.accessories ?? []).map(acc => ({
+      t: acc.type, c: acc.color,
+      h: state.locks.flatMap((lock, l) => [...lock.pins].filter(([, p]) => p.holder === acc.id).map(([i]) => [l, i])),
+      ...(acc.type === 'band' ? { d: acc.dir, s: acc.style } : {}),
+    })),
   });
 }
 
@@ -254,8 +284,8 @@ export function setLockShape(lock, points) {
 /** Project an edited pose onto root/pin/protected-point and length constraints.
  * FABRIK (Aristidou & Lasenby 2011) for intervals bounded at both ends, static
  * FTL (Müller et al. 2012) for the free tail; existing turnOut resolves contact
- * on each segment's length sphere. An infeasible edit leaves its constrained
- * interval at the previous valid pose instead of stretching or moving anchors.
+ * on each segment's length sphere. Lengths are never stretched: when held points
+ * cannot be joined, the chain ends as near its target as it can.
  */
 export function constrainLockPose(lock, state, { reference = Float32Array.from(lock.x), protectedPoints = new Map(), fixFollicle = true } = {}) {
   const fixed = new Map([[0, lock.rootP], ...(fixFollicle ? [[1, new Vector3().fromArray(reference, 3)]] : []), ...lock.pins, ...protectedPoints]);
@@ -280,7 +310,16 @@ export function constrainLockPose(lock, state, { reference = Float32Array.from(l
       error = new Vector3().fromArray(lock.x, b * 3).distanceTo(last);
       if (error < lock.seg * 1e-4) break;
     }
-    if (error > lock.seg * .001) lock.x.set(reference.subarray(a * 3, (b + 1) * 3), a * 3);
+    // Not joined at these lengths (around the body): a held point that has not
+    // moved (pin, protected point) keeps the interval at its previous valid
+    // pose; a moving one (a comb tooth, a pulled point) keeps the solved chain,
+    // every length exact, its end as near the target as it got, as the groom's
+    // held ends do. The next interval starts from where this one ends.
+    if (error > lock.seg * .001) {
+      if (new Vector3().fromArray(reference, b * 3).distanceTo(last) <= lock.seg * .001) lock.x.set(reference.subarray(a * 3, (b + 1) * 3), a * 3);
+      fixed.set(b, new Vector3().fromArray(lock.x, b * 3));
+      continue;
+    }
     lock.x.set(target(b), b * 3);
   }
   for (let i = anchors.at(-1) + 1; i < N; i++) { place(lock.x, i, i - 1, lock.seg); contact(i); }

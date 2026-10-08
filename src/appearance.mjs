@@ -10,7 +10,8 @@ import { eyePalette } from './state.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
-import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial, lockNormalMap } from './locks.mjs';
+import { prepareLocks, locksMesh, locksScalpColors, locksUnderlayGeometry, underlayMaterial, lockNormalMap, geometryFrom } from './locks.mjs';
+import { accessoryMaterial, accessoryParts } from './hair-accessories.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 import { buildHairRig } from './hair-rig.mjs';
 
@@ -785,6 +786,17 @@ export async function dressHuman(context, spec) {
           scalp.name = 'ScalpUnderlay';
           context.group.add(scalp);
           scalp.bind(context.body.skeleton, context.body.bindMatrix);
+        }
+        // Ties, clips and bands hold their points to the head: their mesh moves wholly with `head`.
+        const parts = accessoryParts(state);
+        if (parts.length) {
+          const head = context.body.skeleton.bones.findIndex(bone => bone.name === 'head'), count = parts.reduce((n, part) => n + part.pos.length / 3, 0);
+          const joints = new Uint16Array(count * 4), weights = new Float32Array(count * 4);
+          for (let v = 0; v < count; v++) { joints[v * 4] = head; weights[v * 4] = 1; }
+          const accessories = new SkinnedMesh(geometryFrom(parts, { skinIndex: new Uint16BufferAttribute(joints, 4), skinWeight: new Float32BufferAttribute(weights, 4) }), accessoryMaterial());
+          accessories.name = 'HairAccessories';
+          context.group.add(accessories);
+          accessories.bind(context.body.skeleton, context.body.bindMatrix);
         }
         // The joints join the character's one skeleton; every skinned mesh is rebound to it.
         if (rig.attach().length) context.group.userData.hairSprings = rig.springs;

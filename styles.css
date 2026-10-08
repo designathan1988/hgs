@@ -155,6 +155,11 @@ input[type=range]:hover::-moz-range-thumb, input[type=range]:focus::-moz-range-t
 .swatch, .swatch-picker { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid #0000; background: var(--swatch); box-shadow: inset 0 0 0 1px #ffffff1c; }
 .swatch:hover { transform: scale(1.08); }
 .swatch.on, .swatch-picker.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+.swatch.auto { background: linear-gradient(135deg, #2a2a2a 0 47%, var(--muted) 47% 53%, #c9a227 53%); }
+.holder-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.holder-item { display: flex; align-items: center; gap: 8px; padding: 2px 2px 2px 8px; border-radius: var(--radius); background: var(--surface); font-size: 12.5px; }
+.holder-item > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.holder-dot { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--swatch); box-shadow: inset 0 0 0 1px #ffffff2a; }
 .swatch-picker { background: conic-gradient(#e9665a, #e9c95a, #6ae98a, #5ac2e9, #9a6ae9, #e9665a); cursor: pointer; -webkit-appearance: none; appearance: none; overflow: hidden; }
 .swatch-picker::-webkit-color-swatch-wrapper { padding: 0; }
 .swatch-picker::-webkit-color-swatch { border: 0; opacity: 0; }

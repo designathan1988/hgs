@@ -90,8 +90,9 @@ test('strand, lock and volume representations reuse the same guide and root', ()
 test('whole-hairstyle comb affects distant guides independently of current selection', () => {
   const { editor, root, camera } = setup();
   for (const side of [-1, 1]) { const lock = combLock(editor.state, root, new Vector3(side, -.3, -.2), .21); lock.styled = true; editor.locks.push(lock); }
-  editor.syncMeshes(true); editor.selected.add(0); editor.settings.combScope = 'all';
-  const before = editor.locks.map(l => [...l.x]); editor.comb({ last: { x: -.8, y: 0 } }, { x: -.65, y: .05 }, camera);
+  editor.syncMeshes(true); editor.selected.add(0); editor.settings.tool = 'comb'; editor.settings.combScope = 'all';
+  const before = editor.locks.map(l => [...l.x]);
+  assert.ok(editor.pointerDown({ x: -.8, y: 0 }, camera)); editor.pointerMove({ x: -.65, y: .05 }, camera); editor.pointerUp();
   for (const [i, lock] of editor.locks.entries()) { assert.notDeepEqual([...lock.x], before[i]); assert.deepEqual([...lock.x.subarray(0, 6)], before[i].slice(0, 6)); assert.ok(stretch(lock) < .002); }
   editor.end();
 });
@@ -102,10 +103,11 @@ test('local comb requires a visible hair hit, moves neighboring guides and leave
     const l=makeLock(editor.state,root,null,{width:.018,volume:.3});l.seg=.22/(N-1);const d=new Vector3(...direction).normalize();
     for(let i=0;i<N;i++)l.x.set(l.rootP.clone().addScaledVector(d,i*l.seg).toArray(),i*3);l.rest.set(l.x);l.styled=true;editor.locks.push(l);
   }
-  editor.syncMeshes(true);editor.group.updateMatrixWorld(true);assert.equal(editor.settings.combScope,'brush');
-  const before=editor.locks.map(l=>[...l.x]);editor.comb({last:{x:.85,y:-.85}},{x:.9,y:-.8},camera);assert.deepEqual(editor.locks.map(l=>[...l.x]),before,'blank space cannot become global wind');
+  editor.syncMeshes(true);editor.group.updateMatrixWorld(true);assert.equal(editor.settings.combScope,'brush');editor.settings.tool='comb';
+  const before=editor.locks.map(l=>[...l.x]);if(editor.pointerDown({x:.85,y:-.85},camera)){editor.pointerMove({x:.9,y:-.8},camera);editor.pointerUp();}
+  assert.deepEqual(editor.locks.map(l=>[...l.x]),before,'blank space cannot become global wind');
   const point=new Vector3().fromArray(editor.locks[0].x,30),ndc=point.project(camera);assert.ok(editor.pickHair(ndc,camera));
-  editor.comb({last:{x:ndc.x-.06,y:ndc.y}},{x:ndc.x,y:ndc.y+.01},camera);
+  assert.ok(editor.pointerDown({x:ndc.x-.06,y:ndc.y},camera));editor.pointerMove({x:ndc.x,y:ndc.y+.01},camera);editor.pointerUp();
   assert.notDeepEqual([...editor.locks[0].x],before[0]);assert.notDeepEqual([...editor.locks[1].x],before[1]);assert.deepEqual([...editor.locks[2].x],before[2]);editor.end();
 });
 
@@ -158,8 +160,8 @@ test('comb scopes preserve explicit pins and protected spatial mask points', () 
   const pin = new Vector3().fromArray(lock.x, 21); lock.pins.set(7, pin.clone());
   const protectedPoint = new Vector3().fromArray(lock.x, 39);
   editor.brushAt(protectedPoint, { tool: 'mask', radius: .026, strength: 1, falloff: 'constant' });
-  editor.settings.combScope = 'all';
-  editor.comb({ last: { x: 0, y: 0 } }, { x: .12, y: .06 }, camera);
+  editor.settings.tool = 'comb'; editor.settings.combScope = 'all';
+  assert.ok(editor.pointerDown({ x: 0, y: 0 }, camera)); editor.pointerMove({ x: .12, y: .06 }, camera); editor.pointerUp();
   assert.ok(new Vector3().fromArray(lock.x, 21).distanceTo(pin) < .00002);
   assert.ok(new Vector3().fromArray(lock.x, 39).distanceTo(protectedPoint) < .00002);
   assert.ok(stretch(lock) < .002); editor.end();

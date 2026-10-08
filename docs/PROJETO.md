@@ -28,7 +28,7 @@ Criador de pessoas 3D para jogos, no navegador. Gera corpo, rosto, roupas e cabe
 | Esqueleto, pele, montagem, GLB | `src/human-three.mjs`, `src/skin.mjs`, `src/motion.mjs`, `src/lod.mjs` |
 | Rosto | `src/face-rig.mjs`, `src/face-mesh.mjs`, `src/face-groom.mjs`, `src/brow-shape.mjs` |
 | Roupas | `src/appearance.mjs`, `src/proxy.mjs`, `src/tailor.mjs`, `src/pattern-cloth.mjs`, `src/patterns.mjs`, `src/pattern-editor.mjs`, `src/cloth.mjs`, `src/cloth-contact.mjs`, `src/cloth-editor.mjs`, `src/collision.mjs` |
-| Cabelo | `src/locks.mjs`, `src/scalp.mjs`, `src/hair-rig.mjs`, `src/spring-bones.mjs`, `src/hair-fusion.mjs`, `src/hair-fusion-worker.mjs`, `src/hair-dynamics.mjs`, `src/hair-physics-client.mjs`, `src/hair-physics-worker.mjs`, `src/lock-editor.mjs`, `src/hair-tools-ui.mjs`, `src/hair-presets.mjs` (gerado por `tools/author-hair-presets.mjs`), `src/hair-surface.mjs` (cabelos em malha da API) |
+| Cabelo | `src/locks.mjs`, `src/scalp.mjs`, `src/hair-accessories.mjs` (elástico, grampo, fivela, arco/tiara), `src/hair-rig.mjs`, `src/spring-bones.mjs`, `src/hair-fusion.mjs`, `src/hair-fusion-worker.mjs`, `src/hair-dynamics.mjs`, `src/hair-physics-client.mjs`, `src/hair-physics-worker.mjs`, `src/lock-editor.mjs`, `src/hair-tools-ui.mjs`, `src/hair-presets.mjs` (gerado por `tools/author-hair-presets.mjs`), `src/hair-surface.mjs` (cabelos em malha da API) |
 | Ferramentas | `tools/author-hair-presets.mjs`, `tools/export-glb.mjs` |
 | Inativos (pipeline WebGPU antigo) | `src/renderer.mjs`, `src/shaders.wgsl`, `src/human.mjs`, `src/geometry.mjs`, `src/math.mjs`, `src/face.mjs`, `src/hair.mjs`, `src/garments.mjs`, `src/clothing.mjs`, `src/animation.mjs`, `src/crowd.mjs`, `src/implicit.mjs` |
 
@@ -51,7 +51,7 @@ Criador de pessoas 3D para jogos, no navegador. Gera corpo, rosto, roupas e cabe
 5. Malha do corpo com UV, normais e pesos dos dados.
 6. Olhos, sobrancelhas, cílios (presos a `head`).
 7. Colisor do corpo → sapatos → roupas (prontas: ajuste MakeHuman; sob medida: corte no corpo ou moldes 2D, caimento XPBD, pesos da pele de origem ou da região) → pele coberta escondida.
-8. Cabelo em mechas: raízes baricêntricas, gravidade de penteado no corpo e roupa atuais, malha opaca; cadeias de juntas de cabelo filhas de `head` (mola VRMC_springBone na prévia e no GLB).
+8. Cabelo em mechas: raízes baricêntricas, gravidade de penteado no corpo e roupa atuais, malha opaca; prendedores (pinos marcados pelo acessório, malha `HairAccessories` inteira no osso `head`); cadeias de juntas de cabelo filhas de `head` a partir do último ponto preso (mola VRMC_springBone na prévia e no GLB).
 9. Rig facial (32 blendshapes com posição e normal) → LOD → clipes → saneamento dos pesos.
 10. Pacote numérico → página → texturas → cena → `AnimationMixer` → mola do cabelo → desenho.
 11. Exportação: pose de ligação, malhas `Body` e `Head`, sem `userData`, validação Khronos.

@@ -6,10 +6,10 @@ import { anglesOf, hairSkinWeights } from './scalp.mjs';
  * hair (VRMC_springBone: chains of joints, each the parent of the next, the
  * last one only a tail, with sphere/capsule colliders on the body).
  *
- * - The part of a lock resting on the head or neck skin keeps the weights of
- *   that skin (hairSkinWeights). Where the lock leaves the skin its free part
- *   begins; locks whose free part is shorter than 6 cm (at 1.7 m) stay on the
- *   head.
+ * - The part of a lock resting on the head or neck skin, or held by a tie,
+ *   clip or pin, keeps the weights of that skin (hairSkinWeights). Past it the
+ *   lock's free part begins; locks whose free part is shorter than 6 cm (at
+ *   1.7 m) stay on the head.
  * - Free locks are grouped by the azimuth (30° sectors) of the point where they
  *   leave the head; a sector with a single lock joins its nearest neighbour.
  *   Each group gets one chain of SEGMENTS + 1 joints along the mean of its
@@ -66,6 +66,8 @@ export function buildHairRig(context, state, { joints: withJoints = true } = {})
       if (!weigh.skin.closest(lock.x[i * 3], lock.x[i * 3 + 1], lock.x[i * 3 + 2], reach, hit) || hit.distance > reach) break;
       held = i;
     }
+    // Points held by a tie, clip or pin stay with the head; the spring starts past the last one.
+    for (const i of lock.pins.keys()) held = Math.max(held, i);
     const length = (n - 1) * lock.seg, entry = { held: held * lock.seg, length, free: length - held * lock.seg, chain: -1, leave: held };
     info.set(lock, entry);
     if (withJoints && entry.free >= MIN_FREE * k) free.push(lock);

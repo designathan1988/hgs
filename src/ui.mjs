@@ -34,16 +34,21 @@ const hints = {
   default: 'Roda: zoom no cursor · botão direito: girar no ponto do cursor · botão do meio: mover',
   esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão direito: girar',
   draw: 'Arraste do couro cabeludo para fora · Alt ajusta a largura',
-  fill: 'Pinte o couro cabeludo para plantar mechas',
+  fill: 'Pinte com o círculo: planta mechas a distâncias iguais, imitando as vizinhas',
   pull: 'Arraste do couro cabeludo para criar, ou de uma mecha para puxá-la · P prende · F mantém a forma',
-  comb: 'Arraste: o cabelo segue o gesto · Alcance escolhe círculo, seleção ou tudo',
+  comb: 'Arraste da raiz ou do meio: o pente agarra as mechas e puxa até a ponta',
   move: 'Arraste uma mecha para mudar a raiz de lugar',
   grow: 'Arraste uma mecha no sentido da ponta para alongar',
   cut: 'Passe a tesoura sobre as mechas',
   clump: 'Pincel: junta as mechas',
   density: 'Pincel: acrescenta mechas · Ctrl rareia',
-  select: 'Clique numa mecha · Shift soma · Ctrl alterna',
-  pin: 'Clique num ponto da mecha para prender ou soltar',
+  select: 'Clique ou pinte sobre as mechas · Shift soma · Ctrl tira',
+  pin: 'Clique num ponto da mecha para fixá-lo ou soltá-lo',
+  tie: 'Selecione a parte (ou use o círculo) e clique onde vai o elástico',
+  clip: 'Clique sobre o cabelo onde vai o grampo',
+  barrette: 'Selecione a parte (ou use o círculo) e clique onde vai a fivela',
+  band: 'Clique no alto da cabeça por onde o arco passa',
+  gel: 'Pincel: a mecha fica na forma atual · Ctrl tira o gel',
   smooth: 'Pincel: suaviza o volume',
   volume: 'Pincel: infla o volume · Ctrl esvazia',
   mask: 'Pincel: protege regiões · Ctrl libera',
@@ -57,8 +62,11 @@ const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face
 const hairToolGroups = [
   ['Criar', [['draw', 'Desenhar', 'sculpt'], ['fill', 'Preencher', 'plus'], ['pull', 'Puxar', 'pull'], ['density', 'Adensar', 'crowd']]],
   ['Dar forma', [['comb', 'Pentear', 'hair'], ['clump', 'Agrupar', 'users'], ['grow', 'Alongar', 'grow'], ['cut', 'Cortar', 'cut']]],
-  ['Selecionar e mover', [['select', 'Selecionar', 'select'], ['move', 'Mover', 'move'], ['pin', 'Prender', 'pin']]],
+  ['Selecionar e mover', [['select', 'Selecionar', 'select'], ['move', 'Mover', 'move']]],
+  ['Prender', [['tie', 'Elástico', 'tie'], ['clip', 'Grampo', 'clip'], ['barrette', 'Fivela', 'barrette'], ['band', 'Arco', 'band'], ['gel', 'Gel', 'gel'], ['pin', 'Pino', 'pin']]],
 ];
+const holderNames = { tie: 'Elástico', clip: 'Grampo', barrette: 'Fivela', band: 'Arco', tiara: 'Tiara' };
+const holderPalette = [0x262626, 0x5a3a28, 0x8a5a3c, 0xc9a227, 0xb8bcc2, 0xb3261e, 0xe48aa8, 0x2f5fb3];
 const hairSurfaceTools = ['Volume', [['smooth', 'Suavizar', 'sculpt'], ['volume', 'Inflar', 'grow'], ['mask', 'Proteger', 'lock']]];
 // Made-to-measure clothes tools: [tool, name, icon].
 const clothTools = [[null, 'Girar', 'resume'], ['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar', 'sculpt'], ['clothErase', 'Apagar', 'cut'], ['clothSculpt', 'Esculpir', 'sculpt'], ['clothPin', 'Fixar', 'pin'], ['clothUnpin', 'Soltar', 'unlock']];
@@ -287,7 +295,8 @@ export class StudioUI {
     });
     this.setHint(hints.default);
     this.updateMeta();
-    if (this.guided) this.renderCreationGuide();
+    // The steps live on the starting page only; the side bar already leads to every other page.
+    if (this.guided && this.section === 'personagem') this.renderCreationGuide();
     document.querySelector('.app').classList.toggle('pattern-mode', this.section === 'roupas' && this.person.outfit === 4);
     ({
       personagem: () => this.renderCharacter(), corpo: () => this.renderBody(), rosto: () => this.renderFace(),
@@ -298,19 +307,14 @@ export class StudioUI {
   }
   renderCreationGuide() {
     const steps = [['personagem', 'Pessoa inicial'], ['corpo', 'Corpo e rosto'], ['cabelo', 'Cabelo'], ['roupas', 'Roupas'], ['exportar', 'Revisar e exportar']];
-    const step = this.section === 'rosto' ? 1 : Math.max(0, steps.findIndex(([id]) => id === this.section));
     const guide = this.group('Criação guiada');
     guide.append(h('div', { class: 'guide-steps', 'aria-label': 'Etapas de criação' }, steps.map(([id, label], index) => h('button', {
-      type: 'button', class: `guide-step${index === step ? ' on' : ''}`, 'aria-current': index === step ? 'step' : undefined,
+      type: 'button', class: `guide-step${index === 0 ? ' on' : ''}`, 'aria-current': index === 0 ? 'step' : undefined,
       onclick: () => this.setSection(id), text: `${index + 1}. ${label}`,
     }))));
-    if (step === 1) guide.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', onclick: () => this.setSection('corpo') }, 'Ajustar corpo'),
-      h('button', { type: 'button', class: 'button', onclick: () => this.setSection('rosto') }, 'Ajustar rosto')));
     guide.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', disabled: step === 0, onclick: () => this.setSection(steps[step - 1][0]) }, 'Voltar'),
-      h('button', { type: 'button', class: 'button primary', onclick: () => step === 4 ? this.exportGLB() : this.setSection(steps[step + 1][0]) }, step === 4 ? 'Exportar personagem' : 'Avançar')),
-      h('button', { type: 'button', class: 'button ghost wide', onclick: () => { this.guided = false; this.render(); } }, 'Usar edição livre'));
+      h('button', { type: 'button', class: 'button primary', onclick: () => this.setSection('corpo') }, 'Avançar'),
+      h('button', { type: 'button', class: 'button ghost', onclick: () => { this.guided = false; this.render(); } }, 'Usar edição livre')));
     if (this.section === 'personagem') {
       const preserve = this.group('Preservar nas variações');
       for (const [key, label] of [['body', 'Corpo e pele'], ['face', 'Rosto e olhos'], ['hair', 'Cabelo editado'], ['clothes', 'Roupa editada']]) this.toggle(preserve, label, this.person.creation.locks[key], on => {
@@ -471,8 +475,14 @@ export class StudioUI {
       }, icon(glyph, 20), h('span', { text: name })))));
     }
     const options = h('div', { class: 'tool-options' });
-    const creation = ['draw', 'fill', 'pull'].includes(activeTool), brush = ['clump', 'density', 'smooth', 'volume', 'mask'].includes(activeTool);
-    if (activeTool === 'fill') this.slide(options, { label: 'Comprimento', value: settings.brushLength, min: 0.04, max: 0.8, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushLength = v; } });
+    // Fill imitates the locks around each new root unless asked not to; then the creation settings apply.
+    const imitate = activeTool === 'fill' && settings.fillCopy !== false;
+    const creation = ['draw', 'pull'].includes(activeTool) || (activeTool === 'fill' && !imitate), brush = ['clump', 'density', 'smooth', 'volume', 'mask'].includes(activeTool);
+    if (activeTool === 'fill') {
+      this.slide(options, { label: 'Círculo', value: settings.combRadius, min: 0.03, max: 1, step: 0.01, onInput: v => { settings.combRadius = v; } });
+      this.toggle(options, 'Imitar as mechas vizinhas', imitate, on => { settings.fillCopy = on; this.render(); }, 'Forma, comprimento e largura das mechas ao redor');
+      if (!imitate) this.slide(options, { label: 'Comprimento', value: settings.brushLength, min: 0.04, max: 0.8, step: 0.005, scale: 100, unit: 'cm', onInput: v => { settings.brushLength = v; } });
+    }
     if (activeTool === 'fill' || activeTool === 'density') this.slide(options, { label: 'Distância entre mechas', value: settings.brushSpacing, min: 0.008, max: 0.06, step: 0.001, scale: 100, unit: 'cm', onInput: v => { settings.brushSpacing = v; } });
     if (creation) {
       this.slide(options, { label: 'Largura', value: settings.width, min: 0.001, max: 0.09, step: 0.001, scale: 1000, unit: 'mm', onInput: v => editor.setCreationWidth(v) });
@@ -492,6 +502,31 @@ export class StudioUI {
       const falloff = h('select', { 'aria-label': 'Suavidade do pincel' }, [['smooth', 'Suave'], ['linear', 'Linear'], ['constant', 'Constante']].map(([value, text]) => h('option', { value, text })));
       falloff.value = settings.brushFalloff; falloff.addEventListener('change', () => { settings.brushFalloff = falloff.value; }); options.append(this.row('Borda', falloff));
       if (activeTool === 'mask') options.append(h('button', { type: 'button', class: 'button wide', onclick: () => editor.clearMask() }, 'Liberar toda a proteção'));
+    }
+    const holder = ['tie', 'clip', 'barrette', 'band'].includes(activeTool);
+    if (activeTool === 'tie' || activeTool === 'barrette') {
+      options.append(h('p', { class: 'muted', text: editor.selected.size ? `Prende as ${editor.selected.size} mechas selecionadas` : 'Sem seleção: prende as mechas dentro do círculo' }));
+      if (!editor.selected.size) this.slide(options, { label: 'Círculo', value: settings.combRadius, min: 0.03, max: 1, step: 0.01, onInput: v => { settings.combRadius = v; } });
+    }
+    if (activeTool === 'gel') this.slide(options, { label: 'Círculo', value: settings.combRadius, min: 0.03, max: 1, step: 0.01, onInput: v => { settings.combRadius = v; } });
+    if (activeTool === 'band') this.segmented(options, 'Estilo', ['Arco', 'Tiara'], settings.bandStyle === 'tiara' ? 1 : 0, i => { settings.bandStyle = i ? 'tiara' : 'band'; });
+    if (holder) {
+      const hex = value => `#${value.toString(16).padStart(6, '0')}`;
+      const colors = h('div', { class: 'swatches' }, [null, ...holderPalette].map(value => h('button', {
+        type: 'button', class: `swatch${settings.holderColor === value ? ' on' : ''}${value === null ? ' auto' : ''}`, style: value === null ? '' : `--swatch:${hex(value)}`,
+        title: value === null ? 'Cor própria de cada peça' : hex(value), 'aria-label': value === null ? 'Cor própria de cada peça' : `Cor ${hex(value)}`,
+        onclick: () => { settings.holderColor = value; this.render(); },
+      })));
+      options.append(this.row('Cor', colors));
+    }
+    // The ties, clips and bands on the hair, each with a button to take it off.
+    if (holder && editor.state.accessories?.length) {
+      const counts = new Map();
+      for (const lock of editor.locks) for (const pin of lock.pins.values()) if (pin.holder) counts.set(pin.holder, (counts.get(pin.holder) ?? 0) + 1);
+      options.append(h('div', { class: 'holder-list' }, editor.state.accessories.map(acc => h('div', { class: 'holder-item' },
+        h('span', { class: 'holder-dot', style: `--swatch:#${acc.color.toString(16).padStart(6, '0')}` }),
+        h('span', { text: `${holderNames[acc.type === 'band' && acc.style === 'tiara' ? 'tiara' : acc.type]}${counts.get(acc.id) ? ` · ${counts.get(acc.id)} mechas` : ''}` }),
+        h('button', { type: 'button', class: 'icon-button', title: 'Tirar', 'aria-label': `Tirar ${holderNames[acc.type]}`, onclick: () => editor.removeHolder(acc.id) }, icon('close', 14))))));
     }
     if (creation || brush || activeTool === 'comb') this.toggle(options, 'Espelhar no outro lado', settings.mirror, on => { settings.mirror = on; });
     if (activeTool === 'draw' || activeTool === 'pull') {

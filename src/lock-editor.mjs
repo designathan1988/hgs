@@ -5,13 +5,15 @@ import {
 import {
   LOCK_POINTS as N, arcLengthAt, geometryFrom, lockLength, lockLimits, lockMaterial, lockSurface,
   locksScalpColors, locksUnderlayGeometry, makeLock, normalizeLocks, prepareLocks, resamplePolyline, rootFromHit,
-  serializeLocks, setLockLength, setLockShape, constrainLockPose, bendLock, underlayMaterial, updateGeometry, combLock, rootFrame,
+  serializeLocks, setLockLength, setLockShape, constrainLockPose, bendLock, underlayMaterial, updateGeometry, combLock, rootFrame, collisionRadius,
 } from './locks.mjs';
 import { applyHairBrush, fusedHairSurface, hairBrushFalloff, hairBrushTools, hairFusionGroups, hairMaskAt, normalizeHairFusion } from './hair-fusion.mjs';
+import { accessoryColors, accessoryMaterial, accessoryParts, bandAcross, barretteLocks, clipLocks, pruneAccessories, removeAccessory, tieLocks } from './hair-accessories.mjs';
 import { prepareWorkerModule } from './generation.mjs';
 import { HairDynamics } from './hair-dynamics.mjs';
 
-export const lockTools = ['brush', 'comb', 'pull', 'move', 'select', 'grow', 'cut', 'pin', ...hairBrushTools];
+export const holderTools = ['tie', 'clip', 'barrette', 'band'];
+export const lockTools = ['brush', 'comb', 'pull', 'move', 'select', 'grow', 'cut', 'pin', 'gel', ...holderTools, ...hairBrushTools];
 const SLOT_PREFIX = 'hgs.locks.';
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const storage = {
@@ -34,7 +36,7 @@ export class LockEditor {
     this.raycaster = new Raycaster();
     this.settings = { tool: 'brush', brushLength: 0.25, brushSpacing: 0.022, gravity: 1, gravityOn: false, pinOnRelease: false, fixOnRelease: false, showMidline: false, combRadius: 0.14, combStrength: 1, showScalp: false, mirror: false, width: 0.05, volume: 0.18, taper: 0.85 };
     this.selected = new Set();
-    Object.assign(this.settings, { width: .025, volume: .24, taper: .9, curl: 0, turns: 2, twist: 0, brushRadius: .045, brushStrength: .5, brushFalloff: 'smooth', activeGroup: 'main', brushInvert: false, brushCreation: 'stroke', hairRepresentation: 'lock', combScope: 'brush', tipShape: 'point', autoSettle: false });
+    Object.assign(this.settings, { width: .025, volume: .24, taper: .9, curl: 0, turns: 2, twist: 0, brushRadius: .045, brushStrength: .5, brushFalloff: 'smooth', activeGroup: 'main', brushInvert: false, brushCreation: 'stroke', hairRepresentation: 'lock', combScope: 'brush', tipShape: 'point', autoSettle: false, holderColor: null, bandStyle: 'band' });
     this.state = null; this.undoStack = []; this.redoStack = [];
     this.bendBaselines = new WeakMap();
     this.onChange = () => {};
@@ -52,10 +54,11 @@ export class LockEditor {
     // Live dynamics starts from the current saved pose, never from q/design.
     this.state.fusion ??= normalizeHairFusion();
     this.selected.clear();
-    for (const name of ['Hair', 'ScalpUnderlay']) { const mesh = human.group.getObjectByName(name); if (mesh) mesh.visible = false; }
+    for (const name of ['Hair', 'ScalpUnderlay', 'HairAccessories']) { const mesh = human.group.getObjectByName(name); if (mesh) mesh.visible = false; }
     const scene = this.renderer.scene;
     this.group = new Group(); this.group.name = 'LockEditor'; scene.add(this.group);
-    this.materials = { normal: lockMaterial(color), selected: lockMaterial(color, { highlight: true }) };
+    // Locks set with gel (held shape) look wet: smoother, glossier surface.
+    this.materials = { normal: lockMaterial(color), selected: lockMaterial(color, { highlight: true }), gel: Object.assign(lockMaterial(color), { roughness: 0.2 }) };
     this.meshes = [];
     this.handleGeometry = new SphereGeometry(1, 10, 8);
     this.handles = new InstancedMesh(this.handleGeometry, new MeshBasicMaterial({ color: 0xffc27a, depthTest: false, transparent: true, opacity: 0.85 }), 400);
@@ -71,7 +74,10 @@ export class LockEditor {
     // The head's centre line over the scalp: roots near it snap onto it.
     this.midline = new Line(this.midlineGeometry(), new LineBasicMaterial({ color: 0x46d39a, transparent: true, opacity: 0.95 }));
     this.midline.renderOrder = 4;
-    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark, this.midline);
+    // Ties, clips, barrettes and bands (hair-accessories.mjs), rebuilt from the points they hold.
+    this.accessoryMesh = new Mesh(new BufferGeometry(), accessoryMaterial());
+    this.accessoryMesh.frustumCulled = false;
+    this.group.add(this.handles, this.pinMarks, this.scalpOverlay, this.underlay, this.hoverMark, this.midline, this.accessoryMesh);
     this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers();
   }
   end() {
@@ -86,12 +92,13 @@ export class LockEditor {
     this.group?.traverse(object => { object.geometry?.dispose(); });
     this.group?.removeFromParent();
     for (const material of Object.values(this.materials ?? {})) material.dispose();
-    for (const name of ['Hair', 'ScalpUnderlay']) { const mesh = this.human?.group.getObjectByName(name); if (mesh) mesh.visible = true; }
+    this.accessoryMesh?.material.dispose(); this.accessoryMesh = null;
+    for (const name of ['Hair', 'ScalpUnderlay', 'HairAccessories']) { const mesh = this.human?.group.getObjectByName(name); if (mesh) mesh.visible = true; }
     this.state = null; this.meshes = []; this.drag = null;
     return result;
   }
   serialize() { return this.state ? serializeLocks(this.state) : null; }
-  setColor(color) { this.color = color; this.materials?.normal.color.set(color); this.materials?.selected.color.set(color); this.updateUnderlay(); }
+  setColor(color) { this.color = color; for (const material of Object.values(this.materials ?? {})) material.color.set(color); this.updateUnderlay(); }
   /**
    * Hang the locks by gravity (all, or only `only` while a drag is under way,
    * the others staying put). Deterministic: unchanged locks come out identical.
@@ -186,7 +193,7 @@ export class LockEditor {
     locks.forEach((lock, n) => {
       const mesh = this.meshes[n];
       mesh.userData.index = n;
-      mesh.material = this.selected.has(n) ? this.materials.selected : this.materials.normal;
+      mesh.material = this.selected.has(n) ? this.materials.selected : lock.fixed ? this.materials.gel : this.materials.normal;
       if (this.state.fusion) { lock.group ??= 'main'; lock.id ??= this.nextLockId(); }
       const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1},${lock.tipShape ?? 'round'},${lock.ribbonNormal ?? ''},${lock.rootTaper}`;
       if (!all && lock.built && key === lock.builtKey && !moved(lock.built, lock.x)) return;
@@ -196,6 +203,15 @@ export class LockEditor {
       this.fusionDirty = true;
     });
     this.syncFusion(all);
+    this.syncAccessories();
+  }
+  /** Accessories follow the points they hold; one with nothing left to hold is gone. */
+  syncAccessories() {
+    if (!this.accessoryMesh) return;
+    pruneAccessories(this.state);
+    const parts = accessoryParts(this.state);
+    this.accessoryMesh.geometry.dispose();
+    this.accessoryMesh.geometry = parts.length ? geometryFrom(parts) : new BufferGeometry();
   }
   nextLockId() {
     const ids = new Set(this.locks.map(l => l.id));
@@ -285,7 +301,8 @@ export class LockEditor {
         m.makeScale(s, s, s).setPosition(lock.x[i * 3], lock.x[i * 3 + 1], lock.x[i * 3 + 2]);
         this.handles.setMatrixAt(h++, m);
       }
-      for (const [i] of lock.pins) if (p < 400) {
+      // Points held by an accessory show the accessory instead of a pin mark.
+      for (const [i, pin] of lock.pins) if (p < 400 && !pin.holder) {
         const s = 0.0062 * k;
         m.makeScale(s, s, s).setPosition(lock.x[i * 3], lock.x[i * 3 + 1], lock.x[i * 3 + 2]);
         this.pinMarks.setMatrixAt(p++, m);
@@ -415,18 +432,30 @@ export class LockEditor {
     }
     const lockHit = this.pickLock(ndc, camera);
     if (tool === 'select') {
-      if (!lockHit) { if (!shift && !ctrl) this.clearSelection(); return true; }
-      this.choose(lockHit.index, { shift, ctrl });
+      // Click a lock, or paint over several (Shift adds, Ctrl removes): the part to tie or style.
+      if (!lockHit) { if (!shift && !ctrl) this.clearSelection(); }
+      else this.choose(lockHit.index, { shift, ctrl });
+      this.drag = { tool, last: { x: ndc.x, y: ndc.y }, remove: ctrl };
       return true;
     }
+    if (tool === 'gel') {
+      // Gel: the locks under the circle keep the shape they have now (Ctrl washes it out).
+      if (!this.combTargets(ndc, camera, 'brush').length) return false;
+      this.checkpoint();
+      this.drag = { tool, invert: ctrl };
+      this.applyGel(ndc, camera, ctrl);
+      return true;
+    }
+    if (holderTools.includes(tool)) return this.placeHolder(tool, ndc, camera);
     if (tool === 'brush') {
       const scalpHit = this.pickScalp(ndc, camera);
       if (this.settings.brushCreation === 'stroke') return scalpHit?.root ? this.beginStroke(scalpHit, camera, { shift, ndc }) : false;
-      // Fill: the stroke may start on the hair or the head and plants where it crosses the scalp.
+      // Fill: the stroke may start on the hair or the head and plants where its circle covers the scalp.
       if (!scalpHit && !this.pickHair(ndc, camera)) return false;
       this.checkpoint();
       if (!shift) this.selected.clear();
-      this.drag = { tool, last: scalpHit?.root ? scalpHit.point.clone() : null, lastNdc: { x: ndc.x, y: ndc.y }, made: 0 };
+      this.drag = { tool, lastNdc: { x: ndc.x, y: ndc.y }, created: new Set() };
+      this.fillAt(ndc, camera, this.drag); this.step(); this.onChange();
       return true;
     }
     if (tool === 'pull') {
@@ -438,11 +467,12 @@ export class LockEditor {
       return false;
     }
     if (tool === 'comb') {
-      // Comb (Blender's Comb Curves): the brush is the circle on screen; a
-      // stroke starts wherever hair lies inside it and keeps combing all along.
-      if (this.settings.combScope !== 'all' && !this.combTargets(ndc, camera).length) return false;
+      // A comb takes hold of the hair it touches and pulls every lock along;
+      // a stroke may start on the hair or the head (the scalp, among the roots).
+      if (this.settings.combScope !== 'all' && !this.combTargets(ndc, camera).length && !this.pickScalp(ndc, camera)) return false;
       this.checkpoint();
-      this.drag = { tool, last: { x: ndc.x, y: ndc.y } };
+      this.drag = { tool, last: { x: ndc.x, y: ndc.y }, caught: new Map(), released: new Set() };
+      this.combCatch(this.drag, ndc, camera);
       return true;
     }
     if (tool === 'move') {
@@ -562,58 +592,242 @@ export class LockEditor {
     if (offset.length() < 1.6 * R && offset.normalize().dot(eye.sub(C).normalize()) < -0.25) return 0;
     return hairBrushFalloff(Math.hypot((s.x - ndc.x) * camera.aspect, s.y - ndc.y), this.settings.combRadius, this.settings.brushFalloff) * this.settings.combStrength;
   }
-  /** Locks with a point inside the comb circle (only the selected ones with "selection" scope). */
-  combTargets(ndc, camera) {
-    const p = new Vector3(), list = this.settings.combScope === 'selected' ? [...this.selected].map(i => this.locks[i]).filter(Boolean) : this.locks;
+  /** Locks with a point inside the comb circle (with "selection" scope, only the selected ones). */
+  combTargets(ndc, camera, scope = this.settings.combScope) {
+    const p = new Vector3(), list = scope === 'selected' ? [...this.selected].map(i => this.locks[i]).filter(Boolean) : this.locks;
     return list.filter(lock => { for (let i = 2; i < N; i++) if (this.combWeight(p.fromArray(lock.x, i * 3), ndc, camera) > 0) return true; return false; });
   }
   /**
-   * One step of the comb: every lock point inside the brush circle on screen
-   * follows the cursor's movement, fully at the centre and fading to the rim,
-   * and more towards the tip than the root (Comb Curves' tip-to-root curve
-   * falloff); with Mirror, points whose mirror image is under the brush move
-   * the mirrored way. Lengths are kept from the root (constrainLockPose), so
-   * combing never stretches a lock.
+   * The comb takes hold of the locks it touches, as a real comb's teeth do:
+   * each at its point nearest the comb's centre on screen ("Todo o cabelo":
+   * every lock at once; Mirror: also the locks whose mirror image is under
+   * the comb, moved the mirrored way).
+   */
+  combCatch(drag, ndc, camera) {
+    const scope = this.settings.combScope ?? 'brush', C = this.state.frame.C, p = new Vector3(), q = new Vector3(), s = new Vector3();
+    const list = scope === 'selected' ? [...this.selected].map(i => this.locks[i]).filter(Boolean) : this.locks;
+    // The side of the head the comb is on ("Todo o cabelo" with Mirror).
+    s.copy(C).project(camera); s.x = ndc.x; s.y = ndc.y;
+    const side = Math.sign(s.unproject(camera).x - C.x) || 1;
+    for (const lock of list) {
+      if (drag.caught.has(lock) || drag.released.has(lock)) continue;
+      let best = -1, near = Infinity, mirror = false;
+      // Any point under the comb takes the lock, the roots included.
+      for (let i = 1; i < N; i++) {
+        p.fromArray(lock.x, i * 3);
+        for (const flip of this.settings.mirror && scope !== 'all' ? [false, true] : [false]) {
+          q.copy(p); if (flip) q.x = 2 * C.x - q.x;
+          if (scope !== 'all' && this.combWeight(q, ndc, camera) <= 0) continue;
+          s.copy(q).project(camera);
+          const d = Math.hypot((s.x - ndc.x) * camera.aspect, s.y - ndc.y);
+          if (d < near) { near = d; best = i; mirror = flip; }
+        }
+      }
+      if (best < 0) continue;
+      // The tooth holds the first point from there with a free segment on both
+      // sides (past the follicle, off any pin or protected point).
+      const fixedAt = i => lock.pins.has(i) || hairMaskAt(this.state, p.fromArray(lock.x, i * 3), lock.group ?? 'main') >= 1 - 1e-6;
+      best = Math.max(3, best);
+      while (best < N && (fixedAt(best - 1) || fixedAt(best) || (best + 1 < N && fixedAt(best + 1)))) best++;
+      if (best >= N) continue;
+      if (scope === 'all' && this.settings.mirror) mirror = (lock.x[best * 3] - C.x) * side < 0;
+      drag.caught.set(lock, { index: best, tooth: new Vector3().fromArray(lock.x, best * 3), from: { x: ndc.x, y: ndc.y }, mirror });
+    }
+  }
+  /**
+   * One step of the comb. The tooth holding each lock moves with the cursor
+   * (on screen, at the depth where it took the lock, kept out of the skin and
+   * clothes) and pulls the whole lock after it. While the part before the
+   * comb cannot reach the tooth, the comb slides along the lock towards the
+   * tip (the hair runs through the teeth); past the tip the lock slips out,
+   * pulled straight towards the comb. The part before the tooth is solved by
+   * FABRIK between the held points and the part after trails behind it, each
+   * point following the one before (FTL, as Snake Hook redistributes a
+   * curve's points along the stroke), so a lock never stretches.
    */
   comb(drag, ndc, camera) {
-    const dx = ndc.x - drag.last.x, dy = ndc.y - drag.last.y;
+    if (ndc.x === drag.last.x && ndc.y === drag.last.y) return;
     drag.last = { x: ndc.x, y: ndc.y };
-    if (!dx && !dy) return;
-    const k = this.settings.combStrength, scope = this.settings.combScope ?? 'brush';
-    const p = new Vector3(), s = new Vector3(), q = new Vector3(), move = new Vector3(), touched = new Set();
-    const shift = (v, w) => q.set(v.x + dx * w, v.y + dy * w, v.z).unproject(camera);
-    // Mirror also reaches locks whose mirror image is under the brush.
-    const targets = scope === 'all' || (this.settings.mirror && scope !== 'selected') ? this.locks : this.combTargets(ndc, camera);
-    for (const lock of targets) {
-      const reference = Float32Array.from(lock.x), protectedPoints = new Map();
-      let moved = false;
-      for (let i = 2; i < N; i++) {
-        p.fromArray(lock.x, i * 3); move.set(0, 0, 0);
-        const mask = hairMaskAt(this.state, p, lock.group ?? 'main');
-        if (mask >= 1 - 1e-6) protectedPoints.set(i, p.clone());
-        if (lock.pins.has(i) || mask >= 1 - 1e-6) continue;
-        // Tip-to-root curve falloff: the first quarter of a lock eases in from
-        // its anchored root, the rest follows the comb fully.
-        const along = Math.min(1, i / ((N - 1) * 0.25)) * (1 - mask), w = (scope === 'all' ? k : this.combWeight(p, ndc, camera)) * along;
-        s.copy(p).project(camera);
-        if (w > 0) move.add(shift(s, w).sub(p));
-        if (this.settings.mirror && scope === 'all') move.x *= p.x < this.state.frame.C.x ? -1 : 1;
-        if (this.settings.mirror && scope !== 'all') {
-          const m = p.clone(); m.x = -m.x;
-          const wm = this.combWeight(m, ndc, camera) * along;
-          s.copy(m).project(camera);
-          if (wm > 0) { const d = shift(s, wm).sub(m); move.x -= d.x; move.y += d.y; move.z += d.z; }
-        }
-        if (move.lengthSq() < 1e-14) continue;
-        lock.x[i * 3] += move.x; lock.x[i * 3 + 1] += move.y; lock.x[i * 3 + 2] += move.z;
-        moved = true;
+    if ((this.settings.combScope ?? 'brush') !== 'all') this.combCatch(drag, ndc, camera);
+    const k = this.settings.combStrength, C = this.state.frame.C, s = new Vector3(), m = new Vector3(), a = new Vector3();
+    for (const [lock, hold] of drag.caught) {
+      const dx = (ndc.x - hold.from.x) * k, dy = (ndc.y - hold.from.y) * k;
+      let tooth;
+      if (!hold.mirror) { s.copy(hold.tooth).project(camera); s.x += dx; s.y += dy; tooth = s.clone().unproject(camera); }
+      else {
+        m.copy(hold.tooth); m.x = 2 * C.x - m.x;
+        s.copy(m).project(camera); s.x += dx; s.y += dy;
+        const d = s.clone().unproject(camera).sub(m); d.x = -d.x;
+        tooth = hold.tooth.clone().add(d);
       }
-      if (!moved) continue;
-      constrainLockPose(lock, this.state, { reference, protectedPoints });
+      // Pushed against the head the comb rides over it: a tooth inside the skin or
+      // clothes goes to the nearest surface point, the lock's clearance above it.
+      const clearance = Math.min(0.028, collisionRadius(lock, hold.index)), hit = this.combHit ??= {};
+      if (this.state.collider?.head.closest(tooth.x, tooth.y, tooth.z, 0.2, hit) && hit.distance < clearance) tooth.set(hit.x + hit.nx * clearance, hit.y + hit.ny * clearance, hit.z + hit.nz * clearance);
+      // Masked points keep their place like pins.
+      const protectedPoints = new Map();
+      for (let i = 2; i < N; i++) { const p = new Vector3().fromArray(lock.x, i * 3); if (hairMaskAt(this.state, p, lock.group ?? 'main') >= 1 - 1e-6) protectedPoints.set(i, p); }
+      const anchor = i => { let b = 1; for (const j of [...lock.pins.keys(), ...protectedPoints.keys()]) if (j < i && j > b) b = j; return b; };
+      const reaches = i => a.fromArray(lock.x, anchor(i) * 3).distanceTo(tooth) <= (i - anchor(i)) * lock.seg * 0.995;
+      const fixedAt = i => lock.pins.has(i) || protectedPoints.has(i);
+      const blocked = i => fixedAt(i - 1) || fixedAt(i) || fixedAt(i + 1);
+      while (hold.index < N - 1 && (blocked(hold.index) || !reaches(hold.index))) hold.index++;
+      if (blocked(hold.index)) { drag.caught.delete(lock); drag.released.add(lock); continue; }
+      if (!reaches(hold.index)) {
+        const from = new Vector3().fromArray(lock.x, anchor(hold.index) * 3);
+        tooth.sub(from).setLength((hold.index - anchor(hold.index)) * lock.seg * 0.995).add(from);
+        drag.caught.delete(lock); drag.released.add(lock);
+      }
+      const reference = Float32Array.from(lock.x);
+      // Around the head the lock may need more than the straight distance: while
+      // it ends farther than a quarter segment from the tooth, the comb slides on
+      // towards the tip; past it the lock slips out, pulled as far as it got.
+      let best = null;
+      for (;;) {
+        protectedPoints.set(hold.index, tooth);
+        lock.x.set(reference);
+        constrainLockPose(lock, this.state, { reference, protectedPoints });
+        protectedPoints.delete(hold.index);
+        const error = a.fromArray(lock.x, hold.index * 3).distanceTo(tooth);
+        if (!best || error < best.error) best = { error, pose: Float32Array.from(lock.x) };
+        if (error < lock.seg * 0.25) break;
+        do hold.index++; while (hold.index < N - 1 && blocked(hold.index));
+        if (hold.index > N - 1 || blocked(hold.index)) { lock.x.set(best.pose); drag.caught.delete(lock); drag.released.add(lock); break; }
+      }
       lock.rest.set(lock.x); lock.styled = true;
-      touched.add(lock);
     }
-    if (touched.size) { this.invalidatePhysics(); this.dirty = true; this.fusionDirty = true; this.step(); }
+    this.invalidatePhysics(); this.dirty = true; this.fusionDirty = true; this.step();
+  }
+  /**
+   * Root sites for Fill: a Fibonacci lattice over the head sphere (González
+   * 2009: P = 2N + 1 points, latitude arcsin(2i / P), longitude 2πi / Φ, each
+   * standing for almost the same area), as many as fit at the fill spacing.
+   * A site is cast onto the scalp from the head centre when first needed. A
+   * stroke plants on the sites it covers, so roots come out evenly spaced
+   * whatever the stroke.
+   */
+  fillSites() {
+    const spacing = this.settings.brushSpacing, R = this.state.frame.R;
+    if (this.sites?.state === this.state && this.sites.spacing === spacing) return this.sites;
+    const P = Math.max(3, Math.round(4 * Math.PI * R * R / (spacing * spacing * Math.sqrt(3) / 2))), half = Math.floor((P - 1) / 2), count = 2 * half + 1, phi = (1 + Math.sqrt(5)) / 2;
+    const dirs = Array.from({ length: count }, (_, k) => {
+      const i = k - half, y = 2 * i / count, r = Math.sqrt(1 - y * y), lon = 2 * Math.PI * i / phi;
+      return new Vector3(Math.cos(lon) * r, y, Math.sin(lon) * r);
+    });
+    this.sites = { state: this.state, spacing, dirs, hits: new Array(count) };
+    return this.sites;
+  }
+  fillSite(sites, k) {
+    if (sites.hits[k] === undefined) {
+      const C = this.state.frame.C, d = sites.dirs[k], hit = this.midlineHit(C.clone().addScaledVector(d, 0.5), d.clone().negate());
+      sites.hits[k] = hit?.root ? hit : null;
+    }
+    return sites.hits[k];
+  }
+  /** Fill under the circle at `ndc` (Blender's Add brush with Density's minimum distance): every free site gets a lock. */
+  fillAt(ndc, camera, drag) {
+    const hit = this.pickScalp(ndc, camera) ?? this.pickHair(ndc, camera);
+    if (!hit) return;
+    const sites = this.fillSites(), C = this.state.frame.C, toward = hit.point.clone().sub(C).normalize(), spacing = this.settings.brushSpacing * 0.9;
+    const free = point => !this.locks.some(lock => (lock.density ?? 1) > 0 && lock.rootP.distanceTo(point) < spacing);
+    const add = lock => { this.locks.push(lock); this.selected.add(this.locks.length - 1); drag.created.add(lock); };
+    for (let k = 0; k < sites.dirs.length && this.locks.length < 400; k++) {
+      // A cheap cone around the cursor before casting a site onto the scalp.
+      if (sites.dirs[k].dot(toward) < 0.4) continue;
+      const site = this.fillSite(sites, k);
+      if (!site || this.combWeight(site.point, ndc, camera) <= 0 || !free(site.point)) continue;
+      const lock = this.fillLock(site.root, drag.created);
+      add(lock);
+      const twinRoot = !this.settings.mirror || this.locks.length >= 400 ? null : this.onMidline(lock) ? null : this.mirrorRoot(lock);
+      if (twinRoot && free(rootFrame(this.state, twinRoot).p)) add(this.fillLock(twinRoot, drag.created));
+    }
+  }
+  /**
+   * A lock for Fill at `root`. Like the Add brush's Interpolate Shape and
+   * Length, it follows the locks within three spacings that were there before
+   * this stroke (`fresh`, the ones it planted, are left out): it leaves the
+   * root in their average direction over the skin (each one's first fifth,
+   * in the skin's plane) with their average length and the nearest one's
+   * settings, and is laid over the head like them (combLock: along the skin,
+   * falling where the head turns down). With none around, or with "Imitar as
+   * vizinhas" off, it is combed with the chosen length and the creation
+   * settings away from the parting to its own side and back, as the
+   * ready-made styles are.
+   */
+  fillLock(root, fresh = new Set()) {
+    const { p, n } = rootFrame(this.state, root), reach = this.settings.brushSpacing * 3;
+    const near = this.settings.fillCopy === false ? [] : this.locks.filter(lock => !fresh.has(lock) && (lock.density ?? 1) > 0 && lock.rootP.distanceTo(p) < reach);
+    if (!near.length) {
+      const C = this.state.frame.C, front = Math.max(0, (p.z - C.z) / p.distanceTo(C));
+      return combLock(this.state, root, new Vector3(p.x < C.x ? -1 : 1, -0.6, -0.25 - 0.95 * front), this.settings.brushLength, this.creationParams());
+    }
+    const direction = new Vector3(), v = new Vector3();
+    let total = 0, length = 0, nearest = near[0];
+    for (const lock of near) {
+      const d = lock.rootP.distanceTo(p), w = 1 / (d + 1e-3);
+      if (d < nearest.rootP.distanceTo(p)) nearest = lock;
+      v.fromArray(lock.x, 4 * 3).sub(lock.rootP);
+      v.addScaledVector(lock.rootN, -v.dot(lock.rootN));
+      if (v.lengthSq() > 1e-10) direction.addScaledVector(v.normalize(), w);
+      length += lockLength(lock) * w; total += w;
+    }
+    direction.addScaledVector(n, -direction.dot(n));
+    if (direction.lengthSq() < 1e-10) direction.set(0, -1, 0);
+    return combLock(this.state, root, direction.normalize(), length / total, {
+      width: nearest.width, volume: nearest.volume, taper: nearest.taper, curl: nearest.curl, turns: nearest.turns, twist: nearest.twist, stiffness: nearest.stiffness,
+      tipShape: nearest.tipShape, group: nearest.group ?? this.settings.activeGroup,
+    });
+  }
+  /** Gel: the locks under the comb circle keep the shape they have now against gravity (invert: washed out, free again). */
+  applyGel(ndc, camera, invert) {
+    let changed = false;
+    for (const lock of this.combTargets(ndc, camera, 'brush')) {
+      if (Boolean(lock.fixed) === !invert) continue;
+      lock.fixed = !invert;
+      if (!invert) { lock.rest.set(lock.x); lock.styled = true; }
+      changed = true;
+    }
+    if (changed) { this.invalidatePhysics(); this.syncMeshes(); this.onChange(); }
+  }
+  /** Put on a tie, clip, barrette or band where clicked; the locks it holds settle from their new holds (LockShaper.hang). */
+  placeHolder(tool, ndc, camera) {
+    const color = this.settings.holderColor ?? (tool === 'band' && this.settings.bandStyle === 'tiara' ? accessoryColors.tiara : accessoryColors[tool]);
+    let result = null;
+    if (tool === 'band' || tool === 'clip') {
+      const hit = tool === 'band' ? this.pickScalp(ndc, camera) ?? this.pickHair(ndc, camera) : this.pickHair(ndc, camera) ?? this.pickScalp(ndc, camera);
+      if (!hit) return false;
+      this.checkpoint();
+      result = tool === 'band' ? bandAcross(this.state, hit.point, { color, style: this.settings.bandStyle }) : clipLocks(this.state, this.locks, hit.point, { color });
+    } else {
+      // A tie or barrette gathers the selected locks, or the locks under the circle.
+      const chosen = [...this.selected].map(i => this.locks[i]).filter(Boolean), locks = chosen.length ? chosen : this.combTargets(ndc, camera, 'brush');
+      const point = locks.length ? this.holderPoint(ndc, camera, locks) : null;
+      if (!point) return false;
+      this.checkpoint();
+      result = (tool === 'tie' ? tieLocks : barretteLocks)(this.state, locks, point, { color });
+    }
+    // Nothing it could hold (locks too short or none there): no step in the history.
+    if (!result) { this.undoStack.pop(); this.onChange(); return true; }
+    for (const lock of result.locks) { this.state.sim.hang(lock, new Map(), this.settings.gravity); lock.rest.set(lock.x); lock.styled = true; }
+    this.invalidatePhysics(); this.syncMeshes(true); this.updateUnderlay(); this.updateHelpers(); this.onChange();
+    return true;
+  }
+  /** Where a tie or barrette goes: on the hair or head under the cursor, else in the plane through the chosen locks facing the view. */
+  holderPoint(ndc, camera, locks) {
+    const hit = this.pickHair(ndc, camera) ?? this.pickScalp(ndc, camera);
+    if (hit) return hit.point;
+    const centre = new Vector3();
+    for (const lock of locks) for (let i = 0; i < N; i++) { centre.x += lock.x[i * 3]; centre.y += lock.x[i * 3 + 1]; centre.z += lock.x[i * 3 + 2]; }
+    centre.divideScalar(locks.length * N);
+    this.raycaster.setFromCamera(ndc, camera);
+    return this.raycaster.ray.intersectPlane(new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).negate(), centre), new Vector3());
+  }
+  /** Take an accessory off (the panel's list). */
+  removeHolder(id) {
+    if (!this.state?.accessories?.some(a => a.id === id)) return;
+    this.checkpoint();
+    removeAccessory(this.state, id);
+    this.invalidatePhysics(); this.syncMeshes(true); this.updateHelpers(); this.onChange();
   }
   /**
    * Put a lock's root at another place on the scalp: its shape (drawn and
@@ -733,44 +947,32 @@ export class LockEditor {
       return;
     }
     if (drag.tool === 'brush') {
-      // Every few centimetres along the stroke a lock is combed from the
-      // scalp in the stroke's direction (and mirrored when asked).
-      // The stroke is followed on screen in small steps, so a fast move
-      // still plants locks all along it.
-      const from = drag.lastNdc ?? { x: ndc.x, y: ndc.y }, n = Math.max(1, Math.ceil(Math.hypot(ndc.x - from.x, ndc.y - from.y) / 0.004));
-      const params = this.creationParams();
-      drag.created ??= new Set();
-      for (let k = 1; k <= n; k++) {
-        if (this.locks.length >= 400) break;
-        const hit = this.pickScalp({ x: from.x + (ndc.x - from.x) * k / n, y: from.y + (ndc.y - from.y) * k / n }, camera);
-        if (!hit?.root) continue;
-        if (!drag.last) { drag.last = hit.point.clone(); continue; }
-        const step = hit.point.clone().sub(drag.last);
-        if (step.length() < this.settings.brushSpacing) continue;
-        // On the centre line with mirroring, the two locks from that root are
-        // combed to either side (away from the parting, down and back), as the
-        // ready-made styles are; elsewhere along the stroke.
-        let comb = step, twinComb = new Vector3(-step.x, step.y, step.z);
-        if (hit.midline && this.settings.mirror) {
-          const C = this.state.frame.C, front = Math.max(0, (hit.point.z - C.z) / hit.point.distanceTo(C));
-          comb = new Vector3(1, -0.6, -0.25 - 0.95 * front); twinComb = new Vector3(-1, -0.6, -0.25 - 0.95 * front);
-        }
-        const lock = combLock(this.state, hit.root, comb, this.settings.brushLength, params);
-        this.locks.push(lock); this.selected.add(this.locks.length - 1); drag.created.add(lock);
-        const twinRoot = !this.settings.mirror ? null : this.onMidline(lock) ? lock.root : this.mirrorRoot(lock);
-        if (twinRoot && this.locks.length < 400) {
-          const twin = combLock(this.state, twinRoot, twinComb, this.settings.brushLength, params);
-          this.locks.push(twin); this.selected.add(this.locks.length - 1); drag.created.add(twin);
-        }
-        drag.last.copy(hit.point); drag.made++;
-      }
+      // The circle is followed on screen in steps of half its radius, so a fast stroke covers its whole path.
+      const from = drag.lastNdc ?? { x: ndc.x, y: ndc.y }, n = Math.max(1, Math.ceil(Math.hypot(ndc.x - from.x, ndc.y - from.y) / Math.max(0.01, this.settings.combRadius * 0.5)));
+      for (let k = 1; k <= n; k++) this.fillAt({ x: from.x + (ndc.x - from.x) * k / n, y: from.y + (ndc.y - from.y) * k / n }, camera, drag);
       drag.lastNdc = { x: ndc.x, y: ndc.y };
-      if (drag.created.size) this.relax(drag.created);
-      this.step();
+      this.step(); this.onChange();
       return;
     }
     if (drag.tool === 'comb') {
       this.comb(drag, ndc, camera);
+      return;
+    }
+    if (drag.tool === 'select') {
+      // Painting over locks selects them (Ctrl: deselects), all along the stroke.
+      const from = drag.last, steps = Math.max(1, Math.ceil(Math.hypot(ndc.x - from.x, ndc.y - from.y) / 0.006));
+      let changed = false;
+      for (let k = 1; k <= steps; k++) {
+        const hit = this.pickLock({ x: from.x + (ndc.x - from.x) * k / steps, y: from.y + (ndc.y - from.y) * k / steps }, camera);
+        if (!hit) continue;
+        if (drag.remove ? this.selected.delete(hit.index) : !this.selected.has(hit.index) && this.selected.add(hit.index)) changed = true;
+      }
+      drag.last = { x: ndc.x, y: ndc.y };
+      if (changed) { this.syncMeshes(); this.updateHelpers(); this.onChange(); }
+      return;
+    }
+    if (drag.tool === 'gel') {
+      this.applyGel(ndc, camera, drag.invert);
       return;
     }
     if (drag.tool === 'move') {
