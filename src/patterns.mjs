@@ -35,13 +35,23 @@ export function setPatternConnection(pattern,connection) {
   return normalizePattern({...pattern,seams:[...seams,connection]});
 }
 
-/** Cubic handles are absolute metres; every edge keeps its original identity. */
-export function sampleContour(contour, resolution=0.04) {
+/** Length of contour edge `e` (its Bézier control polygon, an upper bound close to the curve's). */
+export function contourEdgeLength(contour,e) {
+  const a=contour[e],b=contour[(e+1)%contour.length],c=a.out??[a.x,a.y],d=b.in??[b.x,b.y];
+  return Math.hypot(a.x-c[0],a.y-c[1])+Math.hypot(c[0]-d[0],c[1]-d[1])+Math.hypot(d[0]-b.x,d[1]-b.y);
+}
+
+/**
+ * Cubic handles are absolute metres; every edge keeps its original identity. `steps[e]`, when
+ * given, fixes the number of segments of edge e: two edges sewn together get the same count, so
+ * their points pair one to one (GarmentCode's stitch flattening adds vertices to match them).
+ */
+export function sampleContour(contour, resolution=0.04, stepsOf=null) {
   const points=[],edges=[];
   for(let e=0;e<contour.length;e++) {
     const a=contour[e],b=contour[(e+1)%contour.length],c=a.out??[a.x,a.y],d=b.in??[b.x,b.y];
-    const length=Math.hypot(a.x-c[0],a.y-c[1])+Math.hypot(c[0]-d[0],c[1]-d[1])+Math.hypot(d[0]-b.x,d[1]-b.y);
-    const steps=Math.max(1,Math.min(80,Math.ceil(length/resolution))); const ids=[];
+    const length=contourEdgeLength(contour,e);
+    const steps=stepsOf?.[e]??Math.max(1,Math.min(80,Math.ceil(length/resolution))); const ids=[];
     for(let i=0;i<steps;i++) {const t=i/steps,u=1-t;ids.push(points.length);points.push([u*u*u*a.x+3*u*u*t*c[0]+3*u*t*t*d[0]+t*t*t*b.x,u*u*u*a.y+3*u*u*t*c[1]+3*u*t*t*d[1]+t*t*t*b.y]);}
     edges.push(ids);
   }
@@ -50,21 +60,87 @@ export function sampleContour(contour, resolution=0.04) {
 }
 
 /** Three's hole-aware triangulation; uniform shared-edge subdivision is conforming. */
-export function triangulatePanel(panel,resolution=0.055) {
-  const outer=sampleContour(panel.contour,resolution),holes=(panel.holes??[]).map(h=>sampleContour(h,resolution));
+/**
+ * Delaunay triangulation of 2D points (Bowyer–Watson): each point is inserted into a super
+ * triangle; the triangles whose circumcircle contains it are removed and the edges of the hole
+ * they leave are joined to it; triangles touching the super triangle are dropped at the end.
+ */
+export function delaunay(points) {
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const [x,y] of points){minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);}
+  const size=Math.max(maxX-minX,maxY-minY,1e-6)*20,cx=(minX+maxX)/2,cy=(minY+maxY)/2,n=points.length;
+  const all=[...points,[cx-size,cy-size],[cx+size,cy-size],[cx,cy+size]];
+  const circle=(a,b,c)=>{
+    const [ax,ay]=all[a],[bx,by]=all[b],[qx,qy]=all[c],d=2*(ax*(by-qy)+bx*(qy-ay)+qx*(ay-by));
+    if(Math.abs(d)<1e-18)return [cx,cy,Infinity];
+    const ux=((ax*ax+ay*ay)*(by-qy)+(bx*bx+by*by)*(qy-ay)+(qx*qx+qy*qy)*(ay-by))/d,uy=((ax*ax+ay*ay)*(qx-bx)+(bx*bx+by*by)*(ax-qx)+(qx*qx+qy*qy)*(bx-ax))/d;
+    return [ux,uy,(ax-ux)**2+(ay-uy)**2];
+  };
+  let triangles=[[n,n+1,n+2,...circle(n,n+1,n+2)]];
+  for(let p=0;p<n;p++){
+    const [px,py]=all[p],kept=[],edges=new Map();
+    for(const t of triangles){
+      if((px-t[3])**2+(py-t[4])**2<t[5]*(1-1e-12)){for(const [a,b] of [[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]]){const key=a<b?`${a}:${b}`:`${b}:${a}`;edges.set(key,edges.has(key)?null:[a,b]);}}
+      else kept.push(t);
+    }
+    for(const edge of edges.values())if(edge)kept.push([edge[0],edge[1],p,...circle(edge[0],edge[1],p)]);
+    triangles=kept;
+  }
+  return triangles.filter(t=>t[0]<n&&t[1]<n&&t[2]<n).flatMap(t=>[t[0],t[1],t[2]]);
+}
+
+const insidePolygon=(polygon,x,y)=>{let inside=false;for(let i=0,j=polygon.length-1;i<polygon.length;j=i++){const [xi,yi]=polygon[i],[xj,yj]=polygon[j];if((yi>y)!==(yj>y)&&x<(xj-xi)*(y-yi)/(yj-yi)+xi)inside=!inside;}return inside;};
+const segmentDistance=(polygon,x,y)=>{let best=Infinity;for(let i=0,j=polygon.length-1;i<polygon.length;j=i++){const [ax,ay]=polygon[j],[bx,by]=polygon[i],dx=bx-ax,dy=by-ay,t=Math.max(0,Math.min(1,((x-ax)*dx+(y-ay)*dy)/(dx*dx+dy*dy||1)));best=Math.min(best,Math.hypot(ax+t*dx-x,ay+t*dy-y));}return best;};
+
+/**
+ * `options.steps[e]` / `options.holeSteps[h][e]` fix edge segment counts (see sampleContour) and
+ * `options.levels` the number of 1→4 refinements; panels sewn together must share both, so the
+ * points of two stitched edges stay paired one to one after refinement. With `options.spacing`
+ * the panel is meshed for simulation instead: its outline sampled at the spacing (or the given
+ * counts), a triangular lattice of interior points at that spacing kept 0.6 spacings from the
+ * outline, all joined by Delaunay triangulation and clipped to the panel (no refinement).
+ */
+export function triangulatePanel(panel,resolution=0.055,options={}) {
+  if(options.spacing)return latticePanel(panel,options);
+  const outer=sampleContour(panel.contour,resolution,options.steps),holes=(panel.holes??[]).map((h,i)=>sampleContour(h,resolution,options.holeSteps?.[i]));
   const points=[...outer.points,...holes.flatMap(h=>h.points)],toVector=p=>new Vector2(...p);
   let index=ShapeUtils.triangulateShape(outer.points.map(toVector),holes.map(h=>h.points.map(toVector))).flat();
   const edges=outer.edges.map(e=>[...e]),holeEdges=[];let offset=outer.points.length;const boundaries=[...edges];
   for(const hole of holes){const local=hole.edges.map(e=>e.map(v=>v+offset));holeEdges.push(local);boundaries.push(...local);offset+=hole.points.length;}
   // Split all triangles together to avoid hanging nodes. Bounds keep desktop editing responsive.
-  for(let level=0;level<3&&index.length/3<1200;level++) {
+  const fixed=Number.isInteger(options.levels);
+  let levels=0;
+  for(;fixed?levels<options.levels:levels<3&&index.length/3<1200;levels++) {
     let longest=0;for(let i=0;i<index.length;i+=3)for(let k=0;k<3;k++){const a=points[index[i+k]],b=points[index[i+(k+1)%3]];longest=Math.max(longest,Math.hypot(a[0]-b[0],a[1]-b[1]));}
-    if(longest<=resolution*2)break;
+    if(!fixed&&longest<=resolution*2)break;
     const mids=new Map(),mid=(a,b)=>{const key=a<b?`${a}:${b}`:`${b}:${a}`;if(!mids.has(key)){mids.set(key,points.length);points.push([(points[a][0]+points[b][0])/2,(points[a][1]+points[b][1])/2]);}return mids.get(key);};
     const next=[];for(let i=0;i<index.length;i+=3){const [a,b,c]=index.slice(i,i+3),ab=mid(a,b),bc=mid(b,c),ca=mid(c,a);next.push(a,ab,ca,ab,b,bc,ca,bc,c,ab,bc,ca);}index=next;
     for(const boundary of boundaries){const next=[];for(let j=0;j<boundary.length-1;j++)next.push(boundary[j],mid(boundary[j],boundary[j+1]));next.push(boundary.at(-1));boundary.splice(0,boundary.length,...next);}
   }
-  return {points,index,edges,holeEdges,boundaries};
+  return {points,index,edges,holeEdges,boundaries,levels};
+}
+
+function latticePanel(panel,{spacing:h,steps,holeSteps}) {
+  const outer=sampleContour(panel.contour,h,steps),holes=(panel.holes??[]).map((hole,i)=>sampleContour(hole,h,holeSteps?.[i]));
+  const points=[...outer.points,...holes.flatMap(hole=>hole.points)];
+  const edges=outer.edges.map(e=>[...e]),holeEdges=[],boundaries=[...edges];
+  let offset=outer.points.length;
+  for(const hole of holes){const local=hole.edges.map(e=>e.map(v=>v+offset));holeEdges.push(local);boundaries.push(...local);offset+=hole.points.length;}
+  const outline=outer.points,cut=holes.map(hole=>hole.points),inside=(x,y)=>insidePolygon(outline,x,y)&&!cut.some(c=>insidePolygon(c,x,y));
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const [x,y] of outline){minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);}
+  const row=h*Math.sqrt(3)/2;
+  for(let j=0,y=minY+row/2;y<maxY;j++,y+=row)for(let x=minX+(j%2?h/2:0);x<maxX;x+=h){
+    if(!inside(x,y)||segmentDistance(outline,x,y)<0.6*h||cut.some(c=>segmentDistance(c,x,y)<0.6*h))continue;
+    points.push([x,y]);
+  }
+  const all=delaunay(points),index=[];
+  for(let i=0;i<all.length;i+=3){
+    const [a,b,c]=[all[i],all[i+1],all[i+2]],x=(points[a][0]+points[b][0]+points[c][0])/3,y=(points[a][1]+points[b][1]+points[c][1])/3;
+    if(inside(x,y))index.push(a,b,c);
+  }
+  // Each outline edge keeps its closing point (the next edge's first), as sampleContour returns it.
+  return {points,index,edges,holeEdges,boundaries,levels:0};
 }
 export function panelMeasurements(panel) {
   const sampled=sampleContour(panel.contour,0.005).points;
@@ -98,6 +174,10 @@ export function createPatternTemplate(type='tshirt',garment={}) {
     for(const edge of [0,2])seams.push({a:{panel:bodies[0].id,edge},b:{panel:bodies[1].id,edge},kind:'seam'});
     if(['tshirt','longsleeve','hoodie'].includes(type)) for(const side of ['l','r']) {
       const p=add('sleeve',`sleeve-${side}`,side,0.08+0.5*(garment.sleeve??(type==='tshirt'?0.3:1))-(type==='hoodie'?0.07:0));
+      // A sleeve narrows from the armhole (30 cm round) towards the wrist (about 23 cm for a long
+      // sleeve), as a drafted sleeve block does; a rectangle hung as a bell at the hand.
+      const length=p.contour[2].y,narrow=0.15-0.035*Math.max(0,Math.min(1,(length-0.15)/0.4));
+      p.contour[2].x=narrow;p.contour[3].x=-narrow;
       p.contour.splice(1,0,{x:0,y:0});
       seams.push({a:{panel:p.id,edge:2},b:{panel:p.id,edge:4},reverse:true,kind:'seam'});
       for(const [body,edge] of [['body-front',0],['body-back',1]])seams.push({a:{panel:p.id,edge},b:{panel:body,edge:side==='l'?3:7},reverse:body==='body-front'?side==='l':side==='r',kind:'seam'});

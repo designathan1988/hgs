@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPatternTemplate, triangulatePanel, normalizePattern, mirrorPanel, panelMeasurements } from '../src/patterns.mjs';
 import { garmentTypes, normalizeGarment, newGarment, bodyCollider,bodyLayout } from '../src/tailor.mjs';
-import { buildPatternPanels,coveredPatternFaces } from '../src/pattern-cloth.mjs';
+import { buildPatternPanels,coveredPatternFaces,draftPanels } from '../src/pattern-cloth.mjs';
 import { drapeCloth } from '../src/cloth.mjs';
 import { SurfaceCollider } from '../src/collision.mjs';
 import { createHuman } from '../src/human-three.mjs';
@@ -231,7 +231,10 @@ test('custom pattern generates skinned pieces with saved seams and material meta
   for(let f=0;f<outfit.geometry.index.array.length;f+=3){const ids=Array.from(outfit.geometry.index.array.slice(f,f+3));if(ids.some(v=>!sources[v]))continue;const center=[0,1,2].map(k=>ids.reduce((sum,v)=>sum+position[v*3+k],0)/3);if(skin.closest(...center,0.08,hit)&&hit.distance<-.0025)inside++;}
   assert.equal(inside,0,'triangle interiors stay outside skin, not only their corners');
   const sourceMap=new Map(sources.map((s,i)=>s?[`${s.panel}:${s.uv.join(',')}`,i]:['',-1]));
-  const drafted=new Map(garment.patternData.panels.map(panel=>[panel.id,triangulatePanel(panel,garment.patternData.resolution)]));
+  // The simulation mesh is drafted with one segment count per seam (stitch flattening), so the
+  // sewn points pair one to one; a welded seam puts both sides at one position.
+  const drafted=draftPanels(garment.patternData);
+  for(const seam of garment.patternData.seams.filter(s=>s.kind!=='opening'))assert.equal(drafted.get(seam.a.panel).edges[seam.a.edge].length,drafted.get(seam.b.panel).edges[seam.b.edge].length,'both sides of a seam have the same number of points');
   for(const seam of garment.patternData.seams){
     const A=drafted.get(seam.a.panel),B=drafted.get(seam.b.panel),ae=A.edges[seam.a.edge],be=B.edges[seam.b.edge],count=Math.max(ae.length,be.length);
     for(let i=0;i<count;i++){const t=i/(count-1),a=sourceMap.get(`${seam.a.panel}:${A.points[ae[Math.round(t*(ae.length-1))]].join(',')}`),b=sourceMap.get(`${seam.b.panel}:${B.points[be[Math.round((seam.reverse?1-t:t)*(be.length-1))]].join(',')}`);assert.ok(Math.hypot(...[0,1,2].map(k=>position[a*3+k]-position[b*3+k]))<1e-4,'final surface contact preserves the stitched boundary');}

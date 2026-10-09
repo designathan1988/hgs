@@ -1,6 +1,23 @@
 import { BufferGeometry, DoubleSide, Euler, Float32BufferAttribute, Mesh, MeshBasicMaterial, Raycaster, Triangle, Vector3 } from 'three';
-import { triangulatePanel } from './patterns.mjs';
+import { triangulatePanel, contourEdgeLength } from './patterns.mjs';
 import { SurfaceCollider } from './collision.mjs';
+
+/**
+ * Every panel of a pattern triangulated for simulation, by panel id. Stitch flattening
+ * (GarmentCode): both edges of a seam get one segment count (the larger), and every panel the same
+ * number of refinements, so stitched points pair one to one and the seam can be welded shut after
+ * draping. Chains of seams (an edge sewn twice) share one count.
+ */
+export function draftPanels(pattern) {
+  // Simulation spacing: about 2.5 cm between cloth points (pattern resolution 0.055 by default).
+  const resolution=Math.max(0.018,Math.min(0.035,pattern.resolution*0.45)),steps=new Map(),keyOf=ref=>`${ref.panel}|${ref.hole??-1}|${ref.edge}`;
+  const lengthOf=ref=>{const p=pattern.panels.find(q=>q.id===ref.panel),c=ref.hole===undefined?p?.contour:p?.holes?.[ref.hole];return c&&ref.edge<c.length?contourEdgeLength(c,ref.edge):0;};
+  const sewn=pattern.seams.filter(s=>s.kind!=='opening');
+  for(const s of sewn)for(const ref of [s.a,s.b]){const n=Math.max(1,Math.min(80,Math.ceil(lengthOf(ref)/resolution)));steps.set(keyOf(ref),Math.max(steps.get(keyOf(ref))??0,n));}
+  for(let pass=0;pass<4;pass++)for(const s of sewn){const n=Math.max(steps.get(keyOf(s.a)),steps.get(keyOf(s.b)));steps.set(keyOf(s.a),n);steps.set(keyOf(s.b),n);}
+  const optionsOf=piece=>({steps:piece.contour.map((_,e)=>steps.get(`${piece.id}|-1|${e}`)),holeSteps:(piece.holes??[]).map((h,i)=>h.map((_,e)=>steps.get(`${piece.id}|${i}|${e}`)))});
+  return new Map(pattern.panels.map(piece=>[piece.id,triangulatePanel(piece,resolution,{...optionsOf(piece),spacing:resolution})]));
+}
 
 /** Place metre-sized panels around anatomical sections, then transfer actual body skinning. */
 export function buildPatternPanels(context,garment,layout,layer,skin=null) {
@@ -14,8 +31,9 @@ export function buildPatternPanels(context,garment,layout,layer,skin=null) {
     if(!Number.isFinite(minX))return {x:0,z:layout.frontZ,rx:0.16*k,rz:0.1*k};
     return {x:(minX+maxX)/2,z:(minZ+maxZ)/2,rx:Math.max((maxX-minX)/2,0.01*k),rz:Math.max((maxZ-minZ)/2,0.01*k)};
   };
+  const drafted=draftPanels(pattern);
   pattern.panels.forEach((piece,pieceIndex)=>{
-    const mesh=triangulatePanel(piece,pattern.resolution),offset=out.pos.length/3,place=piece.placement,region=place.region,side=place.side;
+    const mesh=drafted.get(piece.id),offset=out.pos.length/3,place=piece.placement,region=place.region,side=place.side;
     const candidates=[];
     for(let v=0;v<P.length/3;v++) {
       // Visible skin only: joint cubes and helper geometry are not a weight source.
@@ -31,6 +49,10 @@ export function buildPatternPanels(context,garment,layout,layer,skin=null) {
     // the actual shoulder/wrist chain, including in the flat rest metric.
     const lengthScale=region==='arm'?limb.length/0.58:k;
     const pieceHeight=Math.max(...mesh.points.map(p=>p[1]))-minY;
+    // The panel's width at a height of the draft (a horizontal slice of its outline): a sleeve or a
+    // trouser leg wraps its limb with the width it has there, so a tapered sleeve is a tapered tube.
+    const outline=mesh.edges.flatMap(e=>e.slice(0,-1)).map(i=>mesh.points[i]);
+    const sliceAt=y=>{let lo=Infinity,hi=-Infinity;for(let i=0,j=outline.length-1;i<outline.length;j=i++){const [ax,ay]=outline[j],[bx,by]=outline[i];if((ay<=y)===(by<=y))continue;const x=ax+(y-ay)/(by-ay)*(bx-ax);lo=Math.min(lo,x);hi=Math.max(hi,x);}return hi>lo?[lo,hi]:null;};
     for(let i=0;i<mesh.points.length;i++) {
       const [u,v]=mesh.points[i];let position,normal;
       if(['arm','leg','hand','foot'].includes(region)) {
@@ -39,13 +61,15 @@ export function buildPatternPanels(context,garment,layout,layer,skin=null) {
         const center=along<limb.l1?limb.A.clone().addScaledVector(direction,along):limb.B.clone().addScaledVector(direction,along-limb.l1);
         const forward=new Vector3(0,0,1).addScaledVector(direction,-direction.z).normalize(),lateral=forward.clone().cross(direction).normalize();
         if(side==='r')lateral.negate();
-        const circumference=region==='leg'?0.45:region==='arm'?piece.component==='cuff'?0.24:0.3:region==='hand'?0.18:0.25;
+        const slice=region==='arm'||region==='leg'?sliceAt(Math.max(minY+1e-4,Math.min(minY+pieceHeight-1e-4,v))):null;
+        const circumference=slice?Math.max(0.08,slice[1]-slice[0]):region==='leg'?0.45:region==='arm'?piece.component==='cuff'?0.24:0.3:region==='hand'?0.18:0.25;
+        const centreU=slice?(slice[0]+slice[1])/2:0;
         let radius=circumference*k/(Math.PI*2);
         for(const id of candidates) {
           const d=new Vector3(P[id*3],P[id*3+1],P[id*3+2]).sub(center);
           if(Math.abs(d.dot(direction))<0.018*k)radius=Math.max(radius,Math.hypot(d.dot(lateral),d.dot(forward)));
         }
-        const angle=u/circumference*Math.PI*2+(region==='arm'?Math.PI/2:0);
+        const angle=(u-centreU)/circumference*Math.PI*2+(region==='arm'?Math.PI/2:0);
         normal=lateral.multiplyScalar(Math.sin(angle)).addScaledVector(forward,Math.cos(angle));
         position=center.addScaledVector(normal,radius+(0.004+garment.fit*0.012)*k);
       } else {
@@ -222,13 +246,18 @@ export function projectPanelContacts(points,panel,collider,k) {
 export function layeredCollider(collider,k) {
   const skin=collider.layers[0],lower=collider.layers.slice(1);
   if(!skin||!lower.length)return collider;
-  const count=skin.positions.length/3,depth=new Float32Array(count),hit={};
-  for(const layer of lower){
-    const p=layer.positions;
-    for(let v=0;v<p.length/3;v++){
-      if(!skin.closest(p[v*3],p[v*3+1],p[v*3+2],0.15*k,hit))continue;
-      for(const id of [hit.a,hit.b,hit.c])if(hit.distance>depth[id])depth[id]=hit.distance;
-    }
+  // Dense: every skin vertex asks each layer beneath for its closest point (exact, SurfaceLayer.closest),
+  // and takes its height along the skin normal; sideways from the skin normal (past a hem) the height
+  // fades out over 3 cm, so the edge of a lower garment is a ramp. Sampling only the garment's own
+  // vertices onto the skin left holes between them and a lumpy surface for the garment on top.
+  const count=skin.positions.length/3,depth=new Float32Array(count),hit={},P=skin.p??Float32Array.from(skin.positions),N=skin.n??Float32Array.from(skin.normals),used=new Uint8Array(count),fade=0.03*k;
+  for(let i=0;i<skin.triangles.length;i++)used[skin.triangles[i]]=1;
+  for(const layer of lower)for(let v=0;v<count;v++){
+    if(!used[v]||!layer.closest(P[v*3],P[v*3+1],P[v*3+2],0.12*k,hit))continue;
+    const dx=hit.x-P[v*3],dy=hit.y-P[v*3+1],dz=hit.z-P[v*3+2],along=dx*N[v*3]+dy*N[v*3+1]+dz*N[v*3+2];
+    if(along<=0)continue;
+    const side=Math.hypot(dx-along*N[v*3],dy-along*N[v*3+1],dz-along*N[v*3+2]),height=along*Math.max(0,1-side/fade);
+    if(height>depth[v])depth[v]=height;
   }
   // Spread over the skin (never lowering a point): ramps over the edges of what lies beneath.
   const neighbours=Array.from({length:count},()=>[]),t=skin.triangles;

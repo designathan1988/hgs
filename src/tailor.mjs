@@ -482,25 +482,187 @@ function taubinSmooth(points, index, iterations, lambda = 0.5, mu = -0.53) {
   }
 }
 
-/** Push every point out along the drafted surface's own normal (oriented like the body's) by `amount(v)` metres. */
-function inflate(points, index, bodyNormals, amount) {
-  const count = points.length / 3, normal = new Float32Array(points.length);
-  for (let i = 0; i < index.length; i += 3) {
-    const a = index[i], b = index[i + 1], c = index[i + 2];
-    const ux = points[b * 3] - points[a * 3], uy = points[b * 3 + 1] - points[a * 3 + 1], uz = points[b * 3 + 2] - points[a * 3 + 2];
-    const vx = points[c * 3] - points[a * 3], vy = points[c * 3 + 1] - points[a * 3 + 1], vz = points[c * 3 + 2] - points[a * 3 + 2];
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-    for (const v of [a, b, c]) { normal[v * 3] += nx; normal[v * 3 + 1] += ny; normal[v * 3 + 2] += nz; }
+/**
+ * The garment's drafted shell: the cut skin turned into fabric that keeps its ease from the body.
+ * First it alternates (a) a Laplacian step along the cloth's own normal only (concave creases
+ * such as the underbust, the cleavage, the navel and the spine flatten out, as stretched fabric
+ * spans them; points do not slide sideways, so each keeps the skin it was cut from) and (b)
+ * Blender's Shrinkwrap "Outside" snap at the `base` offset (the fabric's thickness). Open edges
+ * (hem, neckline, cuffs) are smoothed along their own curve, which removes the cut's zigzag. Then
+ * the spanned surface is offset by `room(v)` metres of ease and settled.
+ */
+function fitShell(points, index, bodyNormals, beneath, { base, room, iterations, settle = 6 }) {
+  const count = points.length / 3, neighbours = Array.from({ length: count }, () => []), edgeUse = new Map();
+  for (let i = 0; i < index.length; i += 3) for (let e = 0; e < 3; e++) {
+    const a = index[i + e], b = index[i + (e + 1) % 3], key = a < b ? a * 4194304 + b : b * 4194304 + a;
+    edgeUse.set(key, (edgeUse.get(key) ?? 0) + 1);
+    if (!neighbours[a].includes(b)) neighbours[a].push(b);
+    if (!neighbours[b].includes(a)) neighbours[b].push(a);
   }
+  const rim = Array.from({ length: count }, () => []);
+  for (const [key, used] of edgeUse) if (used === 1) { const a = Math.floor(key / 4194304), b = key % 4194304; rim[a].push(b); rim[b].push(a); }
+  const normal = new Float32Array(count * 3), next = new Float32Array(points.length), hit = {}, facing = [0, 0, 0];
+  // The cloth's own unit normals, turned outwards (the side the body normal points to).
+  const normals = () => {
+    normal.fill(0);
+    for (let i = 0; i < index.length; i += 3) {
+      const a = index[i] * 3, b = index[i + 1] * 3, c = index[i + 2] * 3;
+      const ux = points[b] - points[a], uy = points[b + 1] - points[a + 1], uz = points[b + 2] - points[a + 2];
+      const vx = points[c] - points[a], vy = points[c + 1] - points[a + 1], vz = points[c + 2] - points[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      for (const o of [a, b, c]) { normal[o] += nx; normal[o + 1] += ny; normal[o + 2] += nz; }
+    }
+    for (let v = 0; v < count; v++) {
+      const o = v * 3, length = Math.hypot(normal[o], normal[o + 1], normal[o + 2]) || 1;
+      const sign = normal[o] * bodyNormals[o] + normal[o + 1] * bodyNormals[o + 1] + normal[o + 2] * bodyNormals[o + 2] < 0 ? -1 : 1;
+      normal[o] *= sign / length; normal[o + 1] *= sign / length; normal[o + 2] *= sign / length;
+    }
+  };
+  // Shrinkwrap "Outside" with the base offset: a point nearer the surface beneath moves out along
+  // that surface's normal; one already farther stays.
+  const snap = () => {
+    for (let v = 0; v < count; v++) {
+      facing[0] = bodyNormals[v * 3]; facing[1] = bodyNormals[v * 3 + 1]; facing[2] = bodyNormals[v * 3 + 2];
+      if (!beneath.closest(points[v * 3], points[v * 3 + 1], points[v * 3 + 2], 0.12, hit, facing)) continue;
+      const push = base - hit.distance;
+      if (push > 0) { points[v * 3] += hit.nx * push; points[v * 3 + 1] += hit.ny * push; points[v * 3 + 2] += hit.nz * push; }
+    }
+  };
+  // One Laplacian step of `factor`: along the cloth's normal inside, along the curve on open edges.
+  const relax = (factor = 0.5) => {
+    normals();
+    next.set(points);
+    for (let v = 0; v < count; v++) {
+      const list = rim[v].length === 2 ? rim[v] : rim[v].length ? null : neighbours[v];
+      if (!list?.length) continue;
+      let x = 0, y = 0, z = 0;
+      for (const u of list) { x += points[u * 3]; y += points[u * 3 + 1]; z += points[u * 3 + 2]; }
+      x = x / list.length - points[v * 3]; y = y / list.length - points[v * 3 + 1]; z = z / list.length - points[v * 3 + 2];
+      if (list === rim[v]) { next[v * 3] += factor * x; next[v * 3 + 1] += factor * y; next[v * 3 + 2] += factor * z; continue; }
+      const nx = normal[v * 3], ny = normal[v * 3 + 1], nz = normal[v * 3 + 2], along = factor * (x * nx + y * ny + z * nz);
+      next[v * 3] += along * nx; next[v * 3 + 1] += along * ny; next[v * 3 + 2] += along * nz;
+    }
+    points.set(next);
+    snap();
+  };
+  // A field averaged over each vertex's neighbours, `passes` times.
+  const blur = (field, stride, passes) => {
+    const out = Float32Array.from(field);
+    for (let pass = 0; pass < passes; pass++) {
+      const copy = out.slice();
+      for (let v = 0; v < count; v++) {
+        const list = neighbours[v];
+        if (!list.length) continue;
+        for (let c = 0; c < stride; c++) { let s = copy[v * stride + c]; for (const u of list) s += copy[u * stride + c]; out[v * stride + c] = s / (list.length + 1); }
+      }
+    }
+    return out;
+  };
+  // 1. Bridge: the cut becomes stretched fabric that spans the hollows at the base offset.
+  normals(); snap();
+  for (let iteration = 0; iteration < iterations; iteration++) relax();
+  // 2. Ease: once the hollows are spanned the surface has no tight creases, so it is offset along
+  //    its own (blurred) normal by the ease without folding over itself.
+  normals();
+  const direction = blur(normal, 3, 4), amount = blur(Float32Array.from({ length: count }, (_, v) => room(v)), 1, 4);
   for (let v = 0; v < count; v++) {
-    let nx = normal[v * 3], ny = normal[v * 3 + 1], nz = normal[v * 3 + 2];
-    const l = Math.hypot(nx, ny, nz);
-    if (l < 1e-12) continue;
-    nx /= l; ny /= l; nz /= l;
-    // Face winding may run either way: the body normal says which side is out.
-    if (bodyNormals && nx * bodyNormals[v * 3] + ny * bodyNormals[v * 3 + 1] + nz * bodyNormals[v * 3 + 2] < 0) { nx = -nx; ny = -ny; nz = -nz; }
-    const d = amount(v);
-    points[v * 3] += nx * d; points[v * 3 + 1] += ny * d; points[v * 3 + 2] += nz * d;
+    const o = v * 3, length = Math.hypot(direction[o], direction[o + 1], direction[o + 2]) || 1;
+    for (let c = 0; c < 3; c++) points[o + c] += direction[o + c] / length * amount[v];
+  }
+  // 3. Settle with Taubin λ|μ steps (Taubin 1995: a shrinking then an inflating step remove small
+  //    bumps such as the nipples without shrinking the garment, so the ease stays), as many as the
+  //    looser the garment is; this also smooths what the offset sharpened (the armpit, the crotch).
+  for (let iteration = 0; iteration < settle; iteration++) { relax(0.5); relax(-0.53); }
+}
+
+/**
+ * Close the seams of a sewn garment for good: the stitched points of each seam group (paired one
+ * to one by the stitch flattening in pattern-cloth.mjs) become one vertex, with one position and
+ * one set of skin weights, so the seam cannot open in any pose and is shaded smoothly across.
+ * Triangles that collapse (a dart's tip) are dropped. Returns the new index.
+ */
+function weldSeams(panel, points) {
+  const representative = Int32Array.from({ length: points.length / 3 }, (_, v) => v);
+  for (const group of panel.seamGroups ?? []) {
+    const r = group[0], total = new Map();
+    for (let c = 0; c < 3; c++) points[r * 3 + c] = group.reduce((s, v) => s + points[v * 3 + c], 0) / group.length;
+    for (const v of group) for (let j = 0; j < 4; j++) { const w = panel.weights[v * 4 + j]; if (w > 0) total.set(panel.joints[v * 4 + j], (total.get(panel.joints[v * 4 + j]) ?? 0) + w); }
+    const top = [...total].sort((a, b) => b[1] - a[1]).slice(0, 4), sum = top.reduce((s, [, w]) => s + w, 0) || 1;
+    for (const v of group) {
+      representative[v] = r;
+      for (let c = 0; c < 3; c++) points[v * 3 + c] = points[r * 3 + c];
+      for (let j = 0; j < 4; j++) { panel.joints[v * 4 + j] = top[j]?.[0] ?? 0; panel.weights[v * 4 + j] = (top[j]?.[1] ?? 0) / sum; }
+    }
+  }
+  const index = [];
+  for (let i = 0; i < panel.index.length; i += 3) {
+    const a = representative[panel.index[i]], b = representative[panel.index[i + 1]], c = representative[panel.index[i + 2]];
+    if (a !== b && b !== c && a !== c) index.push(a, b, c);
+  }
+  return index;
+}
+
+/**
+ * Smooth the open edges of a draped garment (neckline, hem, cuffs) along their own curve with
+ * Taubin λ|μ steps, which removes the zigzag left by the particles without shrinking the opening.
+ */
+function smoothRims(points, index, passes) {
+  const uses = new Map(), rim = new Map();
+  for (let i = 0; i < index.length; i += 3) for (let e = 0; e < 3; e++) {
+    const a = index[i + e], b = index[i + (e + 1) % 3], key = a < b ? a * 4194304 + b : b * 4194304 + a;
+    uses.set(key, (uses.get(key) ?? 0) + 1);
+  }
+  for (const [key, used] of uses) if (used === 1) {
+    const a = Math.floor(key / 4194304), b = key % 4194304;
+    (rim.get(a) ?? rim.set(a, []).get(a)).push(b); (rim.get(b) ?? rim.set(b, []).get(b)).push(a);
+  }
+  const chain = [...rim].filter(([, list]) => list.length === 2);
+  for (let pass = 0; pass < passes * 2; pass++) {
+    const factor = pass % 2 ? -0.53 : 0.5, moved = chain.map(([v, [a, b]]) => [0, 1, 2].map(c => factor * ((points[a * 3 + c] + points[b * 3 + c]) / 2 - points[v * 3 + c])));
+    chain.forEach(([v], i) => { for (let c = 0; c < 3; c++) points[v * 3 + c] += moved[i][c]; });
+  }
+}
+
+/**
+ * Keep a garment `thickness` outside every layer already dressed (garments and shoes, normals
+ * turned away from the skin): each point is tested against the closest point of each layer that
+ * faces the same way (so a seam or an armpit of the layer beneath never pushes it sideways) and
+ * moved out along that layer's normal; the corrections spread over neighbours so the cloth lifts
+ * smoothly, and the test repeats until nothing is behind.
+ */
+function keepOutside(points, index, normals, layers, thickness, k) {
+  if (!layers.length) return;
+  const count = points.length / 3, hit = {}, facing = [0, 0, 0], neighbours = Array.from({ length: count }, () => []);
+  for (let i = 0; i < index.length; i += 3) for (let e = 0; e < 3; e++) { const a = index[i + e], b = index[i + (e + 1) % 3]; neighbours[a].push(b); neighbours[b].push(a); }
+  for (let pass = 0; pass < 4; pass++) {
+    const push = new Float32Array(count * 3);
+    let moved = 0;
+    for (let v = 0; v < count; v++) {
+      if (!neighbours[v].length) continue;
+      facing[0] = normals[v * 3]; facing[1] = normals[v * 3 + 1]; facing[2] = normals[v * 3 + 2];
+      let need = 0;
+      for (const layer of layers) {
+        if (!layer.closest(points[v * 3], points[v * 3 + 1], points[v * 3 + 2], 0.03 * k, hit, facing)) continue;
+        const short = thickness - hit.distance;
+        if (short <= need || hit.distance < -0.025 * k) continue;
+        need = short; push[v * 3] = hit.nx * short; push[v * 3 + 1] = hit.ny * short; push[v * 3 + 2] = hit.nz * short;
+      }
+      if (need > 0) moved++;
+    }
+    if (!moved) return;
+    for (let spread = 0; spread < 2; spread++) {
+      const next = push.slice();
+      for (let v = 0; v < count; v++) {
+        const list = neighbours[v];
+        if (!list.length) continue;
+        let x = 0, y = 0, z = 0;
+        for (const u of list) { x += push[u * 3]; y += push[u * 3 + 1]; z += push[u * 3 + 2]; }
+        x /= list.length * 2; y /= list.length * 2; z /= list.length * 2;
+        if (x * x + y * y + z * z > next[v * 3] ** 2 + next[v * 3 + 1] ** 2 + next[v * 3 + 2] ** 2) { next[v * 3] = x; next[v * 3 + 1] = y; next[v * 3 + 2] = z; }
+      }
+      push.set(next);
+    }
+    for (let i = 0; i < points.length; i++) points[i] += push[i];
   }
 }
 
@@ -566,24 +728,34 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       const lift = (0.0035 + layer * 0.0035) * k;
       for (let v = 0; v < panel.pos.length / 3; v++) for (let c = 0; c < 3; c++) panel.pos[v * 3 + c] += panel.normal[v * 3 + c] * lift;
       const points = Float32Array.from(panel.pos);
-      // The pattern is drafted from a smoothed body (Taubin λ|μ filtering
-      // removes nipples, navel and ribs without shrinking the torso), so the
-      // cloth has less area than the skin around small bumps and spans them.
-      // Looser garments are drafted from a smoother body, so they fall straight
-      // from the chest and shoulder blades instead of following every curve.
-      if (!panel.pattern) taubinSmooth(points, panel.index, Math.round(30 + garment.fit * 150));
-      // Ease: a garment is bigger than the body (wearing ease, about 6 cm round the bust, plus
-      // design ease for looser styles). The drafted shape is inflated by it, so the cloth hangs
-      // from the shoulders and hips with room and folds instead of lying on the skin like paint.
-      // Elastic bands (waistbands, cuffs) keep a quarter of it and still grip.
-      if (!panel.pattern && !panel.skirt) inflate(points, panel.index, panel.normal, v => (0.009 + garment.fit * 0.04) * k * (panel.elastic?.[v] ? 0.25 : 1));
+      // Every piece rests on the skin raised by what is already dressed (layer order), not on the
+      // nearest point of the thin garments beneath (pattern-cloth.mjs layeredCollider): a shirt
+      // under a coat keeps the coat outside it everywhere.
+      // A cut piece rests on the drafting skin (no nipples, navel or ribs to trace, see draftSkin).
+      const shell = !panel.pattern && !panel.skirt;
+      const beneath = layeredCollider(shell ? { cell: collider.cell, layers: [draftSkin(context), ...collider.layers.slice(1)] } : collider, k);
+      // Ease: a garment is bigger than the body (wearing ease, plus design ease for looser
+      // styles). The cut is drafted into a shell that spans the body's hollows and keeps the ease
+      // from it (fitShell). Gravity rests a garment on what faces up (shoulders, the top of the
+      // hips), so there the ease is a third; it hangs away from the sides and from under the bust.
+      // Elastic bands (waistbands, cuffs) grip with a quarter of it.
+      if (shell) {
+        const base = 0.004 * k, room = garment.fit * 0.038 * k;
+        fitShell(points, panel.index, panel.normal, beneath, {
+          base, iterations: Math.round(18 + garment.fit * 22), settle: Math.round(4 + garment.fit * 26),
+          // A sleeve has about half the ease of the body it is sewn to (a loose sweater: some 20 cm
+          // more round the chest, 10 cm more round the arm).
+          room: v => room * (panel.elastic?.[v] ? 0.25 : 1) * (1 - 0.65 * smooth((panel.normal[v * 3 + 1] - 0.25) / 0.6)) * (1 - 0.5 * (layout.armW[panel.origins[v]] ?? 0)),
+        });
+      }
       const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
-      // A sewn piece rests on the skin raised by what is already dressed (layer order), not on the
-      // nearest point of the thin garments beneath (pattern-cloth.mjs layeredCollider).
-      const beneath = panel.pattern ? layeredCollider(collider, k) : collider;
       resolvePenetration(points, panel.index, beneath, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
-      drapeCloth(points, panel.index, beneath, {
-        thickness: 0.004 * k, slack: 0.98 + garment.fit * 0.04, frames: 40, substeps: 5, friction: 0.9, radius: 0.05 * k,
+      // A cut piece's shell already rests at its ease (the hollows spanned, the ease hanging from
+      // what faces up): gravity has nothing left to settle. Dropping it again let the neckline fall
+      // into the neck between contacts (a sawtooth edge with skin showing). Tubes (skirts) and sewn
+      // pattern pieces start away from their rest and are draped.
+      if (!shell) drapeCloth(points, panel.index, beneath, {
+        thickness: 0.004 * k, slack: 0.995 + garment.fit * 0.02, frames: 40, substeps: 5, friction: 0.9, radius: 0.05 * k,
         bendCompliance: 3e-6, elastic: panel.elastic, normals: panel.normal, rest: pattern, pinned: panel.pinned,
         ...(panel.pattern ? {frames:30, thickness:panel.thickness, seams:panel.seams, selfCollision:true, iterations:3, particleCompliance:panel.particleCompliance, particleSlack:panel.particleSlack, particleThickness:panel.particleThickness, slack:0.97+garment.fit*0.08} : {}),
       });
@@ -602,6 +774,8 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
           for (let c=0;c<3;c++)points[v*3+c]+=edit.delta[c]*height*influence;
         }
       }
+      // Sewn pieces: the seams are welded shut, then the open edges are smoothed.
+      if (panel.pattern) { panel.index = weldSeams(panel, points); smoothRims(points, panel.index, 4); }
       // Exact final pass: nothing may end inside the skin or a lower layer.
       if (panel.pattern) {
         let start=0;
@@ -612,7 +786,10 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
           start=end;
         }
         projectPanelContacts(points,panel,beneath,k);
-      } else resolvePenetration(points, panel.index, collider, { thickness: 0.0035 * k, depth: 0.03 * k, smoothing: 2, normals: panel.normal });
+      } else resolvePenetration(points, panel.index, beneath, { thickness: 0.0035 * k, depth: 0.03 * k, smoothing: 2, normals: panel.normal });
+      // Layer order, checked on the garments themselves: the skin raised by them is an estimate,
+      // and an inner shirt showed through an outer one in patches where it was off.
+      keepOutside(points, panel.index, panel.normal, collider.layers.slice(1), panel.pattern ? panel.thickness : 0.004 * k, k);
       // Weights: a panel cut from the body keeps the weights of the skin it was
       // cut from (topology mapping, like MakeHuman proxies weighted by their
       // reference vertices), so it deforms with that skin and every layer cut
@@ -643,7 +820,8 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       geometry.setAttribute('position', new Float32BufferAttribute(points, 3)); geometry.setIndex(panel.index); geometry.computeVertexNormals();
       panel.normal = Array.from(geometry.getAttribute('normal').array);
       if(panel.pattern)for(const face of coveredPatternFaces(context,panel,points,geometry.attributes.normal.array,skin,layout))covered.add(face);
-      collider.add(points, geometry.getAttribute('normal').array, panel.index);
+      // Normals turned away from the skin, so "outside" this garment means away from the body.
+      collider.add(points, geometry.getAttribute('normal').array, panel.index, { orient: true });
       geometry.dispose();
       addHems(panel, panel.pattern ? panel.thickness * 0.4 : 0.0016 * k);
       finished.push({ panel, garment, layer });
@@ -666,7 +844,8 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   // Index range of every finished panel, drawn with its garment's roughness.
   const ranges = [];
   for (const { panel, garment, layer } of finished) {
-    const hidden = panel.origins.map(v => !panel.pattern && outerCovers(layer, v));
+    // Sewn pieces too, by the skin point each cloth point was placed over: a shirt under trousers is tucked in.
+    const hidden = panel.origins.map(v => outerCovers(layer, v));
     const offset = meshData.pos.length / 3;
     ranges.push({ start: meshData.index.length, roughness: garment.roughness });
     for (let v = 0; v < panel.pos.length / 3; v++) {
@@ -735,4 +914,23 @@ export function bodyCollider(context) {
     index.push(a, b, c, a, c, d);
   }
   return new SurfaceCollider(0.012 * layout.k).add(positions, layout.normals, index);
+}
+
+/**
+ * The skin a cut garment's shell is drafted on: the body with features under a couple of
+ * centimetres (nipples, navel, ribs, collarbone hollows) removed by Taubin λ|μ smoothing, which
+ * keeps the breasts, buttocks and limbs at their size. Fabric over such a feature stretches flat
+ * (or presses it), so the shell must not trace it. Cached per body.
+ */
+function draftSkin(context) {
+  if (context.tailorDraftSkin) return context.tailorDraftSkin;
+  const { data, positions } = context, layout = bodyLayout(context), index = [];
+  for (const face of layout.faces) {
+    const [a, b, c, d] = [0, 1, 2, 3].map(k => data.faces[face * 4 + k]);
+    index.push(a, b, c, a, c, d);
+  }
+  const smoothed = Float32Array.from(positions);
+  taubinSmooth(smoothed, index, 12);
+  context.tailorDraftSkin = new SurfaceCollider(0.012 * layout.k).add(smoothed, layout.normals, index).layers[0];
+  return context.tailorDraftSkin;
 }
