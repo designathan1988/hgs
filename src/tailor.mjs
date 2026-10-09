@@ -579,7 +579,11 @@ function skirtPanel(context, garment, layout, layer) {
     const rx = hips.rx * scale + offset, rz = hips.rz * scale + offset;
     for (let c = 0; c < columns; c++) {
       const angle = c / columns * Math.PI * 2;
-      const px = Math.sin(angle) * rx, pz = cz + Math.cos(angle) * rz;
+      // Godets: a gored skirt has fabric sectors set into its eight seams, so the hem is wider than a
+      // smooth cone and the extra hangs in flutes; outwards only, more of it lower down.
+      // Eight godets a few centimetres wide at the hem each: the hem some 30 % wider at full flare.
+      const godet = 1 + 0.6 * garment.flare * Math.pow(s, 1.5) * 0.5 * (1 + Math.cos(angle * 8));
+      const px = Math.sin(angle) * rx * godet, pz = cz + Math.cos(angle) * rz * godet;
       const side = smooth((px / Math.max(1e-3, rx) + 1) / 2), legs = 0.75 * s;
       panel.vertex(`s${r}:${c}`, () => ({ pos: [px, y, pz], normal: [Math.sin(angle), 0, Math.cos(angle)], uv: [angle * (rx + rz) / 2, top - y],
         joints: [pelvis, thighL, thighR, 0], weights: [1 - legs, legs * side, legs * (1 - side), 0], key: 9000000 + layer * 10000 + r * columns + c }));
