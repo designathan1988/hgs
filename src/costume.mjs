@@ -244,15 +244,21 @@ export function buildCostume(context, garments) {
         if (!group.length) continue;
         const c = chain('pelvis', group, `costume_${layer}_fringe_${s}`, { stiffness: 0.55, gravityPower: 0.35, dragForce: 0.45, hitRadius: round(0.02 * k), colliders: ['hips', 'legs'] });
         for (const m of group) {
-          const part = parts.fringe, first = part.pos.length / 3, root = m.at(0);
+          const part = parts.fringe, root = m.at(0);
           // Strands over a leg (front, back and outside of each thigh) follow that thigh in part;
           // those between the legs only swing.
           const follow = { bone: root.x >= cx ? 'thigh_l' : 'thigh_r', amount: 0.75 * smooth(0.01 * k, 0.06 * k, Math.abs(root.x - cx)) };
-          for (let r = 0; r <= rows; r++) {
-            const t = r / rows, centre = m.at(t), w = weightsAt('pelvis', c, Math.max(0, (t - m.swing) / (1 - m.swing)), follow), color = colorA.clone().lerp(colorB, t * t * 0.5);
-            for (const u of [0, 1]) { part.vertex(centre.clone().addScaledVector(m.side, (u - 0.5) * m.width), u, t, color, w); garmentOf.push(layer); }
+          // Two tiers, as a fringe skirt is sewn in overlapping rows: the outer one 6 mm further out and
+          // half a strand to the side, so its strands hang in the gaps of the inner one.
+          const outward = new Vector3(root.x - cx, 0, root.z - cz).normalize();
+          for (const tier of [0, 1]) {
+            const first = part.pos.length / 3, shift = m.side.clone().multiplyScalar(tier * m.width / 8).addScaledVector(outward, tier * 0.006 * k);
+            for (let r = 0; r <= rows; r++) {
+              const t = r / rows, centre = m.at(t).add(shift), w = weightsAt('pelvis', c, Math.max(0, (t - m.swing) / (1 - m.swing)), follow), color = colorA.clone().lerp(colorB, t * t * 0.5);
+              for (const u of [0, 1]) { part.vertex(centre.clone().addScaledVector(m.side, (u - 0.5) * m.width), u, t, color, w); garmentOf.push(layer); }
+            }
+            for (let r = 0; r < rows; r++) { const a = first + r * 2; part.quad(a, a + 1, a + 3, a + 2); }
           }
-          for (let r = 0; r < rows; r++) { const a = first + r * 2; part.quad(a, a + 1, a + 3, a + 2); }
         }
       }
     }
