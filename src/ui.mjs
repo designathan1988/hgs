@@ -160,6 +160,17 @@ export class StudioUI {
     this.editorHistory = { undo: () => editor.undo(), redo: () => editor.redo(), canUndo: () => editor.undoStack.length > 0, canRedo: () => editor.redoStack.length > 0 };
     this.queueCharacter();
     this.applyMode();
+    // The body (with hair, no clothes) shows in about 2 s while the garments drape; the dressed
+    // character replaces it. A cached character arrives sooner, so the preview starts only if
+    // nothing is on screen after 0.8 s (it would only compete for the CPU).
+    setTimeout(() => {
+      if (renderer.current) return;
+      renderer.showPreview(this.snapshotPerson()).then(() => {
+        if (!renderer.preview) return;
+        this.store.progress('build', 'Vestindo a roupa…');
+        this.updateMeta(); this.scheduleRender();
+      });
+    }, 800);
   }
 
   // ------------------------------------------------------------ actions

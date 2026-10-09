@@ -218,7 +218,7 @@ export class Renderer {
       this.person = person;
       this.current = human; this.scene.add(human.group);
       // Live reshaping ties itself to this build on its first use; the user's clip is rebuilt for it.
-      this.live = null; this.liveReady = null; this.clipSource = undefined;
+      this.live = null; this.liveReady = null; this.clipSource = undefined; this.preview = null;
       this.mixer = new AnimationMixer(human.group);
       // Hair joint chains swing after the body animation (VRMC_springBone algorithm).
       this.springs = new SpringBones(human.group, human.group.userData.hairSprings);
@@ -238,6 +238,26 @@ export class Renderer {
       if (error.name !== 'AbortError') { this.onError(error.message); console.error(error); }
       return false;
     } finally { if (token === this.token) this.buildController = null; }
+  }
+  /**
+   * Opening: the dressed build drapes every garment (seconds; NN/g: past 10 s attention is lost),
+   * while the body with its hair and no clothes is ready in about 1.6 s. It is shown at once if the
+   * dressed character has not arrived yet, which then replaces it (setCharacter).
+   */
+  async showPreview(person) {
+    if (this.current || typeof Worker === 'undefined') return;
+    let human;
+    try { human = await this.buildCharacter(studioSpec(person, { undressed: true })); }
+    catch (error) { console.warn('Preview unavailable', error); return; }
+    if (this.current || this.frozen || this.poseMode) { human.dispose(); return; }
+    this.person = person; this.current = human; this.preview = human;
+    this.scene.add(human.group);
+    this.live = null; this.liveReady = null; this.clipSource = undefined;
+    this.mixer = new AnimationMixer(human.group);
+    this.springs = new SpringBones(human.group, human.group.userData.hairSprings);
+    this.action = null;
+    this.setPresentation(person);
+    this.camera.view(this.camera.currentView, human.metrics.height);
   }
   /** Animation, playback speed and lighting change without rebuilding the mesh. */
   setPresentation(person) {
