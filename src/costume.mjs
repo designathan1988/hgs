@@ -157,15 +157,20 @@ export function buildCostume(context, garments) {
     if (garment.type === 'headdress' || garment.type === 'crown') {
       // A band round the head at the hairline (3.5 cm tall), jewelled; a crown adds points above it.
       const head = headFrame(layout, positions), band = solid(garment.fabric), columns = 48, w = [[index('head'), 0, 0, 0], [1, 0, 0, 0]];
-      const tall = (garment.type === 'crown' ? 0.03 : 0.035) * k, first = band.pos.length / 3, ring = [];
+      // A band follows the head (its radius at the bottom and top of the band, off it by the hair)
+      // with a rounded profile, as a padded jewelled band is, not a straight cylinder.
+      const tall = (garment.type === 'crown' ? 0.03 : 0.025) * k, first = band.pos.length / 3, ring = [];
       for (let c = 0; c <= columns; c++) {
         const angle = c / columns * Math.PI * 2, dir = new Vector3(Math.sin(angle), 0, Math.cos(angle));
-        const r = Math.max(head.radius(angle, head.centre.y), head.radius(angle, head.centre.y + tall)) + 0.022 * k;
-        const bottom = head.centre.clone().addScaledVector(dir, r), top = bottom.clone().add(new Vector3(0, tall, 0)).addScaledVector(dir, -0.006 * k);
-        ring.push({ angle, dir, bottom, top, r });
-        band.vertex(bottom, angle * r, 0, colorA, w); band.vertex(top, angle * r, tall, colorA, w); garmentOf.push(layer, layer);
+        // Close on the bare forehead, room for the hair at the sides and back.
+        const facing = Math.abs(Math.atan2(Math.sin(angle), Math.cos(angle))), off = (0.006 + 0.014 * smooth(0.6, 1.3, facing)) * k;
+        const rBottom = head.radius(angle, head.centre.y) + off, rTop = head.radius(angle, head.centre.y + tall) + off;
+        const bottom = head.centre.clone().addScaledVector(dir, rBottom), top = head.centre.clone().add(new Vector3(0, tall, 0)).addScaledVector(dir, Math.min(rTop, rBottom));
+        const middle = bottom.clone().lerp(top, 0.5).addScaledVector(dir, 0.004 * k);
+        ring.push({ angle, dir, bottom, top, r: rBottom });
+        band.vertex(bottom, angle * rBottom, 0, colorA, w); band.vertex(middle, angle * rBottom, tall / 2, colorA, w); band.vertex(top, angle * rBottom, tall, colorA, w); garmentOf.push(layer, layer, layer);
       }
-      for (let c = 0; c < columns; c++) { const a = first + c * 2; band.quad(a, a + 2, a + 3, a + 1); }
+      for (let c = 0; c < columns; c++) { const a = first + c * 3; band.quad(a, a + 3, a + 4, a + 1); band.quad(a + 1, a + 4, a + 5, a + 2); }
       if (garment.type === 'crown') {
         // Points every 30°, taller at the front.
         const rise = (0.025 + 0.06 * garment.length) * k;
@@ -176,22 +181,30 @@ export function buildCostume(context, garments) {
           band.index.push(s, s + 1, s + 2);
         }
       } else {
-        // Esplendor: plumes rising from the band all round except over the face, fanned outwards.
-        const count = 12 + Math.round(garment.flare * 14), length = (0.3 + 0.8 * garment.length) * k, spread = 0.25 + 0.75 * garment.flare;
-        const members = Array.from({ length: count }, (_, i) => {
-          // Azimuth from 35° to 325°, 0 being the face.
-          const azimuth = (35 + 290 * (count > 1 ? i / (count - 1) : 0.5)) * Math.PI / 180, ringPoint = ring[Math.round(azimuth / (Math.PI * 2) * columns) % columns];
-          const dir = new Vector3(Math.sin(azimuth) * spread, 1, Math.cos(azimuth) * spread * 0.8 - 0.25).normalize();
-          const L = length * (0.75 + 0.25 * Math.abs(Math.cos(azimuth / 2)));
-          const start = ringPoint.top.clone().addScaledVector(ringPoint.dir, 0.004 * k);
-          return { azimuth, swing: 0.15, at: t => start.clone().addScaledVector(dir, L * t).add(new Vector3(0, -0.05 * L * t * t, -0.06 * L * t * t)), side: new Vector3(Math.cos(azimuth), 0, -Math.sin(azimuth)), width: (0.05 + 0.04 * garment.length) * k };
-        });
+        // Esplendor: a fan of plumes (a halo) radiating from the back of the band in the plane behind the
+        // head, tilted back, in two rows (long outer plumes, shorter inner ones in front of them). Plumes
+        // fanned straight up from the band all round read as two wings in a V from the front.
+        const length = (0.3 + 0.8 * garment.length) * k, half = (60 + 40 * garment.flare) * Math.PI / 180;
+        const rows = [{ count: 11 + Math.round(garment.flare * 10), scale: 1, lift: 0 }, { count: 8 + Math.round(garment.flare * 6), scale: 0.66, lift: 0.012 * k }];
+        const members = rows.flatMap(({ count, scale, lift }) => Array.from({ length: count }, (_, i) => {
+          // φ: the plume's angle from straight up, left to right; its root on the back of the band.
+          const phi = -half + 2 * half * (count > 1 ? i / (count - 1) : 0.5), azimuth = Math.PI + phi * 0.55;
+          const ringPoint = ring[((Math.round(azimuth / (Math.PI * 2) * columns) % columns) + columns) % columns];
+          const dir = new Vector3(Math.sin(phi), Math.cos(phi), -0.3).normalize();
+          const L = length * scale * (1 - 0.18 * Math.abs(phi) / half), start = ringPoint.top.clone().add(new Vector3(0, lift, 0)).addScaledVector(ringPoint.dir, (scale < 1 ? 0.012 : 0.004) * k);
+          // Across the plume in the fan's plane; the second card crosses it, so it has volume from the side.
+          const across = new Vector3(Math.cos(phi), -Math.sin(phi), 0), cross = dir.clone().cross(across).normalize();
+          return { azimuth: phi, swing: 0.15, at: t => start.clone().addScaledVector(dir, L * t).add(new Vector3(0, -0.04 * L * t * t, -0.05 * L * t * t)), side: across, cross, width: (0.06 + 0.05 * garment.length) * k * (0.85 + 0.15 * scale) };
+        }));
         const sectors = 3;
         for (let s = 0; s < sectors; s++) {
-          const group = members.filter(m => Math.min(sectors - 1, Math.floor((m.azimuth - 35 * Math.PI / 180) / (290 * Math.PI / 180 + 1e-6) * sectors)) === s);
+          const group = members.filter(m => Math.min(sectors - 1, Math.floor((m.azimuth + half) / (2 * half + 1e-6) * sectors)) === s);
           if (!group.length) continue;
           const c = chain('head', group, `costume_${layer}_head_${s}`, { stiffness: 1.8, gravityPower: 0.04, dragForce: 0.35, hitRadius: round(0.015 * k), colliders: ['head'] });
-          for (const m of group) feather(parts.feather, m.at, m.side, m.width, colorA, colorB, 'head', c, m.swing, layer);
+          for (const m of group) {
+            feather(parts.feather, m.at, m.side, m.width, colorA, colorB, 'head', c, m.swing, layer);
+            feather(parts.feather, m.at, m.cross, m.width * 0.8, colorA, colorB, 'head', c, m.swing, layer);
+          }
         }
       }
     }

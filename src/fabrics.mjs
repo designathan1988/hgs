@@ -208,12 +208,20 @@ function featherCanvas() {
   g.clearRect(0, 0, W, H);
   g.lineCap = 'round';
   // Canvas row 0 is the tip (v = 1 after the texture's flipY), the bottom row the quill.
-  const vane = t => Math.pow(Math.sin(Math.PI * Math.min(1, 0.08 + t * 1.02)), 0.55) * (t < 0.08 ? t / 0.08 : 1);
-  for (let i = 0; i < 900; i++) {
-    const t = 0.04 + 0.96 * hash(i, 1), y = H * (1 - t), side = i % 2 ? 1 : -1, reach = (W / 2 - 3) * vane(t) * (0.75 + 0.25 * hash(i, 2));
+  // The vane stays inside 84% of the card's width and fades out before its tip, so no card edge shows.
+  const vane = t => Math.pow(Math.sin(Math.PI * Math.min(1, 0.08 + t * 0.98)), 0.55) * (t < 0.08 ? t / 0.08 : 1);
+  // A soft body under the barbs: a plume (an ostrich plume) is a mass of fine barbs, not lines on air.
+  for (let r = 0; r < 64; r++) {
+    const t = 0.06 + 0.88 * r / 63, y = H * (1 - t), reach = (W / 2) * 0.62 * vane(t);
+    const fill = g.createLinearGradient(cx - reach, 0, cx + reach, 0);
+    fill.addColorStop(0, 'rgba(255,255,255,0)'); fill.addColorStop(0.5, 'rgba(255,255,255,0.55)'); fill.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = fill; g.fillRect(cx - reach, y - H / 64, 2 * reach, H / 32);
+  }
+  for (let i = 0; i < 2400; i++) {
+    const t = 0.04 + 0.92 * hash(i, 1), y = H * (1 - t), side = i % 2 ? 1 : -1, reach = (W / 2) * 0.84 * vane(t) * (0.7 + 0.3 * hash(i, 2));
     const lean = reach * (0.55 + 0.3 * hash(i, 3)), wave = (hash(i, 4) - 0.5) * 10;
-    g.strokeStyle = `rgba(255,255,255,${0.35 + 0.55 * hash(i, 5)})`;
-    g.lineWidth = 1 + hash(i, 6);
+    g.strokeStyle = `rgba(255,255,255,${0.55 + 0.45 * hash(i, 5)})`;
+    g.lineWidth = 1.6 + 1.6 * hash(i, 6);
     g.beginPath(); g.moveTo(cx, y);
     g.quadraticCurveTo(cx + side * reach * 0.5, y - lean * 0.35 + wave, cx + side * reach, y - lean);
     g.stroke();
