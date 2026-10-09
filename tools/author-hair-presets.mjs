@@ -7,6 +7,7 @@ import { writeFileSync } from 'node:fs';
 import { QuadraticBezierCurve3, Raycaster, Vector3 } from 'three';
 import { createHuman } from '../src/human-three.mjs';
 import { LOCK_POINTS as N, combLock, makeLock, prepareLocks, resamplePolyline, rootFromHit, serializeLocks, setLockLength } from '../src/locks.mjs';
+import { normalizeHairFusion } from '../src/hair-fusion.mjs';
 
 // The studio's default character and outfit: hair that reaches the shoulders lies on the clothes.
 const human = await createHuman({ seed: 42, gender: 0, ageYears: 28, heightMeters: 1.72, hair: { style: 'none' }, clothing: { style: 'female_casualsuit01' } });
@@ -79,7 +80,10 @@ function cutBelow(state, y, which = state.locks) {
  * at the parting, so it closes into a thin line), the back pulled down and
  * the front hairline swept back. Thin, wide locks overlap like shingles.
  */
-const base = { width: 0.055, volume: 0.12, stiffness: 0.5 };
+const base = { width: 0.06, volume: 0.12, stiffness: 0.5 };
+// The rows next to the scalp (the parting, the hairline) use the dense strand variants (group 'base',
+// hair-cards.mjs): they close over the skin, and the looser locks over them break the surface up.
+const dense = { group: 'base' };
 /**
  * One combing direction field for the whole head, so neighbouring locks run
  * almost parallel (no weave): away from the parting to the side, down, and
@@ -96,7 +100,7 @@ function parted(state, length, extra = {}) {
   // side, so the two halves meet with no open valley between them.
   for (let k = 0; k < 10; k++) {
     const t = k / 9, a = 0.48 + t * (Math.PI - 1.1), d = V(0, Math.sin(a), Math.cos(a));
-    for (const side of [1, -1]) comb(state, d, flowAt(d, side), length, params, {}, false);
+    for (const side of [1, -1]) comb(state, d, flowAt(d, side), length, { ...params, ...dense }, {}, false);
   }
   for (let k = 0; k < 9; k++) {
     const t = k / 8, a = 0.62 + t * (Math.PI - 1.37), d = V(0.33, Math.sin(a), Math.cos(a));
@@ -107,16 +111,27 @@ function parted(state, length, extra = {}) {
     comb(state, V(Math.sin(th) * Math.cos(el), Math.sin(el), Math.cos(th) * Math.cos(el)), V(0.15, -1, -0.3), length * 0.92, params);
   }
   for (const el of [0.6, 0.33, 0.06]) comb(state, V(0, Math.sin(el), -Math.cos(el)), V(0, -1, -0.3), length * 0.92, params, {}, false);
-  // Front hairline, on the same field (back over the temples).
-  for (const th of [0.3, 0.55, 0.8]) {
+  // Front hairline, on the same field (back over the temples): dense and twice as many, so no skin
+  // shows between the locks lying over the temples.
+  for (const th of [0.25, 0.4, 0.55, 0.7, 0.85, 1.0]) {
     const d = V(Math.sin(th) * Math.cos(0.42), Math.sin(0.42), Math.cos(th) * Math.cos(0.42));
-    comb(state, d, flowAt(d, 1), length * 0.86, params);
+    comb(state, d, flowAt(d, 1), length * 0.86, { ...params, ...dense });
+  }
+}
+/** An under layer for long hair: rows at the back and sides hanging under the top layer, for its fullness. */
+function underLayer(state, length, extra = {}) {
+  const params = { ...base, ...dense, ...extra };
+  for (const [el, count] of [[0.25, 7], [-0.05, 7], [-0.3, 5]]) for (let k = 0; k < count; k++) {
+    const th = Math.PI * (0.5 + (k + 0.5) / count);
+    comb(state, V(Math.sin(th) * Math.cos(el), Math.sin(el), Math.cos(th) * Math.cos(el)), V(0.1 * Math.sign(Math.sin(th)), -1, -0.2), length, params);
   }
 }
 
 const presets = [];
 function save(id, name, build) {
   const state = prepareLocks(human.context, null);
+  // Version 2 files keep each lock's group (the dense base rows).
+  state.fusion = normalizeHairFusion({ groups: [{ id: 'main', name: 'Principal' }, { id: 'base', name: 'Base', fuse: false }] });
   build(state);
   const data = serializeLocks(state);
   presets.push({ id, name, data });
@@ -125,9 +140,10 @@ function save(id, name, build) {
 const C = (() => prepareLocks(human.context, null).frame.C)();
 
 save('longo', 'Longo', state => {
-  // Wide to the tips, so the long locks close into one sheet.
-  parted(state, 0.34, { taper: 0.7 });
-  settle(state); cutBelow(state, C.y - 0.33); settle(state);
+  // Down to the middle of the back: an under layer for fullness, wide locks closing into one sheet.
+  underLayer(state, 0.44, { taper: 0.65 });
+  parted(state, 0.46, { taper: 0.65 });
+  settle(state); cutBelow(state, C.y - 0.42); settle(state);
 });
 save('chanel', 'Chanel', state => {
   parted(state, 0.24, { taper: 0.75 });
@@ -160,13 +176,17 @@ save('curto', 'Curto', state => {
   }
   settle(state);
 });
+// Waves and curls by hair type (Andre Walker; locks.mjs hairTypes): the S or the ringlet is drawn in the
+// strand texture over a looser wave of the clump, not as a twisted ribbon of card.
 save('ondulado', 'Ondulado', state => {
-  parted(state, 0.3, { curl: 0.35, turns: 2.5 });
-  settle(state); cutBelow(state, C.y - 0.24); settle(state);
+  underLayer(state, 0.3, { type: '2b' });
+  parted(state, 0.32, { type: '2b' });
+  settle(state); cutBelow(state, C.y - 0.26); settle(state);
 });
 save('cacheado', 'Cacheado', state => {
-  parted(state, 0.32, { curl: 0.85, turns: 4.5, volume: 0.16 });
-  settle(state);
+  underLayer(state, 0.28, { type: '3b', volume: 0.2 });
+  parted(state, 0.3, { type: '3b', volume: 0.2, width: 0.065 });
+  settle(state); cutBelow(state, C.y - 0.22); settle(state);
 });
 presets.push({ id: 'careca', name: 'Careca', data: null });
 
