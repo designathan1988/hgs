@@ -95,7 +95,8 @@ export class HairEditor {
   /** Rebuild the hair cap from the locks' current combing (after an edit, not during a drag). */
   updateCap() {
     if (!this.capMesh) return;
-    const part = locksCap(this.state);
+    // Over a ready-made base the base covers the scalp (as the character build does).
+    const part = this.overBase ? null : locksCap(this.state);
     this.capMesh.geometry.dispose();
     this.capMesh.geometry = part ? capGeometry(part) : new BufferGeometry();
   }

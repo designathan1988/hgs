@@ -867,7 +867,8 @@ export async function dressHuman(context, spec) {
         context.group.add(mesh);
         mesh.bind(context.body.skeleton, context.body.bindMatrix);
         // The hair cap: the scalp under the cards covered with combed strands (off with the hairstyle's `scalp` flag).
-        const cap = context.lod === 'low' ? null : locksCap(state);
+        // Over a ready-made base the base covers the scalp: no cap (it showed under a fringe).
+        const cap = context.lod === 'low' || (spec.hairBase && hairStyles.has(spec.hairBase)) ? null : locksCap(state);
         if (cap) {
           const point = new Vector3(), joints = [], weights = [];
           for (let i = 0; i < cap.pos.length; i += 3) { const [j, w] = rig.weightsAt(point.fromArray(cap.pos, i)); joints.push(...j); weights.push(...w); }
