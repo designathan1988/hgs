@@ -256,6 +256,41 @@ export function tabs(container, { label, names, selected, onPick, panelId }) {
   return buttons;
 }
 
+/**
+ * Tabs with an icon and a short name inside a section (the movement
+ * categories): the same APG Tabs keyboard (Left/Right wrap, Home/End,
+ * automatic activation) and one panel shown at a time, switched in place (no
+ * panel rebuild, the focus stays on the tab). `items` is [[name, glyph, title?]];
+ * `fill(panel, i)` puts tab i's content in the panel; `onPick(i)` remembers it.
+ */
+export function iconTabs({ label, items, selected, fill, onPick, className = 'clip-cats', tabClass = 'clip-cat' }) {
+  const panelId = nextId('tp');
+  const panel = h('div', { id: panelId, role: 'tabpanel' });
+  const choose = (i, focus = false) => {
+    buttons.forEach((b, k) => { b.classList.toggle('on', k === i); b.setAttribute('aria-selected', String(k === i)); b.tabIndex = k === i ? 0 : -1; });
+    panel.setAttribute('aria-labelledby', buttons[i].id);
+    panel.replaceChildren(); fill(panel, i); onPick?.(i);
+    if (focus) buttons[i].focus();
+  };
+  const buttons = items.map(([name, glyph, title], i) => h('button', {
+    type: 'button', role: 'tab', class: tabClass, id: `${panelId}-t${i}`, 'aria-selected': 'false', 'aria-controls': panelId,
+    tabindex: '-1', title: title ?? name, onclick: () => choose(i),
+  }, icon(glyph, 20), h('span', { text: name })));
+  const list = h('div', { class: className, role: 'tablist', 'aria-label': label }, buttons);
+  list.addEventListener('keydown', event => {
+    const at = buttons.indexOf(document.activeElement);
+    if (at < 0) return;
+    const to = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: buttons.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    choose((to + buttons.length) % buttons.length, true);
+  });
+  buttons.forEach((b, k) => { b.classList.toggle('on', k === selected); b.setAttribute('aria-selected', String(k === selected)); b.tabIndex = k === selected ? 0 : -1; });
+  panel.setAttribute('aria-labelledby', buttons[selected].id);
+  fill(panel, selected);
+  return { list, panel };
+}
+
 // --------------------------------------------------------------- popovers
 const popovers = [];
 /** A button that opens a panel: aria-expanded, Esc or a click outside closes it, focus returns to the button. */

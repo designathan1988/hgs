@@ -1,7 +1,8 @@
 // Animação panel: the clip library, posing and the user's own timeline (body and face tracks).
 // Rendered by StudioUI.renderAnimation (ui.mjs) with the UI's own helpers, in its compact style:
-// one line per control, icons with the explanation in the tooltip, destructive actions at the right.
-import { h, iconButton, chips, iconChoices, segmented, toggleChips } from './ui-kit.mjs';
+// three tabs (Movimento | Pose | Linha do tempo), one line per control, icons with the explanation
+// in the tooltip, destructive actions at the right.
+import { h, iconButton, chips, iconChoices, iconTabs, segmented, toggleChips } from './ui-kit.mjs';
 import { icon } from './icons.mjs';
 import { clipGroups, clipNames, clipLabels, libraryKeys, libraryPose, libraryVariant, poseLibrary } from './motion.mjs';
 import { clearKey, importAnimation, insertMotion, interpolations, moveKey, poseAt, sameTime, setKey } from './timeline.mjs';
@@ -12,6 +13,16 @@ import { animationNames, expressionNames } from './state.mjs';
 const CUSTOM = () => animationNames.length - 1;
 const expressionGlyphs = ['exNeutral', 'exRelaxed', 'exHappy', 'exSmile', 'exLaugh', 'exSad', 'exAngry', 'exAnnoyed', 'exSurprised', 'exWorried', 'exTired', 'exTalking'];
 const poseNames = { A: 'Repouso (A)', T: 'T', natural: 'Em pé', hips: 'Mãos na cintura', sit: 'Sentado', wave: 'Acenando', run: 'Correndo' };
+// The library's categories as tabs: [short name, glyph] in clipGroups order (the full name in the tooltip).
+const categoryTabs = { Parado: ['Parado', 'stand'], 'Andar e correr': ['Andar', 'run'], Festa: ['Festa', 'dance'], Gestos: ['Gestos', 'wave'], Sentar: ['Sentar', 'sit'] };
+// A pictogram per movement (icons.mjs): the same stick figure, posed.
+const clipGlyphs = {
+  idle: 'stand', breathe: 'breathe', look_around: 'look', use_phone: 'phone', carry: 'carry',
+  walk: 'walk', stroll: 'walk', walk_cool: 'walk', fast_walk: 'run', jog: 'run', run: 'run', stop: 'stop', turn: 'turn', catwalk: 'catwalk', runway_walk: 'catwalk',
+  samba: 'samba', dance: 'dance', dance_cool: 'dance', dance_silly: 'dance', dance_energetic: 'dance', dance_happy: 'dance', cheer: 'cheer', clap: 'clap',
+  talk: 'talk', gesture: 'gesture', wave: 'wave', laugh: 'exLaugh', shrug: 'shrug', interact: 'knock',
+  sit: 'sit', sit_idle: 'sitIdle', stand_up: 'standUp', crouch: 'crouch',
+};
 
 // Bones the user can pick, in Portuguese, by region.
 const part = { pelvis: 'Quadril', spine_01: 'Lombar', spine_02: 'Tronco', spine_03: 'Peito', neck_01: 'Pescoço', head: 'Cabeça',
@@ -32,21 +43,20 @@ const boneRegions = [
 ];
 
 export function renderAnimationPanel(ui) {
-  renderMotion(ui);
-  const stance = ui.group('Postura', { open: false });
-  stance.append(chips({ label: 'Postura parada', items: ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], selected: ui.person.pose, onPick: v => ui.update('pose', v) }));
-  renderPosing(ui);
+  const tab = ui.useTabs(['Movimento', 'Pose', 'Linha do tempo']);
+  if (tab === 0) { renderMotion(ui); return; }
+  if (tab === 1) { renderPosing(ui); return; }
   renderTimeline(ui);
 }
 
-/** Movimento: play/pause, the library by group, speed, and copying the movement into the user's clip. */
+/** Movimento: play/pause and speed, the library one category at a time (icon cards), the standing stance. */
 function renderMotion(ui) {
-  const r = ui.renderer, group = ui.group('Movimento');
+  const r = ui.renderer, play = ui.pane('Tocar');
   const action = () => r?.action, playing = action() ? !action().paused : true;
   const posing = Boolean(ui.state.ui.posing), current = posing ? -1 : ui.person.animation;
   const id = clipNames[ui.person.animation];
   const captured = id && r?.motion ? libraryVariant(r.motion, id, ui.person.gender) : null;
-  group.append(h('div', { class: 'icon-bar' },
+  play.append(h('div', { class: 'icon-bar' },
     iconButton(playing ? 'pause' : 'resume', playing ? 'Pausar' : 'Tocar', event => {
       const a = action(); if (!a) return;
       a.paused = !a.paused;
@@ -55,17 +65,31 @@ function renderMotion(ui) {
     }),
     iconButton('reset', 'Repetir do início', () => r?.replay()),
     h('span', { class: 'spacer' }),
-    iconButton('plus', captured ? `Copiar "${clipLabels[ui.person.animation]}" para a sua animação, a partir do tempo ${(ui.timeAt ?? 0).toFixed(1).replace('.', ',')} s` : 'Escolha um movimento capturado para copiar', () => copyToTimeline(ui, captured), { disabled: !captured })));
-  // One movement plays; while posing none is lit (picking one leaves Posar).
+    iconButton('key', captured ? `Copiar "${clipLabels[ui.person.animation]}" para a sua animação, a partir do tempo ${(ui.timeAt ?? 0).toFixed(1).replace('.', ',')} s` : 'Escolha um movimento capturado para copiar para a sua animação', () => copyToTimeline(ui, captured), { disabled: !captured })));
+  ui.range(play, 'animationSpeed', 'Velocidade', 0.4, 1.8, 0.01, '×');
+
+  // The library: one category at a time (tabs with icons), its movements as cards. One plays; while posing none is lit.
+  const library = ui.pane('Movimentos');
   const pick = i => { if (posing) ui.store.dispatch({ type: 'ui/set', changes: { posing: false } }); ui.update('animation', i); };
-  for (const [title, ids] of clipGroups) {
-    const indices = ids.map(name => clipNames.indexOf(name)).filter(i => i >= 0);
-    const list = h('div', { class: 'anim-group', title: 'Capturas: Microsoft Rocketbox (MIT) · Parado e Sambar: procedurais' },
-      h('span', { class: 'anim-group-label', text: title }),
-      chips({ label: title, items: indices.map(i => clipLabels[i]), selected: indices.indexOf(current), onPick: k => pick(indices[k]) }));
-    group.append(list);
-  }
-  ui.range(group, 'animationSpeed', 'Velocidade', 0.4, 1.8, 0.01, '×');
+  const playingGroup = clipGroups.findIndex(([, ids]) => ids.includes(clipNames[current]));
+  ui.clipCategory ??= Math.max(0, playingGroup);
+  const { list, panel } = iconTabs({
+    label: 'Categorias de movimento', selected: ui.clipCategory,
+    items: clipGroups.map(([title]) => [...(categoryTabs[title] ?? [title, 'play']), title]),
+    onPick: i => { ui.clipCategory = i; },
+    fill: (host, i) => {
+      const indices = clipGroups[i][1].map(name => clipNames.indexOf(name)).filter(k => k >= 0);
+      const cards = indices.map(k => h('button', {
+        type: 'button', class: `clip-card${k === current ? ' on' : ''}`, 'aria-pressed': String(k === current), title: `${clipLabels[k]}${['idle', 'samba', 'runway_walk'].includes(clipNames[k]) ? ' (procedural)' : ' (captura Microsoft Rocketbox, MIT)'}`,
+        onclick: () => { for (const card of cards) { const on = card === cards[indices.indexOf(k)]; card.classList.toggle('on', on); card.setAttribute('aria-pressed', String(on)); } pick(k); },
+      }, icon(clipGlyphs[clipNames[k]] ?? 'play', 24), h('span', { text: clipLabels[k] })));
+      host.append(h('div', { class: 'clip-grid', role: 'group', 'aria-label': clipGroups[i][0] }, cards));
+    },
+  });
+  library.append(list, panel);
+
+  const stance = ui.pane('Postura parada');
+  stance.append(chips({ label: 'Postura parada', items: ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], selected: ui.person.pose, onPick: v => ui.update('pose', v) }));
 }
 
 /** Captured motion → body keys of the user's clip from the timeline's time (10 per second, at most 20 s). */
@@ -84,7 +108,7 @@ function copyToTimeline(ui, variant) {
 /** Pose: posing on/off, symmetry and limits, ready poses, the chosen bone in degrees, pins, mirror. */
 function renderPosing(ui) {
   const r = ui.renderer, editor = r?.poseEditor, on = Boolean(ui.state.ui.posing);
-  const group = ui.group('Pose');
+  const group = ui.pane('Posar');
   const flag = (glyph, title, get, set) => h('button', { type: 'button', class: `icon-button${get() ? ' on' : ''}`, 'aria-pressed': String(get()), title, 'aria-label': title,
     onclick: event => { set(!get()); event.currentTarget.classList.toggle('on', get()); event.currentTarget.setAttribute('aria-pressed', String(get())); ui.scheduleRender(); } }, icon(glyph, 18));
   group.append(h('div', { class: 'mode-row' },
@@ -101,9 +125,10 @@ function renderPosing(ui) {
   if (!on || !editor?.active) return;
   editor.onCommit = posing => ui.patch({ posing }, { history: 'posing' });
   editor.onSelect = () => ui.scheduleRender();
-  ui.setHint('Clique numa parte e gire pelo anel · esferas: laranja mãos e pés, azul quadril · botão direito: girar');
+  ui.setHint('Clique numa parte e gire pelo anel · esferas: mãos, pés e quadril');
 
   // The chosen bone: a list for precision (fingers are small to click) and its angles in degrees.
+  const bone = ui.pane('Parte escolhida');
   const chosen = editor.selected?.isBone ? editor.selected.name : null;
   const select = h('select', { 'aria-label': 'Parte escolhida', title: 'Parte escolhida (ou clique no corpo)' },
     h('option', { value: '', text: chosen || editor.selected ? (editor.selected?.name === 'ik_pelvis' ? 'Quadril (mover)' : '—') : 'Escolha uma parte…' }),
@@ -111,20 +136,20 @@ function renderPosing(ui) {
       const option = h('option', { value: name, text: boneLabel(name) }); option.selected = name === chosen; return option;
     }))));
   select.addEventListener('change', () => { if (select.value) editor.selectName(select.value); });
-  group.append(h('div', { class: 'field' }, h('label', { text: 'Parte' }), select));
+  bone.append(h('div', { class: 'field wide' }, h('label', { text: 'Parte' }), select));
   if (chosen) {
     const limits = editor.limits ? jointLimits(chosen) : null, angles = editor.angles(chosen);
     ['Dobrar', 'Torcer', 'Inclinar'].forEach((label, k) => {
       const [min, max] = limits?.[k] ?? [-180, 180];
-      ui.slide(group, { label, value: Math.max(min, Math.min(max, angles[k])), min, max, step: 0.5, unit: '°', center: true,
+      ui.slide(bone, { label, value: Math.max(min, Math.min(max, angles[k])), min, max, step: 0.5, unit: '°', center: true,
         title: `${label} ${boneLabel(chosen)} (${['eixo X do osso', 'ao longo do osso', 'eixo Z do osso'][k]})`,
         onInput: v => { const next = editor.angles(chosen); next[k] = v; editor.setAngles(chosen, next); },
         onEnd: () => { editor.commit(); } });
     });
   }
-  group.append(toggleChips({ label: 'Pinos: ficam no lugar enquanto o resto se move', items: [['Mão E', 'hand_l'], ['Mão D', 'hand_r'], ['Pé E', 'foot_l'], ['Pé D', 'foot_r']].map(([name, bone]) => [`Prender ${name}`, editor.pins.has(bone)]),
+  bone.append(toggleChips({ label: 'Pinos: ficam no lugar enquanto o resto se move', items: [['Mão E', 'hand_l'], ['Mão D', 'hand_r'], ['Pé E', 'foot_l'], ['Pé D', 'foot_r']].map(([name, b]) => [name, editor.pins.has(b)]),
     onToggle: (i) => { editor.togglePin(['hand_l', 'hand_r', 'foot_l', 'foot_r'][i]); } }));
-  group.append(h('div', { class: 'icon-bar' },
+  bone.append(h('div', { class: 'icon-bar' },
     iconButton('reset', 'Zerar a parte escolhida', () => editor.reset(false), { disabled: !editor.selected }),
     iconButton('mirrorToRight', 'Copiar o lado esquerdo para o direito', () => editor.mirrorSide('l')),
     iconButton('mirrorToLeft', 'Copiar o lado direito para o esquerdo', () => editor.mirrorSide('r')),
@@ -139,11 +164,7 @@ function renderPosing(ui) {
  */
 function renderTimeline(ui) {
   const clip = ui.person.clip, r = ui.renderer, editor = r?.poseEditor;
-  // Docked under the groups, not one of them: the accordion opens one group at a time, and posing
-  // (Pose) and keying (here) go together.
-  const group = h('section', { class: 'anim-dock', 'aria-label': 'Linha do tempo' },
-    h('div', { class: 'anim-dock-title' }, h('span', { text: 'Linha do tempo' }), clip.keys.length ? h('span', { class: 'badge', text: String(clip.keys.length) }) : null));
-  ui.body.append(group);
+  const group = ui.pane('Sua animação', clip.keys.length ? [h('span', { class: 'badge', text: `${clip.keys.length} ${clip.keys.length === 1 ? 'chave' : 'chaves'}` })] : []);
   ui.timeAt = Math.max(0, Math.min(ui.timeAt ?? 0, clip.duration));
   const setClip = (next, history = true) => ui.patch({ clip: next }, { history });
   // Show the clip at the timeline's time: in the pose editor while posing (so it can be adjusted and keyed), else paused on screen.
@@ -167,22 +188,30 @@ function renderTimeline(ui) {
     for (const key of keys) {
       const diamond = h('button', { type: 'button', class: `anim-key ${kind}${sameTime(key.t, ui.timeAt) ? ' on' : ''}`, style: `left:${percent(key.t)}`,
         title: `${label}: chave em ${key.t.toFixed(2).replace('.', ',')} s · arraste para mudar o tempo`, 'aria-label': `${label}, chave em ${key.t.toFixed(2)} segundos` });
-      // Drag (setPointerCapture) moves the key; a click goes to it.
+      // Drag (setPointerCapture) moves the key; a click goes to it. The drag ends on pointerup, and also
+      // when the browser takes the pointer away (pointercancel, lostpointercapture), so a key never sticks to the mouse.
       diamond.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
         event.preventDefault(); event.stopPropagation();
         diamond.setPointerCapture(event.pointerId);
-        const startX = event.clientX; let moved = false, to = key.t;
+        const startX = event.clientX; let moved = false, to = key.t, done = false;
+        const finish = commit => {
+          if (done) return;
+          done = true;
+          diamond.onpointermove = diamond.onpointerup = diamond.onpointercancel = diamond.onlostpointercapture = null;
+          if (!commit) { diamond.style.left = percent(key.t); return; }
+          if (moved && !sameTime(to, key.t)) { ui.timeAt = to; setClip(moveKey(ui.person.clip, key.t, to)); return; }
+          show(key.t); ui.scheduleRender();
+        };
         diamond.onpointermove = move => {
           if (Math.abs(move.clientX - startX) > 3) moved = true;
           if (!moved) return;
           to = Math.round(timeFromX(row, move.clientX) * 20) / 20;
           diamond.style.left = percent(to);
         };
-        diamond.onpointerup = () => {
-          diamond.onpointermove = diamond.onpointerup = null;
-          if (moved && !sameTime(to, key.t)) { ui.timeAt = to; setClip(moveKey(ui.person.clip, key.t, to)); return; }
-          show(key.t); ui.scheduleRender();
-        };
+        diamond.onpointerup = () => finish(true);
+        diamond.onpointercancel = () => finish(false);
+        diamond.onlostpointercapture = () => finish(true);
       });
       row.append(diamond);
     }
@@ -214,7 +243,8 @@ function renderTimeline(ui) {
   group.append(segmented({ label: 'Curva', items: ['Suave', 'Linear', 'Degrau'], selected: interpolations.indexOf(clip.interpolation ?? 'linear'),
     onPick: i => setClip({ ...ui.person.clip, interpolation: interpolations[i] }) }));
   // Expressions to key on the face track (the same faces as Rosto › Expressão).
-  group.append(iconChoices({ label: 'Expressão para a chave', items: expressionNames.map((name, i) => [name, expressionGlyphs[i] ?? 'face']), selected: ui.person.expression,
+  const faces = ui.pane('Expressão da chave');
+  faces.append(iconChoices({ label: 'Expressão para a chave', items: expressionNames.map((name, i) => [name, expressionGlyphs[i] ?? 'face']), selected: ui.person.expression,
     onPick: i => ui.update('expression', i) }));
   // An animation from a file (Mixamo or this app's rig) becomes editable keys.
   const file = h('input', { type: 'file', accept: '.glb,.gltf', hidden: true });

@@ -10,12 +10,13 @@ export const clipLabels = ['Parado', 'Andar', 'Andar rápido', 'Trote', 'Correr'
   'Olhar em volta', 'Falar', 'Apresentar', 'Acenar', 'Usar celular', 'Segurar bolsa', 'Bater na porta', 'Sambar', 'Desfilar',
   'Respirar', 'Sentado', 'Passear', 'Andar confiante', 'Passarela', 'Dançar', 'Dança descolada', 'Dança divertida', 'Dança agitada',
   'Dança animada', 'Comemorar', 'Bater palmas', 'Rir', 'Dar de ombros', 'Agachado'];
-/** Groups of the library in the Animação panel. */
+/** Groups of the library in the Animação panel (one tab each), by what the character is doing. Only the grouping: indices and the GLB are unchanged. */
 export const clipGroups = [
-  ['Parado', ['idle', 'breathe', 'look_around', 'talk', 'gesture', 'laugh', 'shrug', 'wave', 'use_phone', 'carry', 'interact']],
+  ['Parado', ['idle', 'breathe', 'look_around', 'use_phone', 'carry']],
   ['Andar e correr', ['walk', 'stroll', 'walk_cool', 'fast_walk', 'jog', 'run', 'stop', 'turn', 'catwalk', 'runway_walk']],
-  ['Sentar', ['sit', 'sit_idle', 'stand_up', 'crouch']],
   ['Festa', ['samba', 'dance', 'dance_cool', 'dance_silly', 'dance_energetic', 'dance_happy', 'cheer', 'clap']],
+  ['Gestos', ['talk', 'gesture', 'wave', 'laugh', 'shrug', 'interact']],
+  ['Sentar', ['sit', 'sit_idle', 'stand_up', 'crouch']],
 ];
 // These play once and hold their last frame instead of looping.
 export const oneShotClips = new Set(['stop', 'turn', 'sit', 'stand_up']);
