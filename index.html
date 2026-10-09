@@ -12,13 +12,16 @@
   <div class="app">
     <header class="topbar">
       <div class="brand"><svg viewBox="0 0 24 32" aria-hidden="true"><circle cx="12" cy="4" r="3"/><path d="M8 9h8l3 9-2.2.7-2.4-5.3V21l-1 10h-2.6l-.8-8-.8 8H7.6l-1-10v-7.6l-2.4 5.3L2 18l3-9h3Z"/></svg><span>Human <b>Studio</b></span></div>
-      <div class="character" title="Personagem atual"><span id="characterName">Personagem</span><small id="characterMeta"></small></div>
+      <div class="character"><input id="characterName" class="name-input" type="text" maxlength="42" spellcheck="false" aria-label="Nome do personagem" title="Nome do personagem: clique para mudar"><small id="characterMeta"></small></div>
       <div class="history" role="group" aria-label="Histórico">
-        <button id="undoButton" class="icon-button" type="button" title="Desfazer (Ctrl+Z)" aria-label="Desfazer" disabled><span data-icon="undo"></span></button>
-        <button id="redoButton" class="icon-button" type="button" title="Refazer (Ctrl+Y)" aria-label="Refazer" disabled><span data-icon="redo"></span></button>
+        <button id="undoButton" class="icon-button" type="button" title="Desfazer (Ctrl+Z)" aria-label="Desfazer" aria-keyshortcuts="Control+Z" disabled><span data-icon="undo"></span></button>
+        <button id="redoButton" class="icon-button" type="button" title="Refazer (Ctrl+Y)" aria-label="Refazer" aria-keyshortcuts="Control+Y" disabled><span data-icon="redo"></span></button>
       </div>
       <div class="spacer"></div>
-      <button id="randomButton" class="button ghost" type="button" title="Gerar outra pessoa (mantém o que estiver marcado em Personagem › Variações)"><span data-icon="dice"></span><span class="label">Aleatório</span></button>
+      <div class="menu-anchor">
+        <button id="randomButton" class="button ghost" type="button" aria-haspopup="dialog" title="Sortear outra pessoa"><span data-icon="dice"></span><span class="label">Sortear</span><span data-icon="chevronDown" data-size="14"></span></button>
+        <div id="randomMenu" class="popover right" role="dialog" aria-label="Sortear" hidden></div>
+      </div>
       <div class="menu-anchor">
         <button id="charactersButton" class="button ghost" type="button" aria-haspopup="true" title="Salvar e carregar personagens"><span data-icon="users"></span><span class="label">Personagens</span><span data-icon="chevronDown" data-size="14"></span></button>
         <div id="charactersMenu" class="popover right" role="dialog" aria-label="Personagens salvos" hidden></div>
@@ -33,8 +36,11 @@
     <main class="viewport" aria-label="Visualização 3D do personagem">
       <canvas id="stage" aria-label="Personagem 3D interativo"></canvas>
       <section class="tool-card" id="toolCard" aria-label="Opções da ferramenta" hidden></section>
+      <div class="busy-pill" id="busyPill" aria-hidden="true" hidden><i class="spinner"></i><span id="busyText"></span></div>
+      <div class="camera-bar">
+        <div class="segmented compact" id="viewButtons" role="group" aria-label="Enquadrar a câmera"></div>
+      </div>
       <div class="view-toolbar">
-        <div class="segmented compact" id="viewButtons" role="group" aria-label="Vista da câmera"></div>
         <div class="menu-anchor">
           <button id="lightButton" class="icon-button" type="button" aria-haspopup="true" title="Iluminação" aria-label="Iluminação"><span data-icon="sun"></span></button>
           <div id="lightMenu" class="popover right" role="dialog" aria-label="Iluminação" hidden></div>
@@ -51,7 +57,6 @@
         <button id="fitButton" class="icon-button" type="button" aria-label="Enquadrar o corpo" title="Enquadrar o corpo"><span data-icon="fit"></span></button>
       </div>
       <div class="toasts" id="toasts" aria-live="polite"></div>
-      <p class="viewport-hint" id="viewportHint"></p>
       <div id="errorPanel" class="error-panel" role="alertdialog" aria-labelledby="errorTitle" hidden>
         <h2 id="errorTitle">Não foi possível concluir a operação</h2>
         <p id="errorText"></p>
@@ -59,10 +64,11 @@
       </div>
     </main>
     <aside class="inspector" aria-labelledby="sectionTitle">
-      <div class="inspector-head"><h1 id="sectionTitle">Personagem</h1></div>
+      <div class="inspector-head"><h1 id="sectionTitle">Pessoa</h1><p id="sectionLead" class="section-lead"></p></div>
       <div id="inspectorBody" class="inspector-body"></div>
     </aside>
-    <footer class="statusbar"><span class="status"><i class="status-dot busy"></i><span id="readyLabel" role="status" aria-live="polite">Iniciando</span></span><button id="cancelOperation" type="button" class="button small" hidden>Cancelar</button><span class="spacer"></span><span id="triangles"></span><span id="fps"></span></footer>
+    <footer class="statusbar"><span class="status"><i class="status-dot busy"></i><span id="readyLabel" role="status" aria-live="polite">Iniciando</span></span><button id="cancelOperation" type="button" class="button small" hidden>Cancelar</button><span class="spacer"></span><span class="hint" id="viewportHint"></span>
+      <div class="menu-anchor"><button id="shortcutsButton" class="button small ghost" type="button" aria-haspopup="dialog" title="Teclas e mouse (?)" aria-keyshortcuts="Shift+?"><span data-icon="keyboard" data-size="15"></span><span>Atalhos</span></button><div id="shortcutsMenu" class="popover right up" role="dialog" aria-label="Teclas e mouse" hidden></div></div></footer>
   </div>
   <script type="importmap">{"imports":{"three":"./node_modules/three/build/three.module.js","three/addons/":"./node_modules/three/examples/jsm/"}}</script>
   <script type="module" src="./src/main.mjs"></script>

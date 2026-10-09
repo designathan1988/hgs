@@ -70,6 +70,11 @@ const paths = {
   paintAdd: '<path d="M14.5 4.5 19.5 9.5 11 18H6v-5z"/><path d="M4 21h6M17 15v6M14 18h6"/>',
   paintErase: '<path d="M14.5 4.5 19.5 9.5 11 18H6v-5z"/><path d="M4 21h6M14 18h6"/>',
   sliders: '<path d="M5 7h9M18 7h1M5 17h3M12 17h7"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>',
+  // Interface: shortcuts, search, the hair eraser (not a bin: nothing is deleted outside the stroke), posing.
+  keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10 10h.01M14 10h.01M17.5 10h.01M8 14h8"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.3-4.3"/>',
+  eraser: '<path d="m7 20-3.3-3.3a1.5 1.5 0 0 1 0-2.1l9.8-9.8a1.5 1.5 0 0 1 2.1 0l4.6 4.6a1.5 1.5 0 0 1 0 2.1L12 20z"/><path d="M20 20H7M9.5 9.5l5 5"/>',
+  figure: '<circle cx="12" cy="4.5" r="2"/><path d="m6 9 6 1.5L18 9M12 10.5V15l-3 5.5M12 15l3 5.5"/>',
 };
 
 /** An inline SVG icon element. */

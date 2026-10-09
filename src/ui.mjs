@@ -697,10 +697,15 @@ export class StudioUI {
     }
     if (this.section === 'esculpir') return this.renderer ? sculptTools : null;
     if (this.section === 'roupas' && this.person.outfit === 4) {
+      // Only the tools this piece's construction offers; the note under the rail says why the others are missing.
       const drafted = this.isDrafted();
-      return clothToolGroups.map(([label, list]) => [label, list.map(([id, name, glyph]) => [id, name, glyph, { disabled: (drafted && surfaceOnly.includes(id)) || (!drafted && draftedOnly.includes(id)) }])]);
+      return clothToolGroups.map(([label, list]) => [label, list.filter(([id]) => !(drafted && surfaceOnly.includes(id)) && !(!drafted && draftedOnly.includes(id)))]).filter(([, list]) => list.length);
     }
     return null;
+  }
+  toolNote() {
+    if (this.section !== 'roupas' || this.person.outfit !== 4 || !this.currentGarment()) return null;
+    return this.isDrafted() ? 'Peça feita por moldes: bordas e cobertura se mudam nos moldes.' : 'Fixar e soltar valem para peças feitas por moldes.';
   }
   activeTool() {
     if (this.section === 'roupas') return this.clothTool() ?? 'look';
