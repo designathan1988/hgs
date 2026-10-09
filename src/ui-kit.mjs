@@ -65,7 +65,7 @@ export function iconButton(name, title, onclick, { id, danger = false, disabled 
  * track fills up to the thumb. `scale` shows the value in other units (cm);
  * onStart/onEnd bracket one drag or one typed entry.
  */
-export function slider({ label, value, min, max, step = 0.01, scale = 1, unit = '', title, onInput, onStart, onEnd, key, ends, center = false }) {
+export function slider({ label, value, min, max, step = 0.01, scale = 1, unit = '', title, onInput, onStart, onEnd, key, ends, center = false, trailing }) {
   const id = nextId('s'), digits = step * scale >= 1 ? 0 : step * scale >= 0.1 ? 1 : 2;
   const range = h('input', { type: 'range', id, min, max, step, value, 'data-key': key });
   const number = h('input', { type: 'number', class: 'value', min: +(min * scale).toFixed(digits), max: +(max * scale).toFixed(digits), step: +(step * scale).toFixed(4), value: (value * scale).toFixed(digits), 'aria-label': `${label} (valor)` });
@@ -91,14 +91,41 @@ export function slider({ label, value, min, max, step = 0.01, scale = 1, unit = 
     if (!Number.isFinite(v)) return;
     begin(); range.value = v; number.value = (v * scale).toFixed(digits); fill(v); onInput(v); end();
   });
-  const node = h('div', { class: `field${ends ? ' with-ends' : ''}${bipolar ? ' bipolar' : ''}`, title: title ?? label }, h('label', { for: id, text: label }), range, h('span', { class: 'value-box' }, number, unit ? h('span', { class: 'unit', text: unit.trim() }) : null),
-    ends ? h('div', { class: 'ends', 'aria-hidden': 'true' }, h('span', { text: ends[0] }), h('span', { text: ends[1] })) : null);
+  // One line per control (the user: label and slider side by side, little text): the ends are named in the tooltip and read aloud, not printed.
+  const tip = title ?? (ends ? `${label}: ${ends[0]} ↔ ${ends[1]}` : label);
+  // `trailing` (e.g. a colour well) takes the value's place: amount and colour of one thing on one line.
+  const node = h('div', { class: `field${bipolar ? ' bipolar' : ''}`, title: tip }, h('label', { for: id, text: label }), range,
+    trailing ?? h('span', { class: 'value-box' }, number, unit ? h('span', { class: 'unit', text: unit.trim() }) : null));
   /** Show a value set elsewhere (the age moves the height). */
   node.setValue = (v, bounds) => {
     if (bounds) { range.min = bounds[0]; range.max = bounds[1]; min = bounds[0]; max = bounds[1]; }
     range.value = v; number.value = (v * scale).toFixed(digits); fill(v);
   };
   return node;
+}
+/**
+ * A left/right pair on one line: the label, then a track for each side (E, D).
+ * The values are in the tooltips and read aloud (aria-valuetext); arrows,
+ * Home and End work on each track (APG Slider). `sides` is
+ * [{ value, onInput }, { value, onInput }] for left and right.
+ */
+export function sliderPair({ label, title, min = -1, max = 1, step = 0.01, sides, onStart, onEnd }) {
+  const tracks = sides.map(({ value, onInput }, i) => {
+    const side = i ? 'direita' : 'esquerda';
+    const range = h('input', { type: 'range', min, max, step, value, 'aria-label': `${label}, ${side}` });
+    const fill = v => {
+      const at = ((v - min) / (max - min || 1)) * 100, zero = min < 0 && max > 0 ? ((0 - min) / (max - min)) * 100 : 0;
+      range.style.setProperty('--from', `${Math.min(at, zero)}%`); range.style.setProperty('--fill', `${Math.max(at, zero)}%`);
+      const text = `${side}: ${Math.round(v * 100)}%`;
+      range.setAttribute('aria-valuetext', text); range.title = `${label}, ${text}`;
+    };
+    fill(value);
+    let first = true;
+    range.addEventListener('input', () => { if (first) { onStart?.(); first = false; } const v = Number(range.value); fill(v); onInput(v); });
+    range.addEventListener('change', () => { if (first) return; first = true; onEnd?.(); });
+    return h('span', { class: 'pair-side' }, h('span', { class: 'side-tag', 'aria-hidden': 'true', text: i ? 'D' : 'E' }), range);
+  });
+  return h('div', { class: `field pair${min < 0 && max > 0 ? ' bipolar' : ''}`, title: title ?? label }, h('span', { class: 'pair-label', text: label }), h('div', { class: 'pair-tracks' }, tracks));
 }
 /** One choice among a few, on its label's line. An item [name, icon] shows the icon only, the name in the tooltip. */
 export function segmented({ label, items, selected, onPick }) {
@@ -112,6 +139,14 @@ export function segmented({ label, items, selected, onPick }) {
   });
   const control = h('div', { class: `segmented${icons ? ' icons' : ''}`, role: 'group', 'aria-label': label ?? undefined }, buttons);
   return label ? h('div', { class: 'stack inline', title: label }, h('div', { class: 'stack-label', text: label }), control) : control;
+}
+/** One choice among many shown as icons in a wrapping grid (names in the tooltips): items are [name, glyph]. */
+export function iconChoices({ label, items, selected, onPick }) {
+  const buttons = items.map(([name, glyph], i) => h('button', {
+    type: 'button', class: `icon-choice${selected === i ? ' on' : ''}`, 'aria-pressed': String(selected === i), title: name, 'aria-label': name,
+    onclick: () => { buttons.forEach((b, k) => { b.classList.toggle('on', k === i); b.setAttribute('aria-pressed', String(k === i)); }); onPick(i); },
+  }, icon(glyph, 22)));
+  return h('div', { class: 'icon-choices', role: 'group', 'aria-label': label }, buttons);
 }
 export function chips({ label, items, selected, onPick }) {
   const buttons = items.map((name, i) => h('button', {
@@ -150,30 +185,28 @@ export function swatches({ label, palette, selected, custom, onPick, onCustom, e
   const pick = live => { for (const b of buttons) b.classList.remove('on'); picker.classList.add('on'); onCustom(picker.value, { live }); };
   picker.addEventListener('input', () => pick(true));
   picker.addEventListener('change', () => pick(false));
-  return h('div', { class: 'stack' }, h('div', { class: 'stack-label', text: label }), h('div', { class: 'swatches', role: 'group', 'aria-label': label }, ...extra, buttons, picker));
+  return h('div', { class: 'stack swatch-stack' }, h('div', { class: 'stack-label', text: label }), h('div', { class: 'swatches', role: 'group', 'aria-label': label }, ...extra, buttons, picker));
 }
 
 // ---------------------------------------------------------------- toolbar
 /**
  * A toolbar of tool groups (WAI-ARIA APG Toolbar): one Tab stop, arrows move
- * between tools (roving tabindex), Home/End go to the ends. Each tool shows its
- * icon, its name and its key (recognition rather than recall; Blender's
- * toolbar shows names when widened). Tools that do not apply are left out by
- * the caller, which says why in `note`. `groups` is
+ * between tools (roving tabindex), Home/End go to the ends. Tools are icons
+ * (the user asked for icons, little text, a narrow rail); the name and key are
+ * in the tooltip and in the active tool's card. Groups are split by a thin
+ * line, without titles. `groups` is
  * [[label, [[id, name, glyph, { disabled, shortcut, title }]]]].
  */
-export function toolbar(container, { groups, active, onPick, label, note }) {
+export function toolbar(container, { groups, active, onPick, label }) {
   container.setAttribute('role', 'toolbar');
   container.setAttribute('aria-orientation', 'vertical');
   container.setAttribute('aria-label', label);
   container.replaceChildren(...groups.map(([name, tools]) => h('div', { class: 'tool-group', role: 'group', 'aria-label': name },
-    h('div', { class: 'tool-group-label', 'aria-hidden': 'true', text: name }),
     h('div', { class: 'tool-grid' }, tools.map(([id, title, glyph, { disabled = false, shortcut, title: tip } = {}]) => h('button', {
       type: 'button', class: `tool${active === id ? ' on' : ''}`, 'data-tool': id, disabled, tabindex: '-1',
-      title: tip ?? (shortcut ? `${title} (${shortcut})` : title), 'aria-label': title, 'aria-pressed': String(active === id), 'aria-keyshortcuts': shortcut,
+      title: tip ? (shortcut && !tip.includes(`(${shortcut})`) ? `${tip} (${shortcut})` : tip) : (shortcut ? `${title} (${shortcut})` : title), 'aria-label': title, 'aria-pressed': String(active === id), 'aria-keyshortcuts': shortcut,
       onclick: event => { setRoving(container, event.currentTarget); onPick(id); },
-    }, icon(glyph, 18), h('span', { class: 'tool-name', text: title }), shortcut ? h('kbd', { text: shortcut }) : null))))),
-    ...(note ? [h('p', { class: 'tool-note', text: note })] : []));
+    }, icon(glyph, 20)))))));
   const buttons = [...container.querySelectorAll('.tool:not(:disabled)')];
   setRoving(container, buttons.find(b => b.classList.contains('on')) ?? buttons[0]);
   if (!container.dataset.roving) {

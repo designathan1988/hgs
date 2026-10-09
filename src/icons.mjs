@@ -8,7 +8,8 @@ const paths = {
   sculpt: '<path d="M14.5 4.5 19.5 9.5 10 19H5v-5z"/><path d="m12.5 6.5 5 5"/>',
   play: '<circle cx="12" cy="12" r="8.5"/><path d="m10 8.5 5.5 3.5-5.5 3.5z"/>',
   export: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M5 17v3h14v-3"/>',
-  dice: '<rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01"/>',
+  // The pips are filled dots (hairline dots vanished at 16–18 px and the die read as an empty square).
+  dice: '<rect x="4" y="4" width="16" height="16" rx="3.5"/><g fill="currentColor" stroke="none"><circle cx="8.6" cy="8.6" r="1.5"/><circle cx="15.4" cy="8.6" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="8.6" cy="15.4" r="1.5"/><circle cx="15.4" cy="15.4" r="1.5"/></g>',
   users: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3.3 2.8-5 5.5-5s4.9 1.7 5.5 5"/><circle cx="16.5" cy="9" r="2.5"/><path d="M15.5 14.2c2.3-.3 4.3 1.1 5 4.3"/>',
   camera: '<path d="M4 8h3.5L9 5.5h6L16.5 8H20v11H4z"/><circle cx="12" cy="13" r="3.2"/>',
   sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
@@ -75,6 +76,28 @@ const paths = {
   search: '<circle cx="11" cy="11" r="6"/><path d="m20 20-4.3-4.3"/>',
   eraser: '<path d="m7 20-3.3-3.3a1.5 1.5 0 0 1 0-2.1l9.8-9.8a1.5 1.5 0 0 1 2.1 0l4.6 4.6a1.5 1.5 0 0 1 0 2.1L12 20z"/><path d="M20 20H7M9.5 9.5l5 5"/>',
   figure: '<circle cx="12" cy="4.5" r="2"/><path d="m6 9 6 1.5L18 9M12 10.5V15l-3 5.5M12 15l3 5.5"/>',
+  // Copy one side of the pose onto the other (Animação › Pose).
+  mirrorToRight: '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M4 12h5M14.5 12h6M17.5 9l3 3-3 3"/><circle cx="6.5" cy="12" r="2.5"/>',
+  mirrorToLeft: '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M20 12h-5M9.5 12h-6M6.5 9l-3 3 3 3"/><circle cx="17.5" cy="12" r="2.5"/>',
+  key: '<path d="m12 4 7 8-7 8-7-8z"/>',
+  // Expressions (Rosto › Expressão), in the order of expressionNames: a face with brows, eyes and mouth.
+  exNeutral: '<circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M9 15.5h6"/>',
+  exRelaxed: '<circle cx="12" cy="12" r="9"/><path d="M7.5 10.2c.7-.5 1.6-.5 2.2 0M14.3 10.2c.7-.5 1.6-.5 2.2 0M9 15c1.8 1 4.2 1 6 0"/>',
+  exHappy: '<circle cx="12" cy="12" r="9"/><path d="M8.5 9.5h.01M15.5 9.5h.01M8 14c2.2 2.6 5.8 2.6 8 0"/>',
+  exSmile: '<circle cx="12" cy="12" r="9"/><path d="M8.5 9.5h.01M15.5 9.5h.01M7.5 13.5h9c-.6 3-2.4 4.3-4.5 4.3S8.1 16.5 7.5 13.5z"/>',
+  exLaugh: '<circle cx="12" cy="12" r="9"/><path d="m7.5 10 1.5-1.3 1.5 1.3M13.5 10 15 8.7l1.5 1.3M7.5 13h9c-.4 3.6-2.3 5-4.5 5s-4.1-1.4-4.5-5z"/>',
+  exSad: '<circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M8.5 16.5c2-2 5-2 7 0M7.5 8l2 -1M16.5 8l-2-1"/>',
+  exAngry: '<circle cx="12" cy="12" r="9"/><path d="m7.5 8 2.5 1.5M16.5 8 14 9.5M8.8 11h.01M15.2 11h.01M8.5 16.5c2-1.8 5-1.8 7 0"/>',
+  exAnnoyed: '<circle cx="12" cy="12" r="9"/><path d="m7.5 8.5 2.5 1M16.5 8.5l-2.5 1M8.8 11h.01M15.2 11h.01M9 15.8h6"/>',
+  exSurprised: '<circle cx="12" cy="12" r="9"/><path d="M7.5 7c.8-.6 1.8-.6 2.6 0M13.9 7c.8-.6 1.8-.6 2.6 0M8.8 10h.01M15.2 10h.01"/><ellipse cx="12" cy="15.5" rx="1.8" ry="2.2"/>',
+  exWorried: '<circle cx="12" cy="12" r="9"/><path d="m7.5 9 2.5-1.4M16.5 9 14 7.6M8.8 11h.01M15.2 11h.01M8.5 16c1.2-1 2.3 0 3.5-.5s2.3-1 3.5.3"/>',
+  exTired: '<circle cx="12" cy="12" r="9"/><path d="M7.5 10.5h2.8M13.7 10.5h2.8M9.5 15.5h5"/>',
+  exTalking: '<circle cx="12" cy="12" r="9"/><path d="M8.5 9.5h.01M15.5 9.5h.01"/><path d="M9.5 14.5h5c0 1.8-1.1 2.8-2.5 2.8s-2.5-1-2.5-2.8z"/>',
+  // Eyebrow shapes (Rosto › Sobrancelhas): the brow line over an eye.
+  browNatural: '<path d="M3.5 12c3-3.5 9-4.5 17-1.5" stroke-width="2.6"/><path d="M8 17.5c2-1.3 6-1.3 8 0"/>',
+  browStraight: '<path d="M3.5 10.5h17" stroke-width="2.6"/><path d="M8 17.5c2-1.3 6-1.3 8 0"/>',
+  browArched: '<path d="M3.5 13C7 5.5 15 5 20.5 11" stroke-width="2.6"/><path d="M8 17.5c2-1.3 6-1.3 8 0"/>',
+  browAngled: '<path d="M3.5 12.5 14 7.5l6.5 4" stroke-width="2.6"/><path d="M8 17.5c2-1.3 6-1.3 8 0"/>',
 };
 
 /** An inline SVG icon element. */

@@ -80,29 +80,28 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .history { display: flex; gap: 2px; margin-left: 6px; }
 
 /* ------------------------------------------------------- rail of sections */
-.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 8px; background: var(--bg); border-right: 1px solid var(--border); overflow-y: auto; scrollbar-width: none; }
+/* Never scrolls sideways (a sideways offset cut the labels' first letters). */
+.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; background: var(--bg); border-right: 1px solid var(--border); overflow: hidden auto; scrollbar-width: none; }
 .rail-divider { height: 1px; margin: 6px 6px; background: var(--border-strong); }
 .nav-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 10px 2px 9px; border: 0; border-radius: 12px; background: none; color: var(--muted); }
 .nav-item:hover { color: var(--text); background: var(--surface); }
 .nav-item.active { color: var(--text); background: var(--surface-2); }
 .nav-item.active .icon { color: var(--accent); }
-.nav-item.active::before { content: ''; position: absolute; left: -8px; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
-.nav-label { font-size: 11.5px; line-height: 1.15; text-align: center; }
+.nav-item.active::before { content: ''; position: absolute; left: -6px; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
+.nav-item { min-width: 0; }
+.nav-label { max-width: 100%; font-size: 11px; line-height: 1.15; text-align: center; white-space: nowrap; }
 
 /* ---------------------------------------------- rail of the section's tools */
-.tool-rail { display: flex; flex-direction: column; gap: 12px; width: 156px; padding: 12px 8px; background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; scrollbar-width: none; }
-.tool-group { display: flex; flex-direction: column; gap: 4px; }
-.tool-group + .tool-group { padding-top: 10px; border-top: 1px solid var(--border); }
-.tool-group-label { padding: 0 6px 2px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
-.tool-grid { display: flex; flex-direction: column; gap: 2px; }
-.tool { display: flex; align-items: center; gap: 9px; width: 100%; height: 34px; padding: 0 8px; border: 1px solid transparent; border-radius: 9px; background: none; color: var(--text-2); font-size: 12.5px; text-align: left; transition: background .12s, color .12s; }
-.tool .tool-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool kbd { opacity: .85; }
+/* Icons only (name and key in the tooltip and the tool card); groups split by a thin line. */
+.tool-rail { display: flex; flex-direction: column; gap: 6px; padding: 10px 7px; background: var(--panel); border-right: 1px solid var(--border); overflow: hidden auto; scrollbar-width: none; }
+.tool-group { display: flex; flex-direction: column; gap: 3px; }
+.tool-group + .tool-group { padding-top: 6px; border-top: 1px solid var(--border-strong); }
+.tool-grid { display: flex; flex-direction: column; gap: 3px; }
+.tool { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid transparent; border-radius: 10px; background: none; color: var(--text-2); transition: background .12s, color .12s; }
 .tool:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
-.tool.on { color: var(--text); border-color: var(--accent-line); background: var(--accent-soft); }
-.tool.on .icon { color: var(--accent); }
+.tool.on { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
 .tool:disabled { opacity: .45; }
-.tool-note { margin: 0; padding: 8px 6px 0; border-top: 1px solid var(--border); color: var(--faint); font-size: 11.5px; line-height: 1.4; }
+.tool-card-head kbd { margin-right: 2px; }
 
 /* ---------------------------------------------------------------- viewport */
 .viewport { position: relative; min-width: 0; overflow: hidden; background: #2b2c30; }
@@ -129,7 +128,7 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .tool-card-body > :first-child { margin-top: 8px; }
 .tool-card-section { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border); }
 /* In the narrow card the label gets the room the track can spare ("Mechas por traço"). */
-.tool-card .field, .tool-card .stack.inline { grid-template-columns: minmax(0, 46%) minmax(0, 1fr) auto; }
+.tool-card .field { grid-template-columns: minmax(0, 44%) minmax(0, 1fr) 52px; }
 .tool-card .stack.inline { grid-template-columns: minmax(0, 46%) minmax(0, 1fr); }
 
 .toasts { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
@@ -158,7 +157,7 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 /* Groups: collapsible, separated by a line. */
 .group { padding: 0 18px; }
 .group + .group { border-top: 1px solid var(--border); }
-.group summary { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 12px 0 10px; list-style: none; cursor: pointer; color: var(--text-2); font-size: 12.5px; font-weight: 600; user-select: none; }
+.group summary { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 9px 0 7px; list-style: none; cursor: pointer; color: var(--text-2); font-size: 12.5px; font-weight: 600; user-select: none; }
 .group summary::-webkit-details-marker { display: none; }
 .group summary:hover { color: var(--text); }
 .group summary .icon { color: var(--muted); transition: transform .15s; }
@@ -166,7 +165,7 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .group summary .badge { margin-left: auto; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600; }
 /* A group that holds the advanced level reads quieter. */
 .group.advanced summary { color: var(--muted); font-weight: 500; }
-.group-body { padding-bottom: 16px; }
+.group-body { padding-bottom: 12px; }
 .step-label { margin: 2px 0 8px; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .step-label:not(:first-child) { margin-top: 16px; }
 
@@ -204,32 +203,49 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .icon-button:hover:not(:disabled) { color: var(--text); background: var(--surface-3); }
 .icon-button:disabled { opacity: .35; }
 .icon-button.small { width: 26px; height: 26px; }
+.icon-button.on { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
 .icon-button.danger:hover:not(:disabled) { color: var(--danger); }
 /* A row of actions, each with its name. */
 .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .actions .button { height: 30px; padding: 0 10px; font-size: 12px; }
 .actions .icon-button { width: 38px; height: 32px; background: var(--surface-2); border: 1px solid var(--border); }
 .actions .icon-button:hover:not(:disabled) { background: var(--surface-3); }
-/* A big action that switches the viewport into a hands-on mode (Moldar, Posar). */
-.mode-card { display: flex; align-items: center; gap: 12px; width: 100%; margin: 4px 0 10px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface); text-align: left; }
+/* A hands-on mode of the viewport (Moldar, Posar): one line, icon and name, lit while on. */
+.mode-row { display: flex; align-items: center; gap: 6px; margin: 10px 0; }
+.mode-card { display: flex; align-items: center; gap: 8px; flex: 1; height: 34px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); font-weight: 500; text-align: left; }
 .mode-card .icon { color: var(--accent); }
-.mode-card b { display: block; font-size: 13px; font-weight: 600; }
-.mode-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 11.5px; line-height: 1.35; }
 .mode-card:hover { background: var(--surface-2); }
-.mode-card.on { border-color: var(--accent); background: var(--accent-soft); }
+.mode-card.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+/* A compact bar of icon actions (names in tooltips), at the end of a group. */
+.icon-bar { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.icon-bar .icon-button { width: 34px; height: 30px; border: 1px solid var(--border-strong); background: var(--surface); }
+.icon-bar .icon-button:hover:not(:disabled) { background: var(--surface-3); }
+.icon-bar .icon-button.danger { color: #f5a093; }
+.icon-bar .spacer { flex: 1; }
 
-/* Slider field: label, track and typed value on one line (a long label is cut, its full text in the tooltip). */
-.field { display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr) auto; align-items: center; column-gap: 10px; min-height: 30px; margin-bottom: 4px; }
-.field > label { color: var(--text-2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* The words at each end of the track. */
-.field.with-ends { margin-bottom: 8px; }
-.field .ends { grid-column: 2; display: flex; justify-content: space-between; margin-top: -3px; color: var(--faint); font-size: 10.5px; line-height: 1; pointer-events: none; }
-.value-box { display: inline-flex; align-items: baseline; gap: 3px; color: var(--muted); }
-.value { width: 54px; height: 24px; padding: 0 5px; border: 1px solid #ffffff2e; border-radius: 6px; background: var(--surface); color: var(--text); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+/*
+ * Slider field: one line — short label, track, compact value (the user asked
+ * for label and slider side by side and little vertical room). A long label is
+ * cut, its full text and the meaning of each end are in the tooltip. The value
+ * shows as plain text and becomes a box only on hover or focus, to type into.
+ */
+.field { display: grid; grid-template-columns: minmax(0, 38%) minmax(0, 1fr) 52px; align-items: center; column-gap: 8px; min-height: 26px; margin-bottom: 2px; }
+.field > label, .pair-label { color: var(--text-2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.value-box { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 2px; min-width: 0; color: var(--muted); }
+.value { width: 100%; min-width: 0; height: 22px; padding: 0 4px; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--text-2); font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+.value-box:has(.unit) .value { width: 38px; }
 .value::-webkit-outer-spin-button, .value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.value:hover { border-color: var(--control-line); }
-.value:focus { border-color: var(--accent); background: var(--bg); outline: none; }
-.unit { font-size: 11px; }
+.value:hover { border-color: var(--control-line); background: var(--surface); }
+.value:focus { border-color: var(--accent); background: var(--bg); color: var(--text); outline: none; }
+.unit { flex: none; font-size: 10.5px; }
+.color-well { justify-self: end; width: 40px; height: 24px; padding: 0; border: 1px solid var(--control-line); border-radius: 6px; background: none; cursor: pointer; }
+.color-well::-webkit-color-swatch-wrapper { padding: 2px; }
+.color-well::-webkit-color-swatch { border: 0; border-radius: 4px; }
+/* Left and right on one line: label, then E and D tracks. */
+.field.pair { grid-template-columns: minmax(0, 38%) minmax(0, 1fr); }
+.pair-tracks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-width: 0; }
+.pair-side { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.side-tag { flex: none; width: 10px; color: var(--faint); font-size: 10px; font-weight: 600; text-align: center; }
 /* The track fills from --from to --fill (from the left, or from the centre for opposite ends). */
 input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; margin: 0; background: none; cursor: pointer; --from: 0%; --fill: 50%; }
 input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: linear-gradient(to right, var(--track) var(--from), var(--accent) var(--from) var(--fill), var(--track) var(--fill)); }
@@ -245,7 +261,8 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 
 .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .row label { color: var(--text-2); font-size: 12.5px; }
-.row input[type=text], .row select, .menu-body select { width: 180px; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); }
+.row input[type=text], .row select, .menu-body select { width: 62%; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); }
+.row select { flex: 1; width: auto; }
 .row input[type=text]:hover, .row select:hover { border-color: #ffffff80; }
 .row input[type=color] { width: 44px; height: 28px; padding: 0; border: 1px solid var(--control-line); border-radius: 7px; background: none; }
 .stack { margin-bottom: 12px; }
@@ -268,6 +285,11 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 .segmented.stacked button { height: auto; min-height: 34px; padding: 6px 10px; text-align: left; white-space: normal; }
 .segmented.stacked button small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
 
+/* Icon choices (expressions): a wrapping grid of square buttons. */
+.icon-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 4px; margin-bottom: 8px; }
+.icon-choice { display: grid; place-items: center; height: 36px; padding: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text-2); }
+.icon-choice:hover { background: var(--surface-2); color: var(--text); }
+.icon-choice.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .chip { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 999px; background: none; color: var(--text-2); font-size: 12px; }
 .chip:hover { background: var(--surface-2); color: var(--text); }
@@ -277,9 +299,10 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 .chip.check .icon { opacity: .25; }
 .chip.check.on .icon { opacity: 1; }
 
-/* Detailed adjustments: long names get their own line above the track. */
-.morph-list .field, .long-labels .field { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; margin-bottom: 8px; }
-.morph-list .field > label, .long-labels .field > label { grid-column: 1 / -1; white-space: normal; font-size: 12px; }
+/* Detailed adjustments: the long MakeHuman names wrap beside the track, never cut. */
+.morph-list .field { grid-template-columns: minmax(0, 46%) minmax(0, 1fr) 44px; min-height: 28px; }
+.morph-list .field.pair { grid-template-columns: minmax(0, 40%) minmax(0, 1fr); }
+.morph-list .field > label, .morph-list .pair-label { white-space: normal; font-size: 12px; line-height: 1.2; }
 /* Search over a long list. */
 .search { display: flex; align-items: center; gap: 8px; height: 34px; margin-bottom: 10px; padding: 0 10px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
 .search:focus-within { border-color: var(--accent); }
@@ -296,8 +319,11 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 .switch input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch:hover { color: var(--text); }
 
-.swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-.swatch, .swatch-picker { width: 28px; height: 28px; padding: 0; border-radius: 50%; border: 0; background: var(--swatch); box-shadow: inset 0 0 0 1px #ffffff2e; transition: transform .1s; }
+/* Colours beside their label, like the sliders. */
+.swatch-stack { display: grid; grid-template-columns: minmax(0, 38%) minmax(0, 1fr); column-gap: 8px; align-items: start; margin-bottom: 8px; }
+.swatch-stack .stack-label { margin: 5px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.swatch, .swatch-picker { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 0; background: var(--swatch); box-shadow: inset 0 0 0 1px #ffffff2e; transition: transform .1s; }
 .swatch:hover { transform: scale(1.1); }
 .swatch.on, .swatch-picker.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
 .swatch.auto { background: linear-gradient(135deg, #2a2a2a 0 47%, var(--muted) 47% 53%, #c9a227 53%); }
@@ -419,24 +445,16 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
   .app { grid-template-columns: 72px auto minmax(0, 1fr) 312px; }
   .app.pattern-mode { grid-template-columns: 72px auto minmax(0, 1fr) min(440px, 40vw); }
   .character small, .brand span { display: none; }
-  .tool-rail { width: 140px; }
-  .tool kbd { display: none; }
   .camera-bar .segmented button { padding: 0 9px; }
   .busy-pill { max-width: calc(100% - 300px); }
 }
 @media (max-width: 900px) {
   .topbar .button .label { display: none; }
   .topbar .button { padding: 0 10px; }
-  .tool-rail { width: auto; }
-  .tool .tool-name { display: none; }
-  .tool-group-label { display: none; }
   .busy-pill { top: 56px; max-width: calc(100% - 24px); }
 }
 @media (max-height: 700px) {
-  .tool-group-label { display: none; }
-  .tool-rail { gap: 8px; }
-  .tool-group + .tool-group { padding-top: 8px; }
-  .tool { height: 30px; }
+  .tool { height: 32px; }
 }
 @media (max-width: 760px) {
   .app, .app.pattern-mode { grid-template-columns: 56px auto minmax(0, 1fr); }
