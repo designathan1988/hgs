@@ -29,7 +29,8 @@ export const defaultCharacter = Object.freeze({
   animationSpeed: 1, lighting: 2, pose: 0, faceShapes: {}, colors: {},
   lashLength: 1, lashCurl: 0.5, lashDensity: 1,
   // MakeHuman macros (macro.mjs normalises the three ancestries to sum 1).
-  proportions: 0.5, african: 1 / 3, asian: 1 / 3, caucasian: 1 / 3, cupsize: 0.5, firmness: 0.5,
+  // On the 0.001 grid of saved values (a save/load roundtrip keeps them); the macro divides by their sum.
+  proportions: 0.5, african: 0.333, asian: 0.333, caucasian: 0.333, cupsize: 0.5, firmness: 0.5,
 });
 
 // Approximate visual defaults informed by WHO/CDC child curves and adult

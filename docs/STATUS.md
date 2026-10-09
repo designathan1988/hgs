@@ -1,100 +1,32 @@
 # Estado do trabalho
 
-Plano executado: correção de rig, roupas, cabelo, materiais e exportação (aprovado e concluído em 2026-10-08).
+Atualizado em 2026-10-09, depois de usar o app no navegador item por item.
+Detalhe de cada pedido e da evidência: [AUDITORIA.md](AUDITORIA.md).
+Etapas em andamento: [PLANO.md](PLANO.md).
 
-| Passo | Conteúdo | Estado |
-| --- | --- | --- |
-| 0 | Commit-base do trabalho anterior na `main` | feito (`8bafd25`) |
-| 1 | `docs/PROJETO.md` e este arquivo | feito |
-| 2 | Gravidade do editor com campo de densidade | feito |
-| 3 | Esqueleto orientado, pesos saneados, exportação na pose de ligação | feito |
-| 4 | Juntas seguem a escultura; blendshapes com normais | feito |
-| 5 | Roupas com pesos da pele de origem/região; pele coberta escondida | feito |
-| 6 | Cabelo com cadeias de juntas e mola | feito |
-| 7 | Materiais dentro da faixa do glTF | feito |
-| 8 | Exportação válida e validação Khronos | feito |
+## Ativo no app e conferido em uso
 
-Plano executado: redesenho da interface e controlador global de estado e eventos (2026-10-08, commits `4faca55`, `5e5be43`, `6b6bc7b`).
+- Abertura: 1,8 s com cache de construção (IndexedDB); pessoa nova com roupa pronta em ~4,4 s.
+- Corpo: sliders ao vivo (forma, esqueleto e roupas acompanham durante o arrasto), refino ao soltar.
+- Roupas prontas (Casual, Esporte fino, Social, Trabalho) e sapatos: vestem e animam sem defeito visível.
+- Animação: 16 clipes; pose T, poses prontas; linha do tempo com chaves que tocam interpoladas.
+- Cabelo no personagem final: segue a cabeça e balança por cadeias de mola (VRMC_springBone).
+- Exportação: GLB e Pacote LOD; glTF Validator 0 erros e 0 avisos (LOD0 40.039, LOD1 23.321, LOD2 6.239 triângulos).
+- Navegação: roda faz zoom no cursor, botão do meio move, botão direito gira no ponto sob o cursor.
+- Editor de cabelo atual (`hair-editor.mjs`, desde `188601c`): Pincel, Preencher, Retocar, Volume, Cortar, Apagar, Selecionar; peças prontas; cartões com textura de fios.
 
-| Passo | Conteúdo | Estado |
-| --- | --- | --- |
-| 1 | `store.mjs` (estado, eventos, operações, histórico) e `ui-kit.mjs` | feito |
-| 2 | UI sobre o store; rail de ferramentas, cartão de opções, popover Exportar, paleta nova | feito |
-| 3 | Fundo neutro do 3D | feito |
-| 4 | Editor de moldes nas classes do app | feito |
-| 5 | Documentação | feito |
+## Com defeito (a corrigir, ver PLANO.md)
 
-Plano executado: edição ao vivo, desempenho, LOD real, pose/animação, 52 expressões e interface direta (2026-10-08).
+- Posar: arrastar a esfera de IK gira a câmera.
+- Boca: dentes e gengiva aparecem entre os lábios fechados.
+- Esculpir: corpo facetado durante o traço; a escultura salva é bem menor que a vista.
+- Moldar: puxar o nariz pega "olhos".
+- Cabelo: tesoura corta só a mecha da frente sob o cursor; ferramentas não começam fora do cabelo; risca aberta no Chanel; sem gravidade, fixar, prender, curvar, torcer, pente e linha central (removidos em `188601c`).
+- Roupa sob medida: colada sem folga; com folga ou por moldes, ombro e manga rasgam; camiseta sobre camiseta rasga.
+- Cílios: 35% dos folículos fora da borda da pálpebra (teste).
+- Corpo exportado sem soldar vértices (53.512 vértices para 15.692 triângulos).
 
-| Etapa | Conteúdo | Commit |
-| --- | --- | --- |
-| E1 | Forma ao vivo (`live.mjs`): corpo, esqueleto, roupas, olhos e cabelo acompanham o slider; refino ao soltar | `5be0af0` |
-| E2 | Cores e materiais ao vivo (`look.mjs`), seletor de cor com prévia | `c9c5954` |
-| E3 | Canvas só redimensiona quando muda, sem `preserveDrawingBuffer`, multidão no worker | `7c53049` |
-| E4 | Olhos com textura MakeHuman (32.640 → 1.060 triângulos), cor dos olhos ao vivo | `1e70c58` |
-| E5 | LOD com meshoptimizer, rosto no LOD1, Pacote LOD (.zip), `export:glb --lods` | `0653294` |
-| E6 | 52 blendshapes ARKit (olhar gira o globo) | `2d60a8a` |
-| E7 | Posar: osso sob o clique + gizmo, IK de mãos e pés, simetria, espelhar, poses prontas | `1df330a` |
-| E8 | Linha do tempo, clipe "Personalizada", importar animação .glb (retarget com pose de casamento) | `8e365fa` |
-| E9 | Moldar direto no corpo, ~230 ajustes MakeHuman por região, Proporção/Ancestralidade/Busto | `b91d6d1` |
-| E10 | Teste do GLB de várias primitivas, COLOR_0 do cabelo ≤ 1, documentação | este |
+## Não existe
 
-Validação (`npm run export:glb -- --lods`, 2026-10-08): LOD0 40.039 triângulos, LOD1 23.321 (52 blendshapes, desvio 1,41 cm), LOD2 6.239 (desvio 6,99 cm); glTF Validator 0 erros e 0 avisos nos três. Antes desta correção o LOD0 saía com 189 erros `ACCESSOR_NON_CLAMPED` (cor de vértice dos cartões de cabelo até 1,1).
-
-Rodada de testes no app (2026-10-09), com o navegador, depois do relato do usuário (roupa rasgada, abertura lenta):
-
-| Defeito visto no app | Correção | Commit |
-| --- | --- | --- |
-| Camiseta de molde sobre outra rasgava nas costuras (aresta média 1,96× o molde, até 51×) | Colisor em ordem de camadas (pele elevada pela roupa de baixo) | `078550a` |
-| Abertura sem cache: nada até 20–58 s | Boneco sem roupa aparece em ~5 s a frio; vestido o substitui | `fda0d2a` |
-| Moldar puxando o nariz pegava "cabeça · posição" | Ajuste de menor região entre os alinhados ao puxão | `b5c15e9` |
-| Clique direto na seta do gizmo girava a câmera | Mesmo teste de hover do TransformControls no pointerdown | `f55f3ec` |
-| eyeLook jogava o branco do olho para fora das pálpebras | Centro da calota esférica do globo | `f9280e7` |
-
-Conferido no app e funcionando: forma ao vivo (42 ms por passo, refino ao soltar em ~11 s sem salto), pele e olhos ao vivo sem rebuild, Moldar, pose T, IK da mão com simetria, linha do tempo tocando o clipe "Personalizada", Pacote LOD (3 GLB; 52/52/0 blendshapes; 17 clipes), eyeLook e tongueOut. `export:glb --lods`: 0 erros e 0 avisos nos três níveis.
-
-## Ativo no app
-
-- Estado global: `store.mjs` é a fonte única (personagem + interface); a UI reage ao evento `change`. Desfazer/refazer único no topo e em Ctrl+Z/Y para Personagem, Corpo, Rosto, Roupas, Esculpir e Animação (expressões); no Cabelo vai para o histórico do editor de mechas e a visita inteira vira um passo. Status e Cancelar vêm das operações registradas (geração, exportação, cabelo, multidão). Personagem autosalvo (`hgs.autosave`) e restaurado ao abrir; grupos abertos, opções de exportação e cartão recolhido lembrados (`hgs.ui`).
-- Layout: rail de seções (7: Personagem, Corpo, Rosto, Cabelo, Roupas, Esculpir, Animação) → rail de ferramentas da seção (Cabelo; pincéis de Esculpir; Roupas sob medida), duas colunas, `role=toolbar` com setas/Home/End → 3D com o cartão de opções da ferramenta ativa (canto superior esquerdo, recolhível), vistas/luz/captura/desempenho (superior direito), zoom (inferior direito), dica e avisos (embaixo) → inspetor com o conteúdo da seção. Exportar é um popover do topo com opções e resumo; "Criar pessoa" e "Criação guiada" saíram (o rail já é a sequência).
-- Cores: grafite neutro, acento único `#f27a2e` (o da seleção no 3D); trilhos e chaves ≥ 3:1, texto ≥ 4,5:1. Fundo do 3D em degradê cinza neutro, igual em todas as iluminações, piso e grade que somem na névoa.
-- Editor de mechas, inspetor: Penteado (estilos + cor), Prendedores (sempre que houver), Ajustar mechas, Gravidade, Representação, Exibição, Arquivo. Cartão da ferramenta: Espelhar e Círculo (comuns) e as opções próprias da ferramenta.
-- Pentear: como um pente real — agarra cada mecha tocada (raiz, meio ou ponta) num dente que acompanha o cursor e puxa a mecha inteira; se ela não alcança, o pente desliza para a ponta e a solta lá; nunca estica (FABRIK até o dente, FTL depois). Alcance Pincel, Selecionadas ou Todo o cabelo.
-- Prender: Elástico (junta a seleção ou o círculo num feixe de raio ½·√Σespessura²), Grampo (prende rente à cabeça as mechas sob o clique), Fivela (junta encostado na cabeça), Arco/Tiara (de orelha a orelha, prende quem passa por baixo), Gel (fixa a forma; aspecto molhado no editor), Pino. Cada prendedor segura um ponto por mecha (pino com `holder`), é salvo com o penteado (`accessories`), aparece no personagem final e no GLB (malha `HairAccessories`, osso `head`) e tem "×" na lista.
-- Preencher: raízes numa rede de Fibonacci da cabeça (espaçamento = Distância entre mechas), plantadas onde o círculo passa; forma pela direção e comprimento médios das vizinhas que já existiam (Add do Blender), senão penteada para o lado e para trás. Adensar respeita a "Distância entre mechas" (Distance Min do Blender).
-- Preencher aceita passar de novo na mesma área: cada traço gira a rede de Fibonacci ao acaso, e só uma raiz em cima de outra é recusada (as do próprio traço mantêm a distância).
-- Couro cabeludo (`scalp.mjs`): linha do cabelo por marcos anatômicos em 32 pontos — testa 0,42 rad, ponto temporal, costeleta descendo na frente da orelha até −0,30, atrás da orelha −0,55 → −0,85 (abaixo do lóbulo), pezinho na nuca −1,05 (≈10 cm abaixo do centro da cabeça; antes −0,62). Vale pele com peso de cabeça + pescoço ≥ 0,3 a até 1,6 R; a orelha (vértices que o alvo MakeHuman `ears/*-ear-trans-up` move inteiros) nunca recebe raiz.
-- Desenhar: traço estabilizado (8 px, Stabilize Stroke do Blender); colado no couro cabeludo enquanto o cursor está sobre ele; ao sair, segue no plano de vista pelo ponto onde a mecha deixou a cabeça (Only First do Blender) e, onde a pele ou a roupa ficam na frente desse plano, sobre elas. Sem degrau de profundidade na saída do couro cabeludo (era a “sanfona”).
-- Penteado Curto cobre o pezinho e as costeletas (anéis −0,62 e −0,88); penteados gerados de novo.
-- Seleção por pintura (Shift soma, Ctrl tira).
-- Interface (todas as guias): sliders numa linha (legenda | barra preenchida | valor); escolhas na linha do rótulo, em ícones onde a opção é visual; ferramentas só com ícones no rail e o nome da ativa no cartão; ações em linhas de ícones com nome no tooltip; foco do teclado preservado quando o painel se refaz.
-- constrainLockPose não estica nunca: ponto preso parado mantém a pose anterior do trecho; ponto em movimento fica o mais perto possível.
-- Gravidade (editor): contato com pele/roupa por partícula com a mesma folga do penteado estático (PBD), folículo fixo e restrição de forma local do TressFX liberada pela rampa da Firmeza (`gravityWeight`, a mesma do penteado estático); mecha‑mecha por campo de densidade (Müller et al. 2012 §3.5). Só desliga sozinha por estiramento ou ponto preso dentro do corpo. O worker recebe no máximo um quadro (1/60 s) por pedido; `fx` (fixa) é gravado também no formato v1.
-- Esqueleto: ossos orientados pela cabeça→cauda + roll do rig MPFB (+Y ao longo do osso); clipes convertidos para esse repouso; pesos de todas as malhas saneados (4 influências, soma 1, índice 0 onde peso 0); `auditCharacter` disponível.
-- Corpo: juntas acompanham a escultura do corpo (anel de pele em volta de cada junta); os 32 blendshapes levam também deslocamento de normal.
-- Roupas: peças cortadas do corpo mantêm os pesos da pele de origem; moldes 2D pegam pesos só da pele da própria região (saias: pelve/coxas); roupa pronta sem escala extra; roupa infantil esconde a pele coberta.
-- Cabelo: trecho apoiado na cabeça com os pesos da pele de cabeça/pescoço; trecho livre de mechas longas em até 12 cadeias de juntas `hair_NN_J` filhas de `head` no mesmo esqueleto; mola VRMC_springBone na prévia (colisores cabeça, pescoço, peito, clavículas, braços); vértices limitados pelo orçamento do nível (30k/15k/3k); cabelo em casca (API) sem transparência ordenada.
-- Materiais: tinta da pele e cor das roupas prontas assadas na textura em espaço linear (fatores e cores de vértice ≤ 1); rugosidade de cada peça sob medida no seu próprio material.
-- Exportação: ossos na pose de ligação; sem `userData` no arquivo; malhas com skin na raiz da cena; com "otimizar", duas malhas (`Body`, `Head` com 32 alvos de posição e normal); extensão `VRMC_springBone`; texturas até 2048 px.
-- Validação: `npm run export:glb` — última execução: glTF Validator 0 erros, 0 avisos (informações: extensão VRMC desconhecida pelo validador; UVs sem textura no Node); auditoria sem problemas; 83 ossos (30 de cabelo); cabelo 29.547 vértices; 10 chamadas de desenho.
-
-## Não ativo / pendente
-
-- `src/cloth.mjs`: busca de vizinhos da autocolisão uma vez por quadro (Ten Minute Physics 15), medido 5,3 → 2,1 s por camiseta de molde. Está ATIVO no working tree, mas não commitado: foi escrito sobre a reescrita da autocolisão por hash que já estava não commitada (de outra sessão/pessoa) e não dá para separar.
-- Camiseta de molde: ainda há uma pequena ponta atrás do ombro (pontos internos do painel das costas na altura da axila estufam ~8 cm no caimento) e aspereza na gola de trás. A roupa cortada do corpo (padrão) não tem isso.
-- Abertura a frio depois de mudar o código: boneco em ~5 s, vestido em ~30 s com duas camisetas de molde e calça (o primeiro uso de um worker é ~2× mais lento). Com cache: 1,7 s.
-- Cache de builds (IndexedDB, código não commitado de outra sessão): se outra aba pedir para apagar/atualizar o banco, a abertura fica esperando sem tempo limite (visto num teste que apagava o banco).
-
-- Conferência visual do plano de 2026-10-08 (lista no relatório da sessão) é do usuário; nada foi aberto no navegador (regra do projeto). `npm test` não foi rodado.
-- Moldar só no LOD alto do personagem em edição (precisa de `baseIds`); no LOD médio/baixo os ajustes vêm dos sliders.
-- Importação de animação: testada só por leitura do código; fontes fora do padrão Mixamo/Unreal Mannequin não são reconhecidas.
-- O LOD2 tem desvio de ~7 cm (limite `error` 0,05 relativo à altura): adequado a multidão/distância, não a câmera próxima.
-- `src/tailor.mjs`, `src/cloth*.mjs`, `src/collision.mjs`, `src/generation*.mjs`, `src/hair-editor.mjs`, `server.py` e um trecho de `src/ui.mjs` têm alterações de outra pessoa/sessão, não commitadas por este trabalho.
-
-- Mecha atravessando mecha: não resolvido. Foi tentada uma separação por caixas orientadas (SAT) depois da deposição, com projeção em planos de contato (PBD); medida nos 6 penteados prontos, ela girava as mechas (pontas deslocadas 5–53 cm) sem zerar os contatos (as fitas de 5,5 cm se sobrepõem como telhas: ~890 contatos em ~1.100 pontos), então foi retirada. Continua a camada fina de `turnOffLocks` na deposição e o campo de densidade na gravidade ao vivo.
-- Testes automáticos: `tests/face-rig.test.mjs` "expressions…GLB" corrigido para procurar os alvos nos filhos do `Head` (GLTFLoader carrega malha de várias primitivas como `Group`); a suíte não foi rodada de novo nesta sessão.
-- Gravidade do editor: o worker leva ~10–12 ms por subpasso com 63 mechas; acima disso a simulação fica mais lenta que o tempo real (sem acumular atraso).
-- A conferência visual (lista no fim do relatório da sessão) é do usuário. O redesenho da interface foi verificado só por leitura do código e `node --check` (sem navegador, pela regra do projeto).
-- Ferramentas ainda sem atalho de teclado próprio (só F, G, P, Delete, +/−, Ctrl+Z/Y).
-- Olhos com 32.640 triângulos (subdivisão dupla do globo para a íris por cor de vértice): fora do escopo deste plano; candidato a revisão de orçamento.
-- O validador não verifica as imagens (o GLB do Node não tem texturas); cores e texturas são conferidas no navegador.
+- Barba, maquiagem, tatuagem, acessórios (óculos, brincos, chapéus).
+- Trilha de animação com chaves visíveis; trilha facial própria.

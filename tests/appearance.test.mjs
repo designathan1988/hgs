@@ -13,8 +13,10 @@ test('an adult can be dressed with fitted hair, eyes, clothing and shoes', async
   for (const name of ['Eyes', 'Brows', 'Lashes', 'Hair', 'Outfit', 'Shoes']) {
     assert.ok(human.group.getObjectByName(name)?.isSkinnedMesh, `${name} is rigged`);
   }
-  assert.ok(human.group.getObjectByName('Eyes').geometry.getAttribute('color'), 'iris is colored on the eye surface');
-  assert.equal(human.group.getObjectByName('Eyes').material.map, null);
+  // The MakeHuman eyes proxy is textured through its UV; the iris texture is made on the page (Node keeps its recipe).
+  const eyes = human.group.getObjectByName('Eyes');
+  assert.ok(eyes.geometry.getAttribute('uv'), 'eyes carry the proxy UV for the iris texture');
+  assert.ok(Number.isFinite(eyes.material.userData.hgsEyeTexture?.color), 'iris colour is recorded for the texture');
   assert.ok(human.group.getObjectByName('IrisLeft'));
   assert.ok(human.group.getObjectByName('IrisRight'));
   const iris = human.group.getObjectByName('IrisLeft').geometry.getAttribute('position');
