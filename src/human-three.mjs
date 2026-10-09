@@ -5,6 +5,7 @@ import {
 import { loadHumanData, shapeHuman } from './parametric.mjs';
 import { dressHuman, tintedSkinTexture } from './appearance.mjs';
 import { reduceGeometry } from './lod.mjs';
+import { SurfaceCollider } from './collision.mjs';
 import { buildClips } from './motion.mjs';
 import { buildUserClip } from './timeline.mjs';
 import { addFaceRig, applyFaceWeights } from './face-mesh.mjs';
@@ -254,7 +255,21 @@ export function skinMaterialFor(spec) {
   return { file: `${best.name}.webp`, tint, target };
 }
 
-export async function createHuman(spec = {}, { signal, onProgress } = {}) {
+/**
+ * Every clip of a character, in animationNames order: procedural and captured ones (`motion`, the
+ * library from loadMotionLibrary, in the variant of the body's sex), then the user's own keyed clip
+ * (timeline.mjs), which travels with every build so every export carries it.
+ */
+export function characterClips(skeleton, spec, faceMeshes, motion = null) {
+  const names = faceMeshes.map(mesh => mesh.name);
+  const animations = buildClips(skeleton, spec.pose ?? 0, names, { library: motion, gender: spec.gender ?? 0.5 });
+  const custom = buildUserClip(skeleton, spec.clip, names);
+  if (custom) animations.push(custom);
+  return animations;
+}
+
+/** `motion`: the motion library (loadMotionLibrary); without it the clips are procedural (the generation worker). */
+export async function createHuman(spec = {}, { signal, onProgress, motion = null } = {}) {
   const checkpoint = async stage => {
     signal?.throwIfAborted();
     onProgress?.(stage);
@@ -305,6 +320,9 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   const faceMeshes = context.lod !== 'low' ? await addFaceRig(context, spec.faceWeights ?? {}) : [];
   if (spec.lod === 'medium' || spec.lod === 'low') {
     await checkpoint('Detalhes');
+    // Skin the clothes cover goes first, per level (MetaHuman removes the hidden body geometry for each
+    // LOD): each mesh is simplified on its own, and a coarser garment would let the skin under it through.
+    removeCovered(body, group);
     const meshes = [];
     group.traverse(object => { if (object.isMesh) meshes.push(object); });
     let error = 0;
@@ -322,10 +340,7 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   }
   // Every skinned mesh leaves with glTF-valid weights (one set of four, summing to 1, unused slots 0).
   group.traverse(object => { if (object.isSkinnedMesh) sanitizeSkin(object.geometry, object.name); });
-  const animations = buildClips(skeleton, spec.pose ?? 0, faceMeshes.map(mesh => mesh.name));
-  // The character's own keyed clip (timeline.mjs) travels with every build, so every export carries it.
-  const custom = buildUserClip(skeleton, spec.clip, faceMeshes.map(mesh => mesh.name));
-  if (custom) animations.push(custom);
+  const animations = characterClips(skeleton, spec, faceMeshes, motion);
   group.animations = animations;
   const bounds = body.geometry.boundingBox;
   const height = bounds.max.y - bounds.min.y;
@@ -448,6 +463,63 @@ function mergeSkinned(parts, name, skeleton, bindMatrix) {
  * brows and lashes with the 32 blendshapes). Opaque textures go as JPEG.
  * Returns a function that undoes it.
  */
+/**
+ * Drop the triangles another layer covers — skin under clothes, a trouser waist under a shirt, a shoe top
+ * inside a trouser leg — as MetaHuman removes hidden geometry per LOD. A vertex is covered when, walking
+ * out along its normal (turned away from the body) from 1.5 to 25 mm, some garment surface passes within
+ * 0.8 mm of the walk: straight out, so skin just past a collar or a cuff (whose nearest cloth is the edge
+ * beside it) stays. Ready-made outfits lay a shirt under 2 mm over the trousers, so even that close a
+ * layer counts (a folded hem's inner side goes too, which a reduced level, seen from afar, never shows).
+ * A triangle goes when its three corners are covered; material groups are kept.
+ */
+function removeCovered(body, group) {
+  const clothes = ['Outfit', 'Costume', 'Shoes'].map(name => group.getObjectByName(name)).filter(mesh => mesh?.geometry?.index);
+  const skin = body.geometry;
+  if (!clothes.length || !skin.index || !skin.getAttribute('normal')) return;
+  // The skin first, so each garment's normals are turned away from the body (SurfaceCollider orient).
+  const oriented = new SurfaceCollider(0.012);
+  oriented.add(Float32Array.from(skin.getAttribute('position').array), Float32Array.from(skin.getAttribute('normal').array), skin.index.array);
+  for (const mesh of clothes) {
+    if (!mesh.geometry.getAttribute('normal')) mesh.geometry.computeVertexNormals();
+    oriented.add(Float32Array.from(mesh.geometry.getAttribute('position').array), Float32Array.from(mesh.geometry.getAttribute('normal').array), mesh.geometry.index.array, { orient: true });
+  }
+  const cover = new SurfaceCollider(0.012);
+  cover.layers = oriented.layers.slice(1);
+  const hit = {};
+  const covered = (x, y, z, nx, ny, nz) => {
+    // closest() starts from the nearest garment vertex (search radius 2 cm, wider than their spacing),
+    // then measures to the surface itself.
+    for (let s = 0.0015; s <= 0.025; s += 0.0015) {
+      const px = x + nx * s, py = y + ny * s, pz = z + nz * s;
+      if (cover.closest(px, py, pz, 0.02, hit) && Math.hypot(hit.x - px, hit.y - py, hit.z - pz) < 0.0008) return true;
+    }
+    return false;
+  };
+  const strip = (geometry, normals) => {
+    const position = geometry.getAttribute('position'), marks = new Uint8Array(position.count);
+    for (let v = 0; v < position.count; v++) marks[v] = covered(position.getX(v), position.getY(v), position.getZ(v), normals[v * 3], normals[v * 3 + 1], normals[v * 3 + 2]) ? 1 : 0;
+    keepUncovered(geometry, marks);
+  };
+  strip(skin, skin.getAttribute('normal').array);
+  clothes.forEach((mesh, i) => strip(mesh.geometry, oriented.layers[i + 1].normals));
+}
+
+/** Remove the triangles whose three corners are marked, keeping the material groups. */
+function keepUncovered(geometry, covered) {
+  const index = geometry.index.array, groups = geometry.groups.length ? geometry.groups : [{ start: 0, count: index.length, materialIndex: 0 }];
+  const kept = [], spans = [];
+  for (const span of groups) {
+    const start = kept.length;
+    for (let i = span.start; i < Math.min(index.length, span.start + span.count); i += 3) {
+      if (!(covered[index[i]] && covered[index[i + 1]] && covered[index[i + 2]])) kept.push(index[i], index[i + 1], index[i + 2]);
+    }
+    spans.push({ start, count: kept.length - start, materialIndex: span.materialIndex ?? 0 });
+  }
+  if (kept.length === index.length) return;
+  geometry.setIndex(kept);
+  if (geometry.groups.length) { geometry.clearGroups(); for (const span of spans) geometry.addGroup(span.start, span.count, span.materialIndex); }
+}
+
 function optimizeForExport(human, clips, suffix = '') {
   const undo = [], meshes = [], parts = [];
   human.group.traverse(object => { if (object.isSkinnedMesh && object.visible) meshes.push(object); });
