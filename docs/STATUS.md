@@ -14,7 +14,9 @@ Etapas em andamento: [PLANO.md](PLANO.md).
 - Galeria de peças com ícones (Dia a dia, Calçados, Carnaval), fantasias prontas Passista e Destaque, 10 tecidos PBR (algodão, jeans, malha, seda, cetim, couro, paetê, pedraria, lamê, tule), ajuste no 3D com Bordas e Cobrir/Descobrir, até 12 peças.
 - Carnaval: biquíni, calcinha/tanga, maiô, braçadeiras, tornozeleiras, saia de franjas, costeiro e cabeça de plumas, coroa. Franjas e plumas balançam em molas (VRMC_springBone, mesmo esqueleto). GLB da Passista e da Destaque: 0 erros no glTF Validator.
 - Calçados sob medida: tênis, botas e sandálias de tiras, com sola plana.
-- Animação: 16 clipes; pose T, poses prontas; linha do tempo com chaves que tocam interpoladas.
+- Animação (conferido no app em 09/10): 33 clipes, 30 capturados do Microsoft Rocketbox (MIT, `assets/animations/`, atribuição em `LICENSE-Rocketbox.md`), variante masculina/feminina pelo sexo; Parado, Sambar e Desfilar procedurais. Pés a ±2 cm do chão (aterramento por quadro). Troca de clipe com transição de 0,3 s. Exportados no GLB (2,6 MiB de animação; validador 0 erros/0 avisos, também com nomes Mixamo).
+- Posar: limites de junta, ângulos em graus por parte, esfera azul move o quadril, pinos de mãos e pés (agachar com pés presos), simetria, espelhar.
+- Linha do tempo: trilhas Corpo e Rosto, chaves arrastáveis, curva suave/linear/degrau, repetir, copiar movimento capturado para a sua animação, chaves de expressão; exporta no GLB.
 - Cabelo no personagem final: segue a cabeça e balança por cadeias de mola (VRMC_springBone).
 - Exportação: GLB e Pacote LOD; glTF Validator 0 erros e 0 avisos (LOD0 40.039, LOD1 23.321, LOD2 6.239 triângulos).
 - Navegação: roda faz zoom no cursor, botão do meio move, botão direito gira no ponto sob o cursor.
@@ -22,7 +24,7 @@ Etapas em andamento: [PLANO.md](PLANO.md).
 
 ## Com defeito (a corrigir, ver PLANO.md)
 
-- Posar: arrastar a esfera de IK gira a câmera.
+- Animação: Rocketbox não tem pulo nem samba (o Sambar é procedural); sentar fica sem cadeira; clipes capturados não acompanham o rosto além de piscar e sorrir; arrastar a esfera sobre os anéis do gizmo foi corrigido, mas falta conferir no navegador com o painel visível.
 - Boca: dentes e gengiva aparecem entre os lábios fechados.
 - Esculpir: corpo facetado durante o traço; a escultura salva é bem menor que a vista.
 - Moldar: puxar o nariz pega "olhos".
@@ -35,4 +37,4 @@ Etapas em andamento: [PLANO.md](PLANO.md).
 ## Não existe
 
 - Barba, maquiagem, tatuagem, acessórios (óculos, brincos, chapéus).
-- Trilha de animação com chaves visíveis; trilha facial própria.
+- Curvas editáveis por chave (tangentes), camadas aditivas de animação, pulo.
