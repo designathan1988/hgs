@@ -1,7 +1,9 @@
 import { blendshapeNames } from './face-rig.mjs';
 import { HairEditor, hairTools } from './hair-editor.mjs';
 import { hairParts, partName } from './hair-parts.mjs';
-import { lockLength } from './locks.mjs';
+import { Vector3 } from 'three';
+import { lockLength, hairTypes, lockKinds, dyeModes } from './locks.mjs';
+import { tieLocks, bunLocks, clipLocks, barretteLocks, bandAcross, accessoryColors } from './hair-accessories.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
 import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment, costumeTypes, footwearTypes, MAX_GARMENTS } from './tailor.mjs';
 import { fabricIds, fabricNames, fabrics } from './fabrics.mjs';
@@ -102,11 +104,22 @@ const clothToolGroups = [
 ];
 // Cut-on-body garments edit edges and coverage; drafted (2D pattern) garments pin regions.
 const surfaceOnly = ['edges', 'clothAdd', 'clothErase'], draftedOnly = ['clothPin', 'clothUnpin'];
-const holderNames = { tie: 'Elástico', clip: 'Grampo', barrette: 'Fivela', band: 'Arco', tiara: 'Tiara' };
+const holderNames = { tie: 'Elástico', clip: 'Grampo', barrette: 'Fivela', band: 'Arco', tiara: 'Tiara', bun: 'Coque' };
+// Hair engine choices shown as icons (names in the tooltips): hair types (locks.mjs hairTypes), lock kinds, colour effects.
+const kindChoices = { card: ['Solta', 'kindCard'], braid: ['Trança', 'kindBraid'], dread: ['Dread', 'kindDread'], twist: ['Twist (torcida)', 'kindTwist'] };
+const dyeChoices = { none: ['Sem efeito', 'dyeNone'], ombre: ['Ombré: clareia até as pontas', 'dyeOmbre'], luzes: ['Luzes: mechas tingidas', 'dyeLuzes'], raiz: ['Raiz de outra cor', 'dyeRaiz'], pontas: ['Pontas tingidas', 'dyePontas'] };
+const dyePalette = ['#e9dcc0', '#d9b46a', '#b5522e', '#8c1c2b', '#e3427d', '#9b59d0', '#3b6fd9', '#2fa39a', '#c9c9cf', '#1c1a19', '#5b3a29', '#f08a24'];
+// Holders the panel puts on (hair-accessories.mjs): [type, name, icon, tooltip].
+const holderActions = [
+  ['tie', 'Rabo de cavalo', 'tie', 'Rabo de cavalo: um elástico junta as mechas escolhidas (ou todas) na nuca'],
+  ['bun', 'Coque', 'bun', 'Coque: junta as mechas escolhidas (ou todas) no alto de trás e enrola o resto'],
+  ['clip', 'Grampo', 'clip', 'Grampo: prende à cabeça as mechas escolhidas, onde passam ao lado'],
+  ['barrette', 'Fivela', 'barrette', 'Fivela: junta as mechas escolhidas (ou todas) na cabeça, atrás'],
+  ['band', 'Arco', 'band', 'Arco: por cima da cabeça, segura as mechas que passam por baixo'],
+];
 // [value, name, icon]: the choices show their icons, the names in the tooltips.
 const shapes = { tips: [['round', 'Redondas', 'tipRound'], ['point', 'Finas', 'tipPoint'], ['flat', 'Retas', 'tipFlat']], forms: [['straight', 'Lisa', 'straight'], ['wavy', 'Ondulada', 'wavy'], ['curl', 'Cacheada', 'curly']] };
 const choices = list => list.map(([, name, glyph]) => [name, glyph]);
-const formOf = curl => curl > 0.6 ? 2 : curl > 0 ? 1 : 0;
 const patternNames = { solid: 'Liso', stripes: 'Listras', pinstripe: 'Risca de giz', checks: 'Xadrez', gradient: 'Degradê' };
 // The 52 ARKit face shapes in plain words (the ARKit name stays in the tooltip: it is what face-capture tools send).
 const arkitWords = {
@@ -1249,6 +1262,81 @@ export class StudioUI {
     color.append(swatches({ label: 'Tom', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, names: ['Preto', 'Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Castanho claro', 'Loiro', 'Ruivo', 'Cinza escuro', 'Platinado'],
       onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
     this.toggle(color, 'Couro escuro', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Pinta o couro entre as mechas com fios da cor do cabelo; desligado, aparece a pele');
+    // The colour effect over the hair colour (locks.mjs dyeTints): ombré, highlights, roots, tips.
+    const dye = editor.state.dye, mode = dye?.mode ?? 'none';
+    const effect = this.pane('Efeito de cor');
+    this.segmented(effect, 'Tipo', dyeModes.map(id => dyeChoices[id]), dyeModes.indexOf(mode), i => this.hairChange(e => {
+      const next = dyeModes[i];
+      e.state.dye = next === 'none' ? null : { mode: next, color: e.state.dye?.color ?? parseInt(dyePalette[1].slice(1), 16), amount: e.state.dye?.amount ?? 0.5 };
+    }));
+    if (dye) {
+      const hex = hexOf(dye.color);
+      effect.append(swatches({ label: 'Cor', palette: dyePalette, selected: dyePalette.indexOf(hex), custom: dyePalette.includes(hex) ? null : hex,
+        onPick: i => this.hairChange(e => { e.state.dye = { ...e.state.dye, color: parseInt(dyePalette[i].slice(1), 16) }; }),
+        // The picker previews while open (live) and commits when closed: one undo step for the whole visit.
+        onCustom: (value, { live = false } = {}) => {
+          const record = !this.dyePicking;
+          this.dyePicking = live;
+          this.hairChange(e => { e.state.dye = { ...e.state.dye, color: parseInt(value.slice(1), 16) }; }, { record });
+        } }));
+      this.slide(effect, { label: 'Quantidade', value: dye.amount, min: 0, max: 1, scale: 100, unit: '%', ends: ['Pouco', 'Muito'], title: 'Quanto do comprimento (ou das mechas, em Luzes) leva a cor',
+        onStart: () => editor.checkpoint(), onInput: v => this.hairChange(e => { e.state.dye = { ...e.state.dye, amount: v }; }, { record: false }) });
+    }
+  }
+  /**
+   * A change of the locks' fibre (type, gel, frizz, kind) or of the whole
+   * hairstyle (colour effect, fade, volume): one undo step (unless a drag
+   * already recorded it); the editor's frame loop rebuilds the cards that
+   * changed (dirty → step), and the cap — which carries fade and volume — is
+   * redone once per frame.
+   */
+  hairChange(apply, { record = true } = {}) {
+    const editor = this.renderer?.lockEditor;
+    if (!editor?.active) return;
+    if (record) editor.checkpoint();
+    this.hairDirty = true;
+    apply(editor);
+    editor.dirty = true;
+    if (this.hairFrame) return;
+    this.hairFrame = requestAnimationFrame(() => {
+      this.hairFrame = null;
+      if (!editor.active) return;
+      editor.updateCap(); editor.onChange();
+    });
+  }
+  /**
+   * Put a holder on (hair-accessories.mjs): the chosen locks (or all) are
+   * gathered or pressed at a point of the head; the locks it holds hang again
+   * from their new holds and keep that shape (as the editor's settle does).
+   */
+  placeHolder(type) {
+    const editor = this.renderer?.lockEditor;
+    if (!editor?.active) return;
+    const state = editor.state, { C, R } = state.frame;
+    const chosen = [...editor.selected].map(i => editor.locks[i]).filter(lock => lock && !lock.erased);
+    const locks = chosen.length ? chosen : editor.locks.filter(lock => !lock.erased);
+    if (!locks.length) { this.toast('Sem mechas para prender', 'error'); return; }
+    // A point on the head, in head radii from its centre (+x left, +y up, +z front).
+    const head = (x, y, z) => new Vector3(C.x + x * R, C.y + y * R, C.z + z * R);
+    // The chosen locks' middle at chain point i (where a clip or a barrette meets them).
+    const along = i => locks.reduce((sum, lock) => sum.add(new Vector3().fromArray(lock.x, i * 3)), new Vector3()).divideScalar(locks.length);
+    const color = accessoryColors[type];
+    editor.checkpoint();
+    const result = type === 'tie' ? tieLocks(state, locks, chosen.length ? along(9) : head(0, -0.3, -1.15), { color })
+      : type === 'bun' ? bunLocks(state, locks, chosen.length ? along(7) : head(0, 0.45, -1.05), { color })
+      : type === 'clip' ? clipLocks(state, locks, chosen.length ? along(5) : head(0.95, 0.3, 0.05), { color })
+      : type === 'barrette' ? barretteLocks(state, locks, chosen.length ? along(5) : head(0, 0.35, -1), { color })
+      : bandAcross(state, head(0, 0.85, 0.5), { color: accessoryColors.band, style: 'band' });
+    if (!result) {
+      // Nothing it could hold: no step in the history.
+      editor.undoStack.pop();
+      this.toast(type === 'clip' ? 'Escolha mechas que passem pelo lado da cabeça' : 'As mechas não alcançam: escolha mechas mais longas', 'error');
+      return;
+    }
+    for (const lock of result.locks) { state.sim.hang(lock, new Map(), state.sim.force); lock.rest.set(lock.x); lock.styled = true; }
+    this.hairDirty = true;
+    editor.syncAccessories(); editor.syncMeshes(); editor.updateCap(); editor.onChange();
+    this.toast(`${holderNames[type]}: ${result.locks.length} ${result.locks.length === 1 ? 'mecha presa' : 'mechas presas'}`, 'info', { label: 'Desfazer', run: () => editor.undo() });
   }
   /** Cabelo › Mechas: the selection's adjustments, the parts to build with, the holders. */
   renderHairLocks(editor) {
@@ -1260,7 +1348,6 @@ export class StudioUI {
       adjust.append(h('p', { class: 'status-line', id: 'lockStatus' }));
       this.slide(adjust, { label: 'Comprimento', value: lockLength(lock), min: 0.015, max: 1.1, step: 0.005, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setLength(v) });
       this.slide(adjust, { label: 'Largura', value: lock.width, min: 0.004, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setParam('width', v) });
-      this.segmented(adjust, 'Forma', choices(shapes.forms), formOf(lock.curl), i => { record(); editor.setForm(shapes.forms[i][0]); });
       // Curvar works from the shape the locks have when the slider is taken; it rests at 0 again afterwards.
       this.slide(adjust, { label: 'Curvar', value: 0, min: -1, max: 1, step: 0.01, ends: ['Para fora', 'Para dentro'], onStart: () => { this.hairDirty = true; editor.beginBend(); }, onInput: v => editor.bendTo(v), onEnd: () => { editor.endBend(); this.scheduleRender(); }, title: 'Dobra as pontas para dentro ou para fora a partir da forma atual' });
       // Actions of the selection (or all): icons with their names in the tooltip, in one bar.
@@ -1272,6 +1359,43 @@ export class StudioUI {
         count ? iconButton('trash', 'Apagar as selecionadas (Delete)', () => editor.deleteSelected(), { danger: true }) : null,
         iconButton('reset', 'Começar do zero: apaga todas as mechas', () => { if (confirm('Apagar todas as mechas deste penteado?')) editor.clearAll(); }, { danger: true })));
     } else adjust.append(h('p', { class: 'empty-note', text: 'Sem mechas: escolha um estilo ou use o Pincel (B).' }));
+
+    // The fibre of the selected locks (or all): type (Andre Walker 1–4c), kind of lock, frizz and gel (locks.mjs).
+    if (lock) {
+      const fibre = this.pane(count ? 'Fio das selecionadas' : 'Fio');
+      const typed = lock.type ?? (lock.curl > 0 ? null : '1');
+      const types = iconChoices({ label: 'Tipo de fio', items: hairTypes.map(t => [t.id === '1' ? 'Liso (1)' : `${t.name}`, `hair${t.id}`]), selected: hairTypes.findIndex(t => t.id === typed),
+        onPick: i => this.hairChange(e => { const id = hairTypes[i].id; e.setParam('type', id); if (id === '1') e.setForm('straight'); }) });
+      types.style.gridTemplateColumns = 'repeat(5, minmax(0, 1fr))';
+      fibre.append(types);
+      this.segmented(fibre, 'Mecha', lockKinds.map(id => kindChoices[id]), lockKinds.indexOf(lock.kind ?? 'card'), i => this.hairChange(e => e.setParam('kind', lockKinds[i])));
+      this.slide(fibre, { label: 'Frisado', value: lock.frizz ?? 0, min: 0, max: 1, scale: 100, unit: '%', ends: ['Alinhado', 'Frisado'], title: 'Frisado: fios soltos que abrem a mecha',
+        onStart: record, onInput: v => this.hairChange(e => e.setParam('frizz', v), { record: false }) });
+      this.slide(fibre, { label: 'Gel', value: lock.gel ?? 0, min: 0, max: 1, scale: 100, unit: '%', ends: ['Seco', 'Molhado'], title: 'Gel: junta e firma a mecha, com brilho de molhado (a partir da metade fica presa à cabeça no jogo)',
+        onStart: record, onInput: v => this.hairChange(e => e.setParam('gel', v), { record: false }) });
+    }
+
+    // The whole hairstyle: volume (black power, afro) and the fade of the clipped sides and nape.
+    const whole = this.pane('Penteado inteiro');
+    this.slide(whole, { label: 'Volume', value: editor.state.shell ?? 0, min: 0, max: 0.06, step: 0.001, scale: 100, unit: 'cm', title: 'Volume: o cabelo fica afastado da cabeça por igual (black power, afro)',
+      onStart: record, onInput: v => this.hairChange(e => { e.state.shell = v; }, { record: false }) });
+    this.slide(whole, { label: 'Degradê', value: editor.state.fade ?? 0, min: 0, max: 1, scale: 100, unit: '%', ends: ['Sem', 'Raspado'], title: 'Degradê: a nuca e as laterais vão ficando raspadas',
+      onStart: record, onInput: v => this.hairChange(e => { e.state.fade = v; }, { record: false }) });
+
+    // Holders: put one on, then the ones on the hair, each with a button to take it off.
+    const holders = this.pane('Prender');
+    holders.append(h('div', { class: 'icon-bar' }, holderActions.map(([type, name, glyph, title]) => iconButton(glyph, title, () => this.placeHolder(type), { disabled: !lock || (type === 'clip' && !count) }))));
+    if (editor.state.accessories?.length) {
+      const counts = new Map();
+      for (const item of editor.locks) for (const pin of item.pins.values()) if (pin.holder) counts.set(pin.holder, (counts.get(pin.holder) ?? 0) + 1);
+      holders.append(h('div', { class: 'holder-list' }, editor.state.accessories.map(acc => {
+        const name = holderNames[acc.type === 'band' && acc.style === 'tiara' ? 'tiara' : acc.type];
+        return h('div', { class: 'holder-item' },
+          h('span', { class: 'holder-dot', style: `--swatch:${hexOf(acc.color)}` }),
+          h('span', { text: `${name}${counts.get(acc.id) ? ` · ${counts.get(acc.id)} ${counts.get(acc.id) === 1 ? 'mecha' : 'mechas'}` : ''}` }),
+          iconButton('close', `Tirar ${name.toLowerCase()}`, () => { this.hairDirty = true; editor.removeHolder(acc.id); }, { size: 14 }));
+      })));
+    }
 
     // Parts: build a hairstyle from pieces (base, bangs, sides, back, tails), each added over the hair there.
     const parts = this.pane('Montar com peças');
@@ -1289,19 +1413,6 @@ export class StudioUI {
         iconButton('close', 'Remover esta peça', () => { this.hairDirty = true; editor.removeGroup(group); }, { size: 14 })))));
     }
 
-    // The ties, clips and bands on the hair, each with a button to take it off.
-    if (editor.state.accessories?.length) {
-      const holders = this.pane('Prendedores');
-      const counts = new Map();
-      for (const lock of editor.locks) for (const pin of lock.pins.values()) if (pin.holder) counts.set(pin.holder, (counts.get(pin.holder) ?? 0) + 1);
-      holders.append(h('div', { class: 'holder-list' }, editor.state.accessories.map(acc => {
-        const name = holderNames[acc.type === 'band' && acc.style === 'tiara' ? 'tiara' : acc.type];
-        return h('div', { class: 'holder-item' },
-          h('span', { class: 'holder-dot', style: `--swatch:${hexOf(acc.color)}` }),
-          h('span', { text: `${name}${counts.get(acc.id) ? ` · ${counts.get(acc.id)} mechas` : ''}` }),
-          iconButton('close', `Tirar ${name.toLowerCase()}`, () => editor.removeHolder(acc.id), { size: 14 }));
-      })));
-    }
 
     this.updateLockStatus();
   }

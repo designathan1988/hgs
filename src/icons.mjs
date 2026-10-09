@@ -133,7 +133,40 @@ const paths = {
   sitIdle: '<circle cx="9" cy="5" r="2"/><path d="M9 7.5v6h6v7M9 9.5l3.5 3"/><path d="M5 13v7.5M5 17h3"/><path d="M15.5 3h4l-4 4h4"/>',
   standUp: '<circle cx="10" cy="4.5" r="2"/><path d="M10 7v7M10 14l-2.5 6.5M10 14l2.5 6.5M10 8.5 7 12.5M10 8.5l3 4"/><path d="M18.5 15V4.5M16 7l2.5-2.5L21 7"/>',
   crouch: '<circle cx="11" cy="7.5" r="2"/><path d="M11 10 12 15.5M12 15.5l-4 1 1 4M12 15.5l3 1.5-1 3.5M11.5 12 15.5 14"/>',
+  // Lock kinds (Cabelo › Mechas): a loose card, a three-strand braid, a matted dread, a two-strand twist.
+  kindCard: '<path d="M8 3c2 6-1 12 1 18h3c-2-6 1-12-1-18zM14 3c2 6-1 12 1 18"/>',
+  kindBraid: '<path d="M8.5 3c7 3 0 6 7 9s0 6-7 9"/><path d="M15.5 3c-7 3 0 6-7 9s0 6 7 9"/>',
+  kindDread: '<path d="M9 3c-1 6 1 12 0 18M15 3c1 6-1 12 0 18" stroke-width="3.2"/>',
+  kindTwist: '<path d="M10 3c4 3 4 6 0 9s-4 6 0 9M14 3c-4 3-4 6 0 9s4 6 0 9"/>',
+  // Holders (Cabelo › Mechas › Prender): the bun on the head.
+  bun: '<circle cx="12" cy="14.5" r="6"/><circle cx="12" cy="5.5" r="2.8"/>',
+  // Colour effects (Cabelo › Cor): a lock with the dyed part filled.
+  dyeNone: '<rect x="8" y="3" width="8" height="18" rx="4"/><path d="m5 19 14-14"/>',
+  dyeOmbre: '<rect x="8" y="3" width="8" height="18" rx="4"/><path d="M8 12h8v5a4 4 0 0 1-8 0z" fill="currentColor" fill-opacity=".45" stroke="none"/><path d="M8 16h8v1a4 4 0 0 1-8 0z" fill="currentColor" stroke="none"/>',
+  dyeLuzes: '<rect x="8" y="3" width="8" height="18" rx="4"/><path d="M11 7v11M14 9v9"/>',
+  dyeRaiz: '<rect x="8" y="3" width="8" height="18" rx="4"/><path d="M8 7a4 4 0 0 1 8 0v3H8z" fill="currentColor" stroke="none"/>',
+  dyePontas: '<rect x="8" y="3" width="8" height="18" rx="4"/><path d="M8 15h8v2a4 4 0 0 1-8 0z" fill="currentColor" stroke="none"/>',
 };
+/**
+ * Hair types (Andre Walker: 1 straight, 2 S-wave, 3 ringlets, 4 tight coils
+ * or a Z pattern) as one strand from top to bottom: `amp` the swing, `wave`
+ * the length of one turn, `loop` how far a turn folds back on itself (a
+ * ringlet seen from the side), `zig` a sharp-angled Z instead of a curve.
+ */
+function strand(amp, wave, { loop = 0, zig = false } = {}) {
+  const points = [], steps = zig ? Math.round(18 / wave * 4) : 96;
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps * (18 / wave) * Math.PI * 2;
+    const swing = zig ? (2 / Math.PI) * Math.asin(Math.sin(t)) : Math.sin(t);
+    points.push(`${(12 + amp * swing).toFixed(2)} ${(3 + s / steps * (18 - 2 * loop) + loop - loop * Math.cos(t)).toFixed(2)}`);
+  }
+  return `<path d="M${points.join('L')}"/>`;
+}
+Object.assign(paths, {
+  hair1: strand(0, 18), hair2a: strand(2, 12), hair2b: strand(2.8, 9), hair2c: strand(3.4, 7),
+  hair3a: strand(3.6, 7, { loop: 1.2 }), hair3b: strand(3.2, 5.5, { loop: 1.1 }), hair3c: strand(2.8, 4.5, { loop: 1 }),
+  hair4a: strand(2.6, 3.4, { loop: 0.7 }), hair4b: strand(3, 3.6, { zig: true }), hair4c: strand(2.4, 2.6, { zig: true }),
+});
 
 /** An inline SVG icon element. */
 export function icon(name, size = 18) {
