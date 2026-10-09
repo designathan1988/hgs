@@ -487,7 +487,7 @@ export class StudioUI {
         options.lod === 'all' ? h('p', { class: 'muted', text: 'Um .zip com LOD0, LOD1 e LOD2 (mesmo esqueleto, malhas _LODn): LOD1 com metade dos triângulos e as expressões, LOD2 com um décimo.' }) : null,
         choose('Pelos do rosto', 'groom', [['cards', 'Cartões'], ['strands', 'Fios']]),
         flag('Animações', 'animations', '16 clipes'),
-        flag('Expressões faciais', 'blendshapes', '32 blendshapes com nomes ARKit'),
+        flag('Expressões faciais', 'blendshapes', '52 blendshapes ARKit (olhar, boca, língua…)'),
         flag('Otimizar', 'optimize', 'Solda vértices, junta as malhas em Body e Head e usa JPEG'),
         flag('Brilho dos olhos', 'cosmetic', 'Camadas extras de brilho dos olhos'),
         h('div', { class: 'metric-list' }, [['Triângulos', triangles.toLocaleString('pt-BR')], ['Malhas', meshes], ['Ossos', this.renderer?.current?.body.skeleton.bones.length ?? '—'], ['Blendshapes', face ? Object.keys(face.morphTargetDictionary).length : 0]]
@@ -1079,11 +1079,15 @@ export class StudioUI {
     const face = this.group('Expressão');
     face.append(chips({ label: 'Expressão', items: expressionNames, selected: this.person.expression, onPick: i => this.update('expression', i) }));
     this.range(face, 'expressionIntensity', 'Intensidade', 0, 1);
-    const fine = this.group('Ajuste fino do rosto', { open: false });
-    for (const name of blendshapeNames) {
-      this.slide(fine, { label: name, value: this.person.faceShapes[name] ?? 0, min: -1, max: 1, onInput: v => this.patch({ faceShapes: { ...this.person.faceShapes, [name]: v } }, { history: `faceShapes:${name}`, live: true }) });
+    // The 52 ARKit shapes by region (names kept: they are what face-capture tools send).
+    const regions = [['Olhos e olhar', /^eye/], ['Sobrancelhas', /^brow/], ['Mandíbula', /^jaw/], ['Boca', /^mouth/], ['Bochechas e nariz', /^(cheek|nose)/], ['Língua', /^tongue/]];
+    for (const [title, test] of regions) {
+      const fine = this.group(`Ajuste fino · ${title}`, { open: false });
+      for (const name of blendshapeNames.filter(shape => test.test(shape))) {
+        this.slide(fine, { label: name, value: this.person.faceShapes[name] ?? 0, min: -1, max: 1, onInput: v => this.patch({ faceShapes: { ...this.person.faceShapes, [name]: v } }, { history: `faceShapes:${name}`, live: true }) });
+      }
     }
-    fine.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.patch({ faceShapes: {} }) }, 'Zerar ajustes'));
+    face.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.patch({ faceShapes: {} }) }, 'Zerar ajustes finos'));
   }
 
   // ------------------------------------------------------------ files and export

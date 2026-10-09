@@ -1,5 +1,5 @@
-import { BufferGeometry, Float32BufferAttribute, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute } from 'three';
-import { blendshapeNames, buildFaceShapes, expressionWeights } from './face-rig.mjs';
+import { BufferGeometry, Float32BufferAttribute, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three';
+import { blendshapeNames, buildFaceShapes, expressionWeights, eyeLookDegrees, legacyShapes } from './face-rig.mjs';
 
 /** Teeth and tongue from the base mesh helpers, so an open jaw shows a mouth. */
 function mouthMesh(context) {
@@ -95,6 +95,50 @@ function meshNormalDelta(geometry) {
   };
 }
 
+/**
+ * The eyeLook shapes on the eyeballs: each eye turns about its own centre
+ * (yaw about +Y, pitch about +X, right-hand rule; the character's left eye is
+ * at +x and looks "out" towards +x). A blendshape is linear, so the turn is
+ * exact at weights 0 and 1. Returns { position, normal } delta makers.
+ */
+function eyeLook(geometry) {
+  const position = geometry.getAttribute('position'), normal = geometry.getAttribute('normal');
+  const centre = sign => {
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < position.count; i++) {
+      if (Math.sign(position.getX(i)) !== sign) continue;
+      for (let k = 0; k < 3; k++) { const v = position.getComponent(i, k); min[k] = Math.min(min[k], v); max[k] = Math.max(max[k], v); }
+    }
+    return new Vector3((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
+  };
+  const centres = { 1: centre(1), [-1]: centre(-1) }, X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), deg = Math.PI / 180;
+  // Per shape: the eye it moves (+1 left, -1 right) and its rotation.
+  const turn = name => {
+    const match = /^eyeLook(Up|Down|In|Out)(Left|Right)$/.exec(name);
+    if (!match) return null;
+    const sign = match[2] === 'Left' ? 1 : -1, d = eyeLookDegrees;
+    if (match[1] === 'Up') return { sign, axis: X, angle: -d.up * deg };
+    if (match[1] === 'Down') return { sign, axis: X, angle: d.down * deg };
+    // Out turns the left eye to +x (+angle about Y), the right eye to -x; In the other way.
+    const out = match[1] === 'Out';
+    return { sign, axis: Y, angle: (out ? 1 : -1) * sign * (out ? d.out : d.in) * deg };
+  };
+  const make = (name, attribute, about) => {
+    const out = new Float32Array(position.count * 3), t = turn(name);
+    if (!t || !attribute) return out;
+    const p = new Vector3();
+    for (let i = 0; i < position.count; i++) {
+      if (Math.sign(position.getX(i)) !== t.sign) continue;
+      p.fromBufferAttribute(attribute, i);
+      if (about) p.sub(centres[t.sign]);
+      const turned = p.clone().applyAxisAngle(t.axis, t.angle);
+      out[i * 3] = turned.x - p.x; out[i * 3 + 1] = turned.y - p.y; out[i * 3 + 2] = turned.z - p.z;
+    }
+    return out;
+  };
+  return { position: name => make(name, position, true), normal: name => make(name, normal, false) };
+}
+
 function nearestHeadVertex(positions, candidates) {
   // Uniform grid over the head vertices, 1 cm cells.
   const cell = 0.01, grid = new Map();
@@ -175,6 +219,14 @@ export async function addFaceRig(context, weights = {}) {
     setMorphs(mesh.geometry, shape => brow && lidShapes.test(shape) ? new Float32Array(ids.length * 3) : perVertex(ids, shape), meshNormalDelta(mesh.geometry));
     meshes.push(mesh);
   }
+  // The eyeballs carry the eyeLook shapes (zero for every other shape).
+  const eyes = group.getObjectByName('Eyes');
+  if (eyes) {
+    if (!eyes.geometry.getAttribute('normal')) eyes.geometry.computeVertexNormals();
+    const look = eyeLook(eyes.geometry);
+    setMorphs(eyes.geometry, look.position, look.normal);
+    meshes.push(eyes);
+  }
   for (const mesh of meshes) { mesh.updateMorphTargets(); }
   applyFaceWeights(meshes, weights);
   return meshes;
@@ -184,7 +236,11 @@ export async function addFaceRig(context, weights = {}) {
 export function faceWeights(expression = 0, intensity = 1, custom = {}) {
   const result = {};
   for (const [name, value] of Object.entries(expressionWeights[expression] ?? {})) result[name] = value * intensity;
-  for (const [name, value] of Object.entries(custom ?? {})) if (Number.isFinite(value) && value !== 0) result[name] = Math.max(0, Math.min(1, (result[name] ?? 0) + value));
+  for (const [name, value] of Object.entries(custom ?? {})) {
+    if (!Number.isFinite(value) || value === 0) continue;
+    // Shapes saved before the ARKit split (mouthUpperUp, mouthLowerDown) apply to both sides.
+    for (const shape of legacyShapes[name] ?? [name]) result[shape] = Math.max(0, Math.min(1, (result[shape] ?? 0) + value));
+  }
   return result;
 }
 

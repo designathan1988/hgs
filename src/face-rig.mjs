@@ -7,14 +7,25 @@ import { fitProxy, loadProxy } from './proxy.mjs';
  * add-ons) map from. "Left" is the character's own left (+x).
  */
 export const blendshapeNames = [
-  'eyeBlinkLeft', 'eyeBlinkRight', 'eyeWideLeft', 'eyeWideRight', 'eyeSquintLeft', 'eyeSquintRight',
+  'eyeBlinkLeft', 'eyeLookDownLeft', 'eyeLookInLeft', 'eyeLookOutLeft', 'eyeLookUpLeft', 'eyeSquintLeft', 'eyeWideLeft',
+  'eyeBlinkRight', 'eyeLookDownRight', 'eyeLookInRight', 'eyeLookOutRight', 'eyeLookUpRight', 'eyeSquintRight', 'eyeWideRight',
+  'jawForward', 'jawLeft', 'jawRight', 'jawOpen',
+  'mouthClose', 'mouthFunnel', 'mouthPucker', 'mouthLeft', 'mouthRight',
+  'mouthSmileLeft', 'mouthSmileRight', 'mouthFrownLeft', 'mouthFrownRight', 'mouthDimpleLeft', 'mouthDimpleRight',
+  'mouthStretchLeft', 'mouthStretchRight', 'mouthRollLower', 'mouthRollUpper', 'mouthShrugLower', 'mouthShrugUpper',
+  'mouthPressLeft', 'mouthPressRight', 'mouthLowerDownLeft', 'mouthLowerDownRight', 'mouthUpperUpLeft', 'mouthUpperUpRight',
   'browDownLeft', 'browDownRight', 'browInnerUp', 'browOuterUpLeft', 'browOuterUpRight',
-  'jawOpen', 'jawForward', 'jawLeft', 'jawRight',
-  'mouthSmileLeft', 'mouthSmileRight', 'mouthFrownLeft', 'mouthFrownRight',
-  'mouthStretchLeft', 'mouthStretchRight', 'mouthPucker', 'mouthFunnel', 'mouthPressLeft', 'mouthPressRight',
-  'mouthUpperUp', 'mouthLowerDown', 'cheekPuff', 'cheekSquintLeft', 'cheekSquintRight',
-  'noseSneerLeft', 'noseSneerRight',
+  'cheekPuff', 'cheekSquintLeft', 'cheekSquintRight', 'noseSneerLeft', 'noseSneerRight', 'tongueOut',
 ];
+/** Names of the earlier 32-shape set that ARKit splits by side. */
+export const legacyShapes = { mouthUpperUp: ['mouthUpperUpLeft', 'mouthUpperUpRight'], mouthLowerDown: ['mouthLowerDownLeft', 'mouthLowerDownRight'] };
+
+/**
+ * Eye rotation at full eyeLook weight, degrees, from measured normal ductions
+ * (PMC11196818: adduction about 45–50°, elevation 29–34°, adduction with
+ * depression 41–46°). The shapes rotate the eyeball (face-mesh.mjs).
+ */
+export const eyeLookDegrees = { in: 45, out: 45, up: 30, down: 42 };
 
 // Expression presets as blendshape weights (state.mjs expressionNames order).
 export const expressionWeights = [
@@ -22,14 +33,14 @@ export const expressionWeights = [
   { mouthSmileLeft: 0.15, mouthSmileRight: 0.15, eyeSquintLeft: 0.1, eyeSquintRight: 0.1 },
   { mouthSmileLeft: 0.55, mouthSmileRight: 0.55, cheekSquintLeft: 0.35, cheekSquintRight: 0.35, eyeSquintLeft: 0.25, eyeSquintRight: 0.25, browOuterUpLeft: 0.1, browOuterUpRight: 0.1 },
   { mouthSmileLeft: 0.9, mouthSmileRight: 0.9, cheekSquintLeft: 0.6, cheekSquintRight: 0.6, eyeSquintLeft: 0.35, eyeSquintRight: 0.35, mouthStretchLeft: 0.2, mouthStretchRight: 0.2 },
-  { mouthSmileLeft: 1, mouthSmileRight: 1, jawOpen: 0.45, cheekSquintLeft: 0.8, cheekSquintRight: 0.8, eyeSquintLeft: 0.6, eyeSquintRight: 0.6, mouthUpperUp: 0.3, browInnerUp: 0.15 },
+  { mouthSmileLeft: 1, mouthSmileRight: 1, jawOpen: 0.45, cheekSquintLeft: 0.8, cheekSquintRight: 0.8, eyeSquintLeft: 0.6, eyeSquintRight: 0.6, mouthUpperUpLeft: 0.3, mouthUpperUpRight: 0.3, browInnerUp: 0.15 },
   { mouthFrownLeft: 0.75, mouthFrownRight: 0.75, browInnerUp: 0.8, eyeSquintLeft: 0.15, eyeSquintRight: 0.15, mouthPressLeft: 0.2, mouthPressRight: 0.2 },
   { browDownLeft: 1, browDownRight: 1, mouthFrownLeft: 0.45, mouthFrownRight: 0.45, noseSneerLeft: 0.5, noseSneerRight: 0.5, eyeSquintLeft: 0.4, eyeSquintRight: 0.4, mouthPressLeft: 0.5, mouthPressRight: 0.5 },
   { browDownLeft: 0.5, browDownRight: 0.5, mouthFrownLeft: 0.3, mouthFrownRight: 0.3, mouthPressLeft: 0.35, mouthPressRight: 0.35, eyeSquintLeft: 0.25, eyeSquintRight: 0.25 },
   { browInnerUp: 0.9, browOuterUpLeft: 0.9, browOuterUpRight: 0.9, eyeWideLeft: 0.85, eyeWideRight: 0.85, jawOpen: 0.5, mouthFunnel: 0.3 },
   { browInnerUp: 1, mouthStretchLeft: 0.35, mouthStretchRight: 0.35, mouthFrownLeft: 0.3, mouthFrownRight: 0.3, eyeWideLeft: 0.3, eyeWideRight: 0.3 },
   { eyeBlinkLeft: 0.45, eyeBlinkRight: 0.45, browInnerUp: 0.2, mouthFrownLeft: 0.15, mouthFrownRight: 0.15, jawOpen: 0.05 },
-  { jawOpen: 0.25, mouthSmileLeft: 0.15, mouthSmileRight: 0.15, mouthLowerDown: 0.2, mouthUpperUp: 0.1 },
+  { jawOpen: 0.25, mouthSmileLeft: 0.15, mouthSmileRight: 0.15, mouthLowerDownLeft: 0.2, mouthLowerDownRight: 0.2, mouthUpperUpLeft: 0.1, mouthUpperUpRight: 0.1 },
 ];
 
 const smooth = (edge0, edge1, x) => { const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0))); return t * t * (3 - 2 * t); };
@@ -163,6 +174,31 @@ export async function buildFaceShapes(data, positions, unitScale) {
     return delta;
   };
 
+  // The jawOpen rotation undone on the lower-lip skin only (not teeth, tongue or chin): about a
+  // centimetre of lip below the mouth seam, at the front of the face.
+  const lowerLipClose = () => {
+    const open = jaw(0.3), delta = new Float32Array(count * 3);
+    for (let v = 0; v < count; v++) {
+      if (lowerSet.has(v) || headWeight[v] < 0.5) continue;
+      const y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+      const w = smooth(seam - 0.018 * k, seam - 0.008 * k, y) * smooth(teethFront - 0.015 * k, teethFront - 0.005 * k, z);
+      for (let c = 0; c < 3; c++) delta[v * 3 + c] = -open[v * 3 + c] * w;
+    }
+    return delta;
+  };
+  // The tongue slides forward until its tip is past the lips (2 cm in front of the incisors), the front moving most.
+  const tongueShape = () => {
+    const delta = new Float32Array(count * 3);
+    let back = Infinity, tip = -Infinity;
+    for (const v of tongue) { back = Math.min(back, positions[v * 3 + 2]); tip = Math.max(tip, positions[v * 3 + 2]); }
+    const reach = teethFront - tip + 0.02 * k;
+    for (const v of tongue) {
+      const t = (positions[v * 3 + 2] - back) / Math.max(1e-6, tip - back);
+      delta[v * 3 + 1] = -0.004 * k * t; delta[v * 3 + 2] = reach * t;
+    }
+    return delta;
+  };
+
   const shapes = {
     eyeBlinkLeft: lids(1, 1, 0.12), eyeBlinkRight: lids(-1, 1, 0.12),
     eyeWideLeft: mix([regional('eye-height2-decr-incr', 1, 'left')], [regional('eye-height1-decr-incr', 1, 'left')], [regional('eyebrows-trans-down-up', 0.35, 'left')]),
@@ -187,14 +223,32 @@ export async function buildFaceShapes(data, positions, unitScale) {
     mouthFunnel: mix([regional('mouth-scale-horiz-decr-incr', -0.6)], [regional('mouth-trans-backward-forward', 0.6)], [jaw(0.08)]),
     mouthPressLeft: mix([regional('mouth-lowerlip-volume-decr-incr', -0.7, 'left')], [regional('mouth-upperlip-volume-decr-incr', -0.7, 'left')]),
     mouthPressRight: mix([regional('mouth-lowerlip-volume-decr-incr', -0.7, 'right')], [regional('mouth-upperlip-volume-decr-incr', -0.7, 'right')]),
-    mouthUpperUp: mix([regional('mouth-upperlip-height-decr-incr', -1)], [regional('mouth-upperlip-ext-down-up', 1)]),
-    mouthLowerDown: mix([regional('mouth-lowerlip-ext-down-up', -1)], [regional('mouth-lowerlip-height-decr-incr', 0.6)]),
+    mouthUpperUpLeft: mix([regional('mouth-upperlip-height-decr-incr', -1, 'left')], [regional('mouth-upperlip-ext-down-up', 1, 'left')]),
+    mouthUpperUpRight: mix([regional('mouth-upperlip-height-decr-incr', -1, 'right')], [regional('mouth-upperlip-ext-down-up', 1, 'right')]),
+    mouthLowerDownLeft: mix([regional('mouth-lowerlip-ext-down-up', -1, 'left')], [regional('mouth-lowerlip-height-decr-incr', 0.6, 'left')]),
+    mouthLowerDownRight: mix([regional('mouth-lowerlip-ext-down-up', -1, 'right')], [regional('mouth-lowerlip-height-decr-incr', 0.6, 'right')]),
+    // Dimples press the skin in: the MakeHuman target named "-in" (negative side of in-out).
+    mouthDimpleLeft: regional('mouth-dimples-in-out', -1, 'left'),
+    mouthDimpleRight: regional('mouth-dimples-in-out', -1, 'right'),
+    mouthRollLower: mix([regional('mouth-lowerlip-volume-decr-incr', -1)], [regional('mouth-lowerlip-height-decr-incr', -0.5)]),
+    mouthRollUpper: mix([regional('mouth-upperlip-volume-decr-incr', -1)], [regional('mouth-upperlip-height-decr-incr', -0.5)]),
+    mouthShrugLower: regional('mouth-lowerlip-ext-down-up', 1),
+    mouthShrugUpper: regional('mouth-upperlip-ext-down-up', 0.6),
+    // ARKit mouthClose: the lips meet while the jaw is open, so jawOpen + mouthClose is a closed mouth on an open jaw.
+    mouthClose: lowerLipClose(),
+    tongueOut: tongueShape(),
     cheekPuff: mix([regional('cheek-volume-decr-incr', 1)], [regional('cheek-inner-decr-incr', 1)], [regional('mouth-dimples-in-out', -0.6)]),
     cheekSquintLeft: regional('cheek-trans-down-up', 1.5, 'left'),
     cheekSquintRight: regional('cheek-trans-down-up', 1.5, 'right'),
     noseSneerLeft: mix([regional('nose-flaring-decr-incr', 1, 'left')], [regional('nose-nostrils-angle-down-up', 1, 'left')], [regional('mouth-upperlip-ext-down-up', 0.4, 'left')]),
     noseSneerRight: mix([regional('nose-flaring-decr-incr', 1, 'right')], [regional('nose-nostrils-angle-down-up', 1, 'right')], [regional('mouth-upperlip-ext-down-up', 0.4, 'right')]),
   };
+  // The mouth shifts sideways with the unsided "mouth-trans-in-out" target; the side that moves to +x is the character's left.
+  { const one = regional('mouth-trans-in-out', 1), other = regional('mouth-trans-in-out', -1);
+    let x = 0; for (let i = 0; i < one.length; i += 3) x += one[i];
+    shapes.mouthLeft = x > 0 ? one : other; shapes.mouthRight = x > 0 ? other : one; }
+  // The eyeballs turn in face-mesh.mjs; on the skin these shapes move nothing.
+  for (const name of blendshapeNames) shapes[name] ??= new Float32Array(count * 3);
   const result = new Map();
   for (const name of blendshapeNames) {
     const delta = shapes[name];
