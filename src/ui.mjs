@@ -15,6 +15,7 @@ import { importAnimation } from './timeline.mjs';
 import { categoryLabel, regionNames } from './shape-handles.mjs';
 import { namedFeatures } from './renderer-three.mjs';
 import { faceWeights, mixamoName } from './human-three.mjs';
+import { makeupNames, tattooDesigns } from './skin-layers.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames, hairBases,
@@ -68,7 +69,7 @@ const metaFields = new Set(['name', 'creation', 'version']);
 const liveShapeFields = new Set(['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength',
   'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs']);
 // Appearance: materials and textures only (look.mjs), never a rebuild. `colors` and `garments` are checked by `lookOnly`.
-const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'eyeColor', 'topColor', 'bottomColor', 'colors', 'garments']);
+const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'eyeColor', 'topColor', 'bottomColor', 'colors', 'garments', 'makeup', 'tattoos']);
 const liveColorKeys = new Set(['skin', 'hair', 'eyes', 'brows', 'lashes', 'top', 'bottom']);
 /** True when only colours the live look can show changed (not a garment's cut). */
 function lookOnly(prev, next, keys) {
@@ -809,6 +810,7 @@ export class StudioUI {
     this.renderMolding(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet']);
     const skin = this.group('Pele', { open: false });
     this.range(skin, 'skinRoughness', 'Brilho ↔ fosco', 0, 1);
+    this.renderTattoos();
   }
   renderFace() {
     const shape = this.group('Formato');
@@ -828,7 +830,60 @@ export class StudioUI {
     this.range(lashes, 'lashLength', 'Comprimento', 0.4, 1.8); this.range(lashes, 'lashCurl', 'Curvatura', 0, 1);
     this.range(lashes, 'lashDensity', 'Densidade', 0, 1);
     this.colorSwatches(lashes, null, 'Cor', ['#201915', '#3a2a22', '#5b4636', '#11131a'], 'lashes');
+    // Makeup layers painted into the skin texture (skin-layers.mjs): an amount and a colour per region.
+    const makeup = this.group('Maquiagem', { open: false });
+    for (const [region, name] of Object.entries(makeupNames)) {
+      const set = (changes, options) => this.patch({ makeup: { ...this.person.makeup, [region]: { ...this.person.makeup[region], ...changes } } }, { history: `makeup:${region}`, ...options });
+      this.slide(makeup, { label: name, value: this.person.makeup[region].amount, min: 0, max: 1, onInput: v => set({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
+      makeup.append(row(`Cor: ${name.toLowerCase()}`, h('input', { type: 'color', value: this.person.makeup[region].color, 'aria-label': `Cor: ${name.toLowerCase()}`, onchange: event => set({ color: event.target.value }) })));
+    }
     this.renderMolding(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears']);
+  }
+  /** Tattoos: pick a design (or load an image), then click the skin where it goes; each placed one can be resized, turned, recoloured or removed. */
+  renderTattoos() {
+    const group = this.group('Tatuagens', { open: false });
+    const keys = Object.keys(tattooDesigns);
+    this.tattooDesign ??= 'estrela';
+    group.append(chips({ label: 'Desenho', items: [...keys.map(key => tattooDesigns[key].name), 'Imagem'], selected: this.tattooImage ? keys.length : keys.indexOf(this.tattooDesign),
+      onPick: i => { if (i < keys.length) { this.tattooDesign = keys[i]; this.tattooImage = null; } else this.chooseTattooImage(); this.scheduleRender(); } }));
+    if (this.tattooDesign === 'texto' && !this.tattooImage) group.append(row('Texto', h('input', { type: 'text', maxlength: 14, value: this.tattooText ?? 'amor', oninput: event => { this.tattooText = event.target.value; } })));
+    group.append(h('button', { type: 'button', class: `button wide${this.tattooing ? ' primary' : ''}`, onclick: () => { this.tattooing = !this.tattooing; this.setHint(this.tattooing ? 'Clique na pele onde a tatuagem vai' : ''); this.scheduleRender(); } },
+      this.tattooing ? 'Clique na pele… (clique aqui para parar)' : 'Colocar no corpo'));
+    this.person.tattoos.forEach((tattoo, index) => {
+      const item = this.group(`Tatuagem ${index + 1} · ${tattoo.image ? 'imagem' : tattooDesigns[tattoo.design]?.name ?? ''}`, { open: false });
+      const set = (changes, options) => this.patch({ tattoos: this.person.tattoos.map((t, i) => i === index ? { ...t, ...changes } : t) }, { history: `tattoo:${index}`, ...options });
+      this.slide(item, { label: 'Tamanho', value: tattoo.size, min: 0.01, max: 0.3, step: 0.005, onInput: v => set({ size: v }, { live: true }), onEnd: () => this.commitLive() });
+      this.slide(item, { label: 'Giro', value: tattoo.angle, min: -3.14, max: 3.14, step: 0.01, onInput: v => set({ angle: v }, { live: true }), onEnd: () => this.commitLive() });
+      this.slide(item, { label: 'Opacidade', value: tattoo.opacity, min: 0, max: 1, onInput: v => set({ opacity: v }, { live: true }), onEnd: () => this.commitLive() });
+      item.append(row('Tinta', h('input', { type: 'color', value: tattoo.color, 'aria-label': 'Cor da tinta', onchange: event => set({ color: event.target.value }) })));
+      item.append(h('button', { type: 'button', class: 'button danger wide', onclick: () => this.patch({ tattoos: this.person.tattoos.filter((_, i) => i !== index) }, { history: true }) }, icon('trash', 16), 'Remover tatuagem'));
+    });
+  }
+  /** Load an image for a tattoo: scaled to 256 px (PNG with transparency is kept), stored with the character. */
+  chooseTattooImage() {
+    const input = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp' });
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const image = new Image();
+      image.onload = () => {
+        const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
+        const scale = Math.min(256 / image.width, 256 / image.height), w = image.width * scale, hh = image.height * scale;
+        canvas.getContext('2d').drawImage(image, (256 - w) / 2, (256 - hh) / 2, w, hh);
+        this.tattooImage = canvas.toDataURL('image/png'); URL.revokeObjectURL(image.src); this.scheduleRender();
+      };
+      image.src = URL.createObjectURL(file);
+    };
+    input.click();
+  }
+  /** Tattoo tool: a click on the skin puts the chosen design there (UV point of the hit). */
+  get tattooingSkin() { return Boolean(this.tattooing); }
+  placeTattoo(uv) {
+    if (!uv) return;
+    const tattoo = { design: this.tattooImage ? null : this.tattooDesign, image: this.tattooImage ?? null, text: this.tattooText ?? 'amor', u: uv.x, v: uv.y, size: 0.05, angle: 0, color: '#1d2430', opacity: 0.9 };
+    this.patch({ tattoos: [...this.person.tattoos, tattoo] }, { history: true });
+    this.tattooing = false; this.setHint('Tatuagem colocada: ajuste tamanho, giro e cor em Tatuagens');
+    this.scheduleRender();
   }
 
   // ------------------------------------------------------------ hair
