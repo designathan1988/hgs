@@ -2,7 +2,7 @@ import { normalizeSculpt } from './sculpt.mjs';
 import { normalizeGarment, newGarment } from './tailor.mjs';
 import { normalizeLocks } from './locks.mjs';
 import { hairPresetIds } from './hair-presets.mjs';
-import { defaultMakeup, tattooDesigns } from './skin-layers.mjs';
+import { beardStyles, defaultBeard, defaultMakeup, tattooDesigns } from './skin-layers.mjs';
 
 const hexColor = (value, fallback) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
 const bounded = (value, min, max, fallback) => Number.isFinite(value) ? Math.round(Math.max(min, Math.min(max, value)) * 1e4) / 1e4 : fallback;
@@ -11,6 +11,14 @@ function normalizeMakeup(value) {
   const out = {};
   for (const [region, fallback] of Object.entries(defaultMakeup)) out[region] = { color: hexColor(value?.[region]?.color, fallback.color), amount: bounded(value?.[region]?.amount, 0, 1, 0) };
   return out;
+}
+/** Beard painted on the skin (skin-layers.mjs): a style, how strong, how dense; colour null = the hair's. */
+function normalizeBeard(value) {
+  return {
+    style: beardStyles[value?.style] ? value.style : defaultBeard.style,
+    amount: bounded(value?.amount, 0, 1, defaultBeard.amount), density: bounded(value?.density, 0, 1, defaultBeard.density),
+    color: hexColor(value?.color, null),
+  };
 }
 /** Tattoos: a built-in design (or a loaded image, a data URL up to ~300 kB) at a UV point of the skin. */
 function normalizeTattoos(list) {
@@ -172,6 +180,7 @@ export function normalizeCharacter(value = {}) {
   // Characters saved before the base existed keep their hair as it was: no base.
   result.hairBase = hairBaseIds.includes(value.hairBase) ? value.hairBase : value.hairBase === undefined && !('hairPreset' in value) ? defaultCharacter.hairBase : null;
   result.makeup = normalizeMakeup(value.makeup);
+  result.beard = normalizeBeard(value.beard);
   result.tattoos = normalizeTattoos(value.tattoos);
   result.locks = value.locks ? normalizeLocks(value.locks) : null;
   if (result.locks && !result.locks.locks.length && !Array.isArray(value.locks?.locks)) result.locks = null;
@@ -240,7 +249,7 @@ export function varyCharacter(character, locks = character.creation?.locks ?? {}
   const groups = {
     body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness',
       'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs', 'tattoos'],
-    face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes', 'makeup'],
+    face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes', 'makeup', 'beard'],
     hair: ['hairPreset', 'hairBase', 'hairColor', 'locks'],
     clothes: ['outfit', 'garments', 'topColor', 'bottomColor'],
   };

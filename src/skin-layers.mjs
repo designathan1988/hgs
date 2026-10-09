@@ -22,6 +22,28 @@ export const makeupRegions = {
   blush: { targets: ['cheek/l-cheek-volume-incr', 'cheek/r-cheek-volume-incr'], from: 0.35, to: 0.95 },
 };
 export const makeupNames = { lips: 'Batom', eyeshadow: 'Sombra', eyeliner: 'Delineador', blush: 'Blush' };
+
+/**
+ * Beard areas, from the targets that move them (the lips are cut out): the mustache over the
+ * philtrum, the chin, the jaw line and the cheeks below it, and under the chin.
+ */
+const beardAreas = {
+  // Checked in the app: cheek-inner lifts the cheekbone (not a beard area); the asymmetry jaw targets
+  // move the jaw's sides; the upper-lip extension covers the skin over the lip, wider than the philtrum.
+  mustache: { targets: ['mouth/mouth-philtrum-volume-incr', 'mouth/mouth-upperlip-ext-up'], from: 0.02, to: 0.25 },
+  chin: { targets: ['chin/chin-prominent-incr', 'chin/chin-height-incr'], from: 0.32, to: 0.72 },
+  jaw: { targets: ['chin/chin-jaw-drop-incr', 'chin/chin-width-incr', 'asym/asym-jaw-1-l', 'asym/asym-jaw-1-r', 'asym/asym-jaw-2-l', 'asym/asym-jaw-2-r', 'asym/asym-jaw-3-l', 'asym/asym-jaw-3-r'], from: 0.12, to: 0.5 },
+  under: { targets: ['neck/neck-double-incr'], from: 0.4, to: 0.8 },
+};
+export const beardStyles = {
+  nenhuma: { name: 'Nenhuma', areas: [] },
+  sombra: { name: 'Por fazer', areas: ['mustache', 'chin', 'jaw', 'under'], stubble: true },
+  bigode: { name: 'Bigode', areas: ['mustache'] },
+  cavanhaque: { name: 'Cavanhaque', areas: ['mustache', 'chin'] },
+  queixo: { name: 'Contorno', areas: ['chin', 'jaw'] },
+  cheia: { name: 'Cheia', areas: ['mustache', 'chin', 'jaw', 'under'] },
+};
+export const defaultBeard = Object.freeze({ style: 'nenhuma', amount: 0.8, density: 0.6, color: null });
 export const defaultMakeup = Object.freeze({
   lips: { color: '#a23a3f', amount: 0 }, eyeshadow: { color: '#6b4a6e', amount: 0 },
   eyeliner: { color: '#1b1412', amount: 0 }, blush: { color: '#d06a6a', amount: 0 },
@@ -34,11 +56,14 @@ const LINEAR = Float32Array.from({ length: 256 }, (_, i) => linear(i));
 const hexRGB = hex => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(linear); };
 
 const regionCache = new WeakMap();
-/** Per base vertex, how much it belongs to each makeup region (0..1); fixed by the base mesh, cached per data. */
+/** Per base vertex, how much it belongs to each makeup region and beard area (0..1); fixed by the base mesh, cached per data. */
 export function regionWeights(data) {
   if (regionCache.has(data)) return regionCache.get(data);
   const morpher = data.morpher, count = data.base.vertexCount ?? data.joints.length / 4, out = {};
-  for (const [region, { targets, from, to }] of Object.entries(makeupRegions)) {
+  // A beard grows on the skin that moves with the head (jaw, chin), not down the neck: weight by the head bone's skin weight.
+  const head = data.skeleton.bones.findIndex(bone => bone.name === 'head'), onHead = new Float32Array(count);
+  for (let v = 0; v < count; v++) { let w = 0; for (let k = 0; k < 4; k++) if (data.joints[v * 4 + k] === head) w += data.weights[v * 4 + k] / 65535; onHead[v] = smoothstep(0.35, 0.8, w); }
+  for (const [region, { targets, from, to }] of Object.entries({ ...makeupRegions, ...Object.fromEntries(Object.entries(beardAreas).map(([k, v]) => [`beard-${k}`, v])) })) {
     const w = new Float32Array(count);
     for (const name of targets) {
       const t = morpher.localByName.get(name);
@@ -51,6 +76,7 @@ export function regionWeights(data) {
         if (v < count) w[v] = Math.max(w[v], smoothstep(from, to, d));
       }
     }
+    if (region.startsWith('beard-')) for (let v = 0; v < count; v++) w[v] *= onHead[v];
     out[region] = w;
   }
   regionCache.set(data, out);
@@ -115,7 +141,8 @@ async function inkedDesign(tattoo) {
   return canvas;
 }
 
-export const hasSkinLayers = layers => Boolean(layers && (Object.values(layers.makeup ?? {}).some(item => item?.amount > 0) || layers.tattoos?.length));
+export const hasSkinLayers = layers => Boolean(layers && (Object.values(layers.makeup ?? {}).some(item => item?.amount > 0) || layers.tattoos?.length
+  || (beardStyles[layers.beard?.style]?.areas.length && layers.beard.amount > 0)));
 
 const layered = new Map();
 /**
@@ -151,6 +178,24 @@ export function layeredSkinTexture(base, geometry, data, layers) {
         const shade = Math.min(1.6, (0.2126 * r + 0.7152 * gg + 0.0722 * b) / mean);
         const target = [color[0] * shade, color[1] * shade, color[2] * shade];
         d[p] = encode(r + (target[0] - r) * a); d[p + 1] = encode(gg + (target[1] - gg) * a); d[p + 2] = encode(b + (target[2] - b) * a);
+      }
+    }
+    // Beard: short hairs as a speckle in the hair colour over the chosen areas (the lips cut out); between
+    // the hairs the skin is shaded by them (a light shade for a beard "por fazer").
+    const beard = layers.beard, style = beardStyles[beard?.style];
+    if (style?.areas.length && beard.amount > 0) {
+      const lips = weights.lips, alpha = new Float32Array(W * H);
+      const weightOf = v => { let w = 0; for (const area of style.areas) w = Math.max(w, weights[`beard-${area}`][v] ?? 0); return w * (1 - Math.min(1, (lips[v] ?? 0) * 1.5)); };
+      const [x0, y0, x1, y1] = rasterise(alpha, W, H, geometry, weightOf);
+      const color = hexRGB(beard.color ?? layers.hairColor ?? '#2a1d17'), amount = Math.min(1, beard.amount);
+      const density = style.stubble ? 0.3 + 0.45 * beard.density : 0.55 + 0.45 * beard.density, between = style.stubble ? 0.12 : 0.4;
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const i = y * W + x, a = alpha[i] * amount;
+        if (a <= 0) continue;
+        const n = (Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(x + y, 83492791)) >>> 0, r1 = (n % 1000) / 1000, r2 = ((n >>> 10) % 1000) / 1000;
+        const mix = a * (r1 < density * a ? 0.9 : between), tone = 0.75 + 0.5 * r2;
+        const p = i * 4;
+        for (let k = 0; k < 3; k++) { const s = LINEAR[d[p + k]]; d[p + k] = encode(s + (color[k] * tone - s) * mix); }
       }
     }
     g.putImageData(pixels, 0, 0);

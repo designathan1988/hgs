@@ -81,7 +81,7 @@ export function studioSpec(person, { undressed = false } = {}) {
     // The ready-made hair mesh under the locks (appearance.mjs), fitted as a MakeHuman proxy.
     hairBase: person.hairBase ?? null,
     // Makeup and tattoos painted into the skin texture (skin-layers.mjs).
-    skinLayers: { makeup: person.makeup, tattoos: person.tattoos ?? [] },
+    skinLayers: { makeup: person.makeup, tattoos: person.tattoos ?? [], beard: person.beard, hairColor: colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1] },
     hairColor: hex(colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1]),
     browColor: colors.brows ? hex(colors.brows) : undefined,
     lashes: { length: person.lashLength ?? 1, curl: person.lashCurl ?? 0.5, density: person.lashDensity ?? 1, color: colors.lashes ? hex(colors.lashes) : undefined },
