@@ -301,7 +301,10 @@ export class StudioUI {
   moldTo(change) {
     if (!change) return;
     this.setHint(`Moldando: ${change.label}`);
-    this.setMorph(change.key, Math.round(change.value * 1000) / 1000, { live: true });
+    // One drag is one undo step, however long it pauses: only its first change records the state before it.
+    const gesture = this.renderer.shapeHandles.drag, first = gesture !== this.moldGesture;
+    this.moldGesture = gesture;
+    this.setMorph(change.key, Math.round(change.value * 1000) / 1000, { live: true, history: first ? true : false });
   }
   /** The viewport's left button picks bones and drags the gizmo while posing (main.mjs). */
   get posing() { return Boolean(this.renderer?.poseMode); }
@@ -678,12 +681,12 @@ export class StudioUI {
   }
   /** Value of a MakeHuman regional adjustment: its own field when it has one, else `morphs`. */
   morphValue(key) { const field = namedFeatures[key]; return field ? this.person[field] ?? 0 : this.person.morphs[key] ?? 0; }
-  setMorph(key, value, { live = false } = {}) {
+  setMorph(key, value, { live = false, history = `morph:${key}` } = {}) {
     const field = namedFeatures[key];
-    if (field) { this.patch({ [field]: value }, { history: `morph:${key}`, live }); return; }
+    if (field) { this.patch({ [field]: value }, { history, live }); return; }
     const morphs = { ...this.person.morphs };
     if (value) morphs[key] = value; else delete morphs[key];
-    this.patch({ morphs }, { history: `morph:${key}`, live });
+    this.patch({ morphs }, { history, live });
   }
   /** Moldar (pull the body in the view) and every MakeHuman regional adjustment of `regions`. */
   renderMolding(regions) {

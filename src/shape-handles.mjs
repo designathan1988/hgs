@@ -26,6 +26,9 @@ const words = {
   thigh: 'coxa', knee: 'joelho', neck: 'pescoço', nose: 'nariz', mouth: 'boca', chin: 'queixo', cheek: 'bochecha', eye: 'olho', ear: 'orelha',
   lowerlip: 'lábio inferior', upperlip: 'lábio superior', nostrils: 'narinas', point: 'ponta', head: 'cabeça', torso: 'tronco', hip: 'quadril',
   stomach: 'barriga', pregnant: 'gestação', navel: 'umbigo', buttocks: 'glúteos', forehead: 'testa', temple: 'têmpora', jaw: 'mandíbula',
+  triangle: 'triângulo', double: 'papada', prominent: 'proeminência', bones: 'ossos', round: 'arredondado', flaring: 'abertura', compression: 'compressão',
+  curve: 'curva', hump: 'giba', septumangle: 'ângulo do septo', nubian: 'núbio', greek: 'grego', bulge: 'saliência', cleft: 'covinha', lobe: 'lóbulo',
+  epicanthus: 'epicanto', bag: 'olheira', fold: 'prega', lid: 'pálpebra', cupid: 'arco do cupido', size: 'tamanho', open: 'abertura', dimples: 'covinhas',
 };
 /** A readable Portuguese label for a MakeHuman category name. */
 export function categoryLabel(name) {
@@ -36,7 +39,20 @@ export function categoryLabel(name) {
 }
 
 export class ShapeHandles {
-  constructor(renderer) { this.renderer = renderer; this.ray = new Raycaster(); this.symmetry = true; this.drag = null; }
+  constructor(renderer) { this.renderer = renderer; this.ray = new Raycaster(); this.symmetry = true; this.drag = null; this.peaks = new Map(); }
+  /** The largest displacement target `name` makes at any vertex (metres, weight 1): the core of its area. */
+  peakOf(name) {
+    if (this.peaks.has(name)) return this.peaks.get(name);
+    const morpher = this.renderer.current.context.data.morpher, t = morpher.localByName.get(name);
+    let peak = 0;
+    if (t) {
+      const unit = this.renderer.current.context.positions.unitScale ?? 0.1;
+      for (let e = t.start; e < t.start + t.count; e++) peak = Math.max(peak, Math.hypot(morpher.lDelta[e * 3], morpher.lDelta[e * 3 + 1], morpher.lDelta[e * 3 + 2]));
+      peak *= t.scale * unit;
+    }
+    this.peaks.set(name, peak);
+    return peak;
+  }
   /** The base vertex under the cursor on the body (the hit triangle's corner nearest the hit), or null. */
   vertexAt(ndc) {
     const human = this.renderer.current, body = human?.body;
@@ -73,7 +89,8 @@ export class ShapeHandles {
       if (plus.lengthSq() + minus.lengthSq() < 1e-14) continue;
       // Region size: how many vertices the adjustment moves (the smaller, the more local).
       const size = Math.max(morpher.localByName.get(`${group}/${positive}`)?.count ?? 0, morpher.localByName.get(`${group}/${negative}`)?.count ?? 0);
-      list.push({ name, group, sided, side: x >= 0 ? 'l' : 'r', plus, minus, size, onlyPositive: !category.opposites });
+      const peak = target => target ? this.peakOf(`${group}/${target}`) : 0;
+      list.push({ name, group, sided, side: x >= 0 ? 'l' : 'r', plus, minus, size, onlyPositive: !category.opposites, plusPeak: peak(positive), minusPeak: peak(negative) });
     }
     return list;
   }
@@ -103,15 +120,17 @@ export class ShapeHandles {
     if (!drag.chosen) {
       // Wait for 3 mm of movement, then keep the adjustment that best follows the pointer.
       if (delta.length() < 0.003) return null;
-      // MetaHuman Creator: each marker acts on a limited area. Among the adjustments that move this
-      // point along the pull (cosine ≥ 0.6), the one with the smallest region is the part grabbed.
+      // MetaHuman Creator: each marker acts on a limited area. The part grabbed is an adjustment that
+      // moves this point along the pull (cosine ≥ 0.6) and whose area this point is the core of (it
+      // moves here at least half as much as anywhere): an eye corner that barely moves the nose is out.
+      // Among those, the smallest area wins (moving the whole torso also moves the nose, but loses).
       let best = null;
       const pull = delta.length();
-      for (const candidate of drag.candidates) for (const [sign, d] of [[1, candidate.plus], [-1, candidate.minus]]) {
+      for (const candidate of drag.candidates) for (const [sign, d, peak] of [[1, candidate.plus, candidate.plusPeak], [-1, candidate.minus, candidate.minusPeak]]) {
         const length = d.length();
         if (length < 1e-9 || (sign < 0 && candidate.onlyPositive)) continue;
         const cosine = delta.dot(d) / (length * pull);
-        if (cosine < 0.6) continue;
+        if (cosine < 0.6 || length < 0.5 * peak) continue;
         if (!best || candidate.size < best.candidate.size || (candidate.size === best.candidate.size && cosine > best.cosine)) best = { cosine, candidate };
       }
       if (!best) return null;
