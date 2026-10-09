@@ -1096,11 +1096,12 @@ export class StudioUI {
     const name = this.person.name.trim() || 'Personagem';
     if (storage.set(PRESET_PREFIX + name, serializePreset(this.snapshotPerson()))) this.toast(`"${name}" salvo`); else this.toast('Armazenamento indisponível', 'error');
   }
-  screenshot() {
-    document.getElementById('stage').toBlob(blob => {
-      if (!blob) { this.toast('Captura indisponível', 'error'); return; }
-      download(blob, `${slug(this.person.name)}.png`); this.toast('Captura salva');
-    }, 'image/png');
+  async screenshot() {
+    // The renderer draws and reads the frame in one call (the drawing buffer is not preserved).
+    const url = this.renderer?.capture();
+    const blob = url ? await (await fetch(url)).blob() : null;
+    if (!blob) { this.toast('Captura indisponível', 'error'); return; }
+    download(blob, `${slug(this.person.name)}.png`); this.toast('Captura salva');
   }
   async exportGLB() {
     this.exportMenu?.close();

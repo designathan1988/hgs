@@ -158,7 +158,8 @@ export class Renderer {
   static async create(canvas, onError) { return new Renderer(canvas, onError); }
   constructor(canvas, onError) {
     this.canvas = canvas; this.onError = onError;
-    this.renderer = new WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+    // preserveDrawingBuffer stays false (WebGL 1.0 §2.2: true can cost a lot); `capture` reads the frame it draws.
+    this.renderer = new WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7));
     this.renderer.setClearColor(HORIZON);
     this.scene = new Scene();
@@ -323,6 +324,11 @@ export class Renderer {
     if (!this.current) return;
     bakeLook(this.current, studioSpec(person)).catch(error => console.error(error));
   }
+  /** PNG of the view: drawn and read in the same function (WebGL 1.0 §2.2, the buffer is cleared after compositing). */
+  capture() {
+    this.renderer.render(this.scene, this.viewCamera);
+    return this.canvas.toDataURL('image/png');
+  }
   /** Replay a one-shot clip such as Sit from its first frame. */
   replay() { this.action?.reset().play(); }
   async setCrowdCount(count, onProgress = () => {}) {
@@ -344,9 +350,10 @@ export class Renderer {
         variant.ageYears = ages[type];
         variant.heightMeters = ageHeightReference(ages[type], variant.gender);
         const spec = studioSpec(variant);
-        const low = await createHuman({ ...spec, lod: 'low' });
+        // Built in the generation worker, so the page keeps responding while the crowd is made.
+        const low = await this.buildCharacter({ ...spec, lod: 'low' });
         let medium;
-        try { medium = await createHuman({ ...spec, lod: 'medium' }); }
+        try { medium = await this.buildCharacter({ ...spec, lod: 'medium' }); }
         catch (error) { low.dispose(); throw error; }
         prototypes.push({ low, medium });
         if (version !== this.crowdVersion) {
@@ -407,9 +414,13 @@ export class Renderer {
   render(time) {
     if (this.lastTime == null) this.lastTime = time;
     const dt = Math.min(0.1, time - this.lastTime); this.lastTime = time;
-    const width = Math.max(1, this.canvas.clientWidth), height = Math.max(1, this.canvas.clientHeight);
-    this.renderer.setSize(width, height, false);
-    this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
+    const width = Math.max(1, this.canvas.clientWidth), height = Math.max(1, this.canvas.clientHeight), ratio = Math.min(devicePixelRatio, 1.7);
+    // Resized only on change: setting canvas.width resets the drawing buffer even to the same value.
+    if (width !== this.size?.width || height !== this.size?.height || ratio !== this.size?.ratio) {
+      this.renderer.setPixelRatio(ratio); this.renderer.setSize(width, height, false);
+      this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
+      this.size = { width, height, ratio };
+    }
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (this.liveRequest && this.canLive) this.runLive();
     if (!this.frozen) { this.mixer?.update(dt); this.springs?.update(dt); }
