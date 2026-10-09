@@ -13,6 +13,7 @@ import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
 import { prepareLocks, locksMesh, geometryFrom, locksCap, capGeometry } from './locks.mjs';
 import { hairCapMaterial, hairCapTexture, hairStrandTexture } from './hair-cards.mjs';
 import { accessoryMaterial, accessoryParts } from './hair-accessories.mjs';
+import { layeredSkinTexture } from './skin-layers.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 import { buildHairRig } from './hair-rig.mjs';
 
@@ -272,7 +273,11 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     for (const material of materials) {
       const skin = material.userData.hgsSkinTexture;
-      if (skin) { material.map = await tintedSkinTexture(skin.url, skin.tint); material.color.set(0xffffff); }
+      if (skin) {
+        material.map = await tintedSkinTexture(skin.url, skin.tint); material.color.set(0xffffff);
+        // Makeup and tattoos are painted over the body's skin (skin-layers.mjs).
+        if (mesh === human.body) material.map = await layeredSkinTexture(material.map, mesh.geometry, human.context.data, spec.skinLayers);
+      }
       const eye = material.userData.hgsEyeTexture;
       if (eye) material.map = await eyeTexture(eye.color);
       const source = material.userData.hgsProxyTexture;

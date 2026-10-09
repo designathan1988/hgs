@@ -7,7 +7,7 @@ import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarm
 import { PatternEditor } from './pattern-editor.mjs';
 import { createPatternTemplate } from './patterns.mjs';
 import { icon, hairPictogram } from './icons.mjs';
-import { h, group, row, iconButton, slider, segmented, chips, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
+import { h, group, row, iconButton, slider, segmented, chips, toggleChips, searchField, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
 import { libraryPose, poseLibrary } from './motion.mjs';
@@ -25,22 +25,24 @@ import {
  * change is an action; this class reacts to the `change` event — it rebuilds
  * the panels once per batch, rebuilds or re-poses the character from the keys
  * that changed, and switches the viewport's editing mode in one place
- * (applyMode). Layout (Blender's editor regions): a rail of sections, a rail
- * of the section's tools beside it, the active tool's options floating over the
- * viewport, and an inspector with the section's content.
+ * (applyMode). Layout (Blender's editor regions; docs/INTERFACE.md): a rail of
+ * sections in the order a person is made, the section's tools with their names
+ * beside it, the active tool's options floating over the viewport, and an
+ * inspector with the section's content. Each section frames the camera on what
+ * it edits (MetaHuman Creator's Face/Body framings).
  */
 const sections = [
-  { id: 'personagem', name: 'Personagem', icon: 'person' },
-  { id: 'corpo', name: 'Corpo', icon: 'body' },
-  { id: 'rosto', name: 'Rosto', icon: 'face' },
-  { id: 'cabelo', name: 'Cabelo', icon: 'hair' },
-  { id: 'roupas', name: 'Roupas', icon: 'shirt' },
-  { id: 'esculpir', name: 'Esculpir', icon: 'sculpt' },
-  { id: 'animacao', name: 'Animação', icon: 'play' },
+  { id: 'personagem', name: 'Pessoa', icon: 'person', view: 'body', lead: 'Sexo, idade, altura, pele e origem. Comece por aqui ou sorteie.' },
+  { id: 'corpo', name: 'Corpo', icon: 'body', view: 'body', lead: 'Puxe o corpo com Moldar ou use os controles de proporção.' },
+  { id: 'rosto', name: 'Rosto', icon: 'face', view: 'face', lead: 'Formato, olhos, sobrancelhas, cílios e expressão.' },
+  { id: 'cabelo', name: 'Cabelo', icon: 'hair', view: null, lead: 'Escolha um penteado e ajuste com as ferramentas à esquerda.' },
+  { id: 'roupas', name: 'Roupas', icon: 'shirt', view: 'body', lead: 'Um conjunto pronto ou peças sob medida.' },
+  { id: 'animacao', name: 'Animação', title: 'Pose e animação', icon: 'play', view: 'body', lead: 'Movimentos prontos, pose livre e sua própria animação.' },
+  { id: 'esculpir', name: 'Esculpir', icon: 'sculpt', view: 'body', divider: true, lead: 'Pincéis livres sobre o corpo ou a roupa. Ctrl inverte o pincel.' },
 ];
 const hints = {
-  default: 'Roda: zoom no cursor · botão direito: girar · botão do meio: mover',
-  esculpir: 'Arraste sobre o corpo para esculpir · Ctrl inverte · botão direito: girar',
+  default: 'Botão direito: girar · botão do meio: mover · roda: zoom no cursor',
+  esculpir: 'Arraste sobre o corpo para esculpir · Ctrl: inverter · botão direito: girar',
   brush: 'Desenhe a mecha da raiz até a ponta, sobre a grade · cada traço fica por cima dos anteriores',
   fill: 'Pinte o couro com o círculo: planta mechas espaçadas, penteadas como as vizinhas',
   retouch: 'Passe o círculo sobre mechas e arraste: elas seguem o traço · começar na ponta alonga',
@@ -76,19 +78,20 @@ function lookOnly(prev, next, keys) {
 }
 // Viewing choices, not edits: they stay out of the undo history.
 const noHistory = new Set(['lighting', 'animation', 'animationSpeed']);
-const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
+// Camera framings (MetaHuman Creator: Face, Body…): [id, name, tooltip]. Not named like the sections.
+const views = [['face', 'Rosto', 'Enquadrar o rosto'], ['body', 'Corpo inteiro', 'Corpo inteiro em ¾'], ['front', 'Frente', 'Corpo inteiro de frente'], ['side', 'Lado', 'Corpo inteiro de lado'], ['rear', 'Costas', 'Corpo inteiro de costas']];
 // Hair tools by purpose: [id, name, icon, { shortcut }] (hair-editor.mjs).
 const hairToolGroups = [
   ['Criar', [['brush', 'Pincel', 'sculpt', { shortcut: 'B' }], ['fill', 'Preencher', 'plus', { shortcut: 'F' }]]],
-  ['Modelar', [['retouch', 'Retocar', 'comb', { shortcut: 'R' }], ['volume', 'Volume', 'inflate', { shortcut: 'V' }], ['cut', 'Cortar', 'cut', { shortcut: 'C' }], ['erase', 'Apagar', 'trash', { shortcut: 'E' }]]],
+  ['Modelar', [['retouch', 'Retocar', 'comb', { shortcut: 'R' }], ['volume', 'Volume', 'inflate', { shortcut: 'V' }], ['cut', 'Cortar', 'cut', { shortcut: 'C' }], ['erase', 'Borracha', 'eraser', { shortcut: 'E', title: 'Borracha: apaga as mechas que o traço tocar (E)' }]]],
   ['Selecionar', [['select', 'Selecionar', 'select', { shortcut: 'S' }]]],
 ];
-const sculptTools = [['Pincéis', [['draw', 'Desenhar', 'sculpt'], ['inflate', 'Inflar', 'inflate'], ['grab', 'Arrastar', 'grab'], ['smooth', 'Suavizar', 'smooth'], ['flatten', 'Achatar', 'flatten'], ['pinch', 'Pinçar', 'pinch']]]];
+const sculptTools = [['Pincéis', [['draw', 'Desenhar', 'sculpt', { title: 'Desenhar: levanta (ou afunda, com Ctrl) a superfície' }], ['inflate', 'Inflar', 'inflate', { title: 'Inflar: incha a região (Ctrl desincha)' }], ['grab', 'Arrastar', 'grab', { title: 'Arrastar: puxa a região junto com o mouse' }], ['smooth', 'Suavizar', 'smooth', { title: 'Suavizar: alisa saliências' }], ['flatten', 'Achatar', 'flatten', { title: 'Achatar: aplaina a região' }], ['pinch', 'Pinçar', 'pinch', { title: 'Pinçar: junta a superfície numa dobra fina' }]]]];
 const brushNames = Object.fromEntries(sculptTools[0][1].map(([id, name]) => [id, name]));
 const clothToolGroups = [
-  ['Ver', [['look', 'Girar a câmera', 'orbit']]],
-  ['Peça', [['edges', 'Bordas', 'grow'], ['clothAdd', 'Pintar cobertura', 'paintAdd'], ['clothErase', 'Apagar cobertura', 'paintErase']]],
-  ['Molde', [['clothSculpt', 'Esculpir', 'sculpt'], ['clothPin', 'Fixar', 'pin'], ['clothUnpin', 'Soltar', 'unlock']]],
+  ['Ver', [['look', 'Só olhar', 'orbit', { title: 'Só olhar: o botão esquerdo gira a câmera' }]]],
+  ['Peça', [['edges', 'Bordas', 'grow', { title: 'Bordas: arraste a barra, a manga, o decote ou a cintura no 3D' }], ['clothAdd', 'Cobrir', 'paintAdd', { title: 'Cobrir: pinte no corpo onde a peça deve chegar' }], ['clothErase', 'Descobrir', 'paintErase', { title: 'Descobrir: pinte no corpo onde a peça não deve cobrir' }]]],
+  ['Molde', [['clothSculpt', 'Esculpir', 'sculpt', { title: 'Esculpir a roupa com os pincéis' }], ['clothPin', 'Fixar', 'pin', { title: 'Fixar: clique numa região do molde para prendê-la' }], ['clothUnpin', 'Soltar', 'unlock', { title: 'Soltar: clique numa região fixada' }]]],
 ];
 // Cut-on-body garments edit edges and coverage; drafted (2D pattern) garments pin regions.
 const surfaceOnly = ['edges', 'clothAdd', 'clothErase'], draftedOnly = ['clothPin', 'clothUnpin'];
@@ -139,7 +142,16 @@ export class StudioUI {
     store.on('history', () => this.updateHistoryButtons());
     store.on('toast', detail => this.showToast(detail));
     window.addEventListener('pagehide', () => this.autosave());
+    window.addEventListener('keydown', event => this.onShortcut(event));
     this.render(); this.renderStatus();
+  }
+  /** Keys of the whole studio: 1–7 open the sections, ? lists keys and mouse (the hair tools' letters are in main.mjs). */
+  onShortcut(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+    if (event.target.matches?.('input:not([type=range]):not([type=checkbox]), textarea, select, [contenteditable]')) return;
+    if (event.key === '?') { event.preventDefault(); if (this.shortcutsMenu.panel.hidden) this.shortcutsMenu.open(); else this.shortcutsMenu.close(true); return; }
+    const index = Number(event.key) - 1;
+    if (Number.isInteger(index) && sections[index] && /^[1-9]$/.test(event.key)) { event.preventDefault(); this.setSection(sections[index].id); }
   }
   get state() { return this.store.state; }
   get person() { return this.store.state.person; }
@@ -192,9 +204,24 @@ export class StudioUI {
     this.store.dispatch({ type: 'person/set', person, history });
     if (this.mode === 'hair') this.hairEntry = { person: this.person, revision: this.renderer?.lockEditor.revision ?? 0 };
   }
-  setSection(name) { closePopovers(); this.store.dispatch({ type: 'ui/set', changes: { section: name } }); }
+  /** Open a section and frame the camera on what it edits (the hair editor frames the head itself). */
+  setSection(name) {
+    closePopovers();
+    if (name === this.section) return;
+    const distance = this.renderer?.camera.distance;
+    this.store.dispatch({ type: 'ui/set', changes: { section: name } });
+    const view = sections.find(s => s.id === name)?.view;
+    if (this.state.ui.crowd) return;
+    if (view) this.chooseView(view);
+    else if (this.renderer && this.renderer.camera.distance !== distance) this.viewMoved();
+  }
   pickTool(id) { this.store.dispatch({ type: 'ui/tool', section: this.section, tool: this.section === 'roupas' && id === 'look' ? null : id }); }
-  generateVariation() { this.setPerson(varyCharacter(this.snapshotPerson())); }
+  generateVariation() {
+    this.setPerson(varyCharacter(this.snapshotPerson()));
+    this.toast('Outra pessoa sorteada', 'info', this.undoAction());
+  }
+  /** A toast button that takes back the last change of the character (only while undo goes to the character). */
+  undoAction() { return this.store.historyTarget ? null : { label: 'Desfazer', run: () => this.store.undo() }; }
   randomFace() { const r = randomCharacter(); this.patch({ faceWidth: r.faceWidth, jaw: r.jaw, cheek: r.cheek, nose: r.nose, eyeSize: r.eyeSize, eyeSpacing: r.eyeSpacing, eyeColor: r.eyeColor }); }
   randomBody() {
     const r = randomCharacter();
@@ -394,16 +421,21 @@ export class StudioUI {
     this.notify(this.renderer?.current ? 'Cancelado · última prévia mantida' : 'Geração cancelada');
   }
   notify(text, level = 'ok') { this.status = { text, level }; this.renderStatus(); }
-  toast(text, level = 'info') {
-    this.store.emit('toast', { text, level });
+  /** A short message over the viewport; `action` ({ label, run }) adds a button, e.g. "Desfazer" (NN/g: undo rather than confirm). */
+  toast(text, level = 'info', action = null) {
+    this.store.emit('toast', { text, level, action });
     if (level === 'error') this.notify(text, 'error');
   }
-  showToast({ text, level }) {
+  showToast({ text, level, action }) {
     const host = document.getElementById('toasts');
-    const node = h('div', { class: `toast ${level}`, role: level === 'error' ? 'alert' : 'status' }, icon(level === 'error' ? 'info' : 'check', 16), h('span', { text }));
+    const node = h('div', { class: `toast ${level}`, role: level === 'error' ? 'alert' : 'status' }, icon(level === 'error' ? 'info' : 'check', 16), h('span', { text }),
+      action ? h('button', { type: 'button', class: 'button small', onclick: () => { node.remove(); action.run(); } }, action.label) : null);
     host.append(node);
     while (host.childElementCount > 3) host.firstElementChild.remove();
-    setTimeout(() => node.remove(), level === 'error' ? 7000 : 3500);
+    // A toast with a button stays long enough to reach it, and never leaves while the pointer is on it.
+    let timer = setTimeout(() => node.remove(), action ? 10000 : level === 'error' ? 7000 : 3500);
+    node.addEventListener('pointerenter', () => clearTimeout(timer));
+    node.addEventListener('pointerleave', () => { timer = setTimeout(() => node.remove(), 2500); });
   }
   renderStatus() {
     const op = this.store.currentOperation;
@@ -411,6 +443,9 @@ export class StudioUI {
     document.querySelector('.status-dot').className = `status-dot ${level}`;
     document.getElementById('readyLabel').textContent = text;
     document.getElementById('cancelOperation').hidden = ![...this.store.operations.values()].some(o => o.cancellable);
+    // The same work shown over the 3D view, where the change will appear (the footer announces it).
+    document.getElementById('busyPill').hidden = !op;
+    document.getElementById('busyText').textContent = op ? op.label : '';
   }
   fail(message) {
     this.notify('Erro no 3D', 'error');
@@ -420,8 +455,10 @@ export class StudioUI {
   }
   updateMeta() {
     const measured = this.renderer?.current?.metrics.height ?? this.person.heightMeters, crowd = this.state.ui.crowd;
-    document.getElementById('characterName').textContent = this.person.name;
-    document.getElementById('characterMeta').textContent = `${measured.toFixed(2)} m${crowd ? ` · ${crowd + 1} pessoas` : ''}`;
+    const name = document.getElementById('characterName');
+    if (document.activeElement !== name) name.value = this.person.name;
+    name.style.width = `${Math.min(28, Math.max(10, Math.ceil(this.person.name.length * 1.15) + 3))}ch`;
+    document.getElementById('characterMeta').textContent = `${measured.toFixed(2).replace('.', ',')} m${crowd ? ` · ${crowd + 1} pessoas` : ''}`;
   }
   updateHistoryButtons() {
     const undo = document.getElementById('undoButton'), redo = document.getElementById('redoButton');
@@ -431,11 +468,10 @@ export class StudioUI {
   updateStats(stats) {
     if (!stats) return;
     this.stats = stats;
-    document.getElementById('fps').textContent = `${stats.fps} FPS`;
-    document.getElementById('triangles').textContent = `${Math.round(stats.triangles / 1000).toLocaleString('pt-BR')} mil triângulos`;
+    // Frame rate and triangles are diagnostics: they live in the Desempenho panel, not on screen all the time.
     const metrics = document.getElementById('crowdMetrics');
     if (metrics && !metrics.closest('[hidden]')) {
-      const rows = [['Quadro', `${stats.frameTime.toFixed(1)} ms`], ['Chamadas de desenho', stats.draws], ['Triângulos', stats.triangles.toLocaleString('pt-BR')],
+      const rows = [['Quadros por segundo', stats.fps], ['Quadro', `${stats.frameTime.toFixed(1)} ms`], ['Chamadas de desenho', stats.draws], ['Triângulos', stats.triangles.toLocaleString('pt-BR')],
         ['Esqueletos', stats.skeletons], ['Rostos com rig', stats.faces], ['Pessoas visíveis', stats.visible], ['LOD 0 / 1 / 2', stats.lod.slice(0, 3).join(' / ')]];
       metrics.replaceChildren(...rows.flatMap(([label, value]) => [h('span', { text: label }), h('b', { text: String(value) })]));
     }
@@ -443,15 +479,24 @@ export class StudioUI {
 
   // ------------------------------------------------------------ chrome
   buildNav() {
-    for (const section of sections) {
-      this.nav.append(h('button', { class: 'nav-item', type: 'button', 'data-section': section.id, title: section.name, onclick: () => this.setSection(section.id) },
+    sections.forEach((section, i) => {
+      if (section.divider) this.nav.append(h('div', { class: 'rail-divider', role: 'separator' }));
+      this.nav.append(h('button', { class: 'nav-item', type: 'button', 'data-section': section.id, title: `${section.title ?? section.name} (${i + 1})`, 'aria-keyshortcuts': String(i + 1), onclick: () => this.setSection(section.id) },
         icon(section.icon, 22), h('span', { class: 'nav-label', text: section.name })));
-    }
+    });
   }
   bindChrome() {
     const $ = id => document.getElementById(id);
     for (const node of document.querySelectorAll('[data-icon]')) node.replaceWith(icon(node.dataset.icon, Number(node.dataset.size ?? 18)));
-    $('randomButton').addEventListener('click', () => this.generateVariation());
+    // The name is edited in the top bar, where it is shown; Enter or leaving the field keeps it, Esc puts it back.
+    const name = $('characterName');
+    name.addEventListener('change', () => { const value = name.value.trim(); if (value && value !== this.person.name) this.update('name', value); else name.value = this.person.name; });
+    name.addEventListener('keydown', event => {
+      if (event.key === 'Enter') name.blur();
+      if (event.key === 'Escape') { name.value = this.person.name; name.blur(); }
+    });
+    this.randomMenu = popover($('randomButton'), $('randomMenu'), () => this.renderRandomMenu());
+    this.shortcutsMenu = popover($('shortcutsButton'), $('shortcutsMenu'), () => this.renderShortcutsMenu());
     $('undoButton').addEventListener('click', () => this.store.undo());
     $('redoButton').addEventListener('click', () => this.store.redo());
     $('cancelOperation').addEventListener('click', () => this.cancelOperation());
@@ -466,7 +511,7 @@ export class StudioUI {
     $('zoomOut').addEventListener('click', () => { this.renderer?.camera.zoom(180); this.viewMoved(); });
     $('fitButton').addEventListener('click', () => this.chooseView(this.state.ui.crowd ? 'crowd' : 'body'));
     const viewRow = $('viewButtons');
-    for (const [id, name] of views) viewRow.append(h('button', { type: 'button', 'data-view': id, 'aria-pressed': 'false', onclick: () => this.chooseView(id), text: name }));
+    for (const [id, label, title] of views) viewRow.append(h('button', { type: 'button', 'data-view': id, 'aria-pressed': 'false', title, onclick: () => this.chooseView(id), text: label }));
     this.renderViewButtons();
     this.charactersMenu = popover($('charactersButton'), $('charactersMenu'), () => this.renderCharactersMenu());
     this.exportMenu = popover($('exportButton'), $('exportMenu'), () => this.renderExportMenu());
@@ -495,12 +540,49 @@ export class StudioUI {
     const list = h('div', { class: 'menu-list' }, names.length ? names.map(name => h('div', { class: 'menu-row' },
       h('button', { type: 'button', class: 'menu-item', onclick: () => { this.loadPreset(name); this.charactersMenu.close(true); } }, icon('person', 16), h('span', { text: name })),
       iconButton('trash', `Excluir "${name}"`, () => { if (confirm(`Excluir o personagem "${name}"?`)) { storage.remove(PRESET_PREFIX + name); this.renderCharactersMenu(); } }, { danger: true, size: 16 }),
-    )) : h('p', { class: 'menu-empty', text: 'Nenhum personagem salvo ainda' }));
+    )) : h('p', { class: 'menu-empty', text: 'Nenhum personagem salvo ainda. Salve o atual para voltar a ele depois; o trabalho em andamento já fica guardado sozinho neste navegador.' }));
     menu.replaceChildren(
       h('div', { class: 'menu-title', text: 'Personagens salvos' }), list,
       h('div', { class: 'menu-actions' },
         h('button', { type: 'button', class: 'button primary', onclick: () => { this.savePreset(); this.renderCharactersMenu(); } }, icon('save', 16), `Salvar "${this.person.name}"`),
-        h('button', { type: 'button', class: 'button', title: 'Voltar ao personagem padrão', onclick: () => { this.setPerson(defaultCharacter); this.setCrowd(0); this.charactersMenu.close(true); } }, icon('reset', 16), 'Padrão')),
+        h('button', { type: 'button', class: 'button', title: 'Começar de novo pelo personagem padrão (dá para desfazer)', onclick: () => {
+          this.setPerson(defaultCharacter); this.setCrowd(0); this.charactersMenu.close(true);
+          this.toast('Novo personagem a partir do padrão', 'info', this.undoAction());
+        } }, icon('plus', 16), 'Novo')),
+    );
+  }
+  /** Sortear: one big action, and what to keep from the current person (chips that read as they work). */
+  renderRandomMenu() {
+    const menu = document.getElementById('randomMenu'), locks = this.person.creation.locks;
+    menu.replaceChildren(
+      h('div', { class: 'menu-title', text: 'Sortear outra pessoa' }),
+      h('div', { class: 'menu-body' },
+        h('p', { class: 'option-label', text: 'Manter da pessoa atual' }),
+        toggleChips({ label: 'Manter da pessoa atual', items: [['Corpo e pele', locks.body], ['Rosto e olhos', locks.face], ['Cabelo', locks.hair], ['Roupa', locks.clothes]],
+          onToggle: (i, on) => { const key = ['body', 'face', 'hair', 'clothes'][i]; this.patch({ creation: { locks: { ...this.person.creation.locks, [key]: on } } }, { history: false }); } }),
+        h('button', { type: 'button', class: 'button primary wide big', onclick: () => { this.randomMenu.close(true); this.generateVariation(); } }, icon('dice', 18), 'Sortear'),
+        h('p', { class: 'option-label', text: 'Sortear só uma parte' }),
+        h('div', { class: 'button-row' },
+          h('button', { type: 'button', class: 'button', onclick: () => { this.randomFace(); this.toast('Rosto sorteado', 'info', this.undoAction()); } }, 'Rosto'),
+          h('button', { type: 'button', class: 'button', onclick: () => { this.randomBody(); this.toast('Corpo sorteado', 'info', this.undoAction()); } }, 'Corpo'),
+          h('button', { type: 'button', class: 'button', onclick: () => { this.randomOutfit(); this.toast('Roupa sorteada', 'info', this.undoAction()); } }, 'Roupa'))),
+    );
+  }
+  /** Keys and mouse for the whole studio and for the section and tool in use (MetaHuman Creator: the hotkeys list follows the tool). */
+  renderShortcutsMenu() {
+    const keys = list => h('dl', { class: 'shortcut-list' }, list.flatMap(([combo, text]) => [h('dt', {}, combo.split(' ').map(k => h('kbd', { text: k }))), h('dd', { text })]));
+    const general = [['Ctrl Z', 'Desfazer'], ['Ctrl Y', 'Refazer'], ['1–7', 'Trocar de seção'], ['?', 'Esta lista'], ['Esc', 'Fechar menus']];
+    const mouse = [['Direito', 'Girar em volta do ponto sob o cursor'], ['Meio', 'Mover a vista'], ['Roda', 'Zoom no cursor']];
+    const tools = (this.toolGroups() ?? []).flatMap(([, list]) => list).filter(([, , , o]) => o?.shortcut).map(([, name, , o]) => [o.shortcut, name]);
+    const section = sections.find(s => s.id === this.section);
+    const extra = this.section === 'cabelo' ? [['[ ]', 'Diminuir / aumentar o círculo'], ['+ −', 'Alongar / encurtar as mechas escolhidas'], ['Delete', 'Apagar as mechas selecionadas'], ['Shift', 'Somar à seleção'], ['Ctrl', 'Tirar da seleção']]
+      : this.section === 'esculpir' ? [['Ctrl', 'Inverter o pincel durante o traço']]
+      : ['corpo', 'rosto'].includes(this.section) ? [['Alt', 'Moldar: muda só um lado']] : [];
+    document.getElementById('shortcutsMenu').replaceChildren(
+      h('div', { class: 'menu-title', text: 'Teclas e mouse' }),
+      h('div', { class: 'shortcut-group', text: 'Sempre' }), keys(general),
+      h('div', { class: 'shortcut-group', text: 'No 3D' }), keys(mouse),
+      ...(tools.length || extra.length ? [h('div', { class: 'shortcut-group', text: section.title ?? section.name }), keys([...tools, ...extra])] : []),
     );
   }
   renderExportMenu() {
@@ -563,14 +645,16 @@ export class StudioUI {
     this.heightField = null;
     this.body.replaceChildren();
     const section = sections.find(s => s.id === this.section);
-    document.getElementById('sectionTitle').textContent = section.name;
+    document.getElementById('sectionTitle').textContent = section.title ?? section.name;
+    document.getElementById('sectionLead').textContent = section.lead ?? '';
     for (const button of this.nav.querySelectorAll('.nav-item')) {
       const active = button.dataset.section === this.section;
       button.classList.toggle('active', active);
       if (active) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
     }
     this.setHint(hints.default);
-    this.app.classList.toggle('pattern-mode', this.section === 'roupas' && this.person.outfit === 4);
+    // The panel widens only for the 2D pattern editor, which needs the room; otherwise the 3D view keeps it.
+    this.app.classList.toggle('pattern-mode', this.section === 'roupas' && this.person.outfit === 4 && this.isDrafted());
     ({
       personagem: () => this.renderCharacter(), corpo: () => this.renderBody(), rosto: () => this.renderFace(),
       cabelo: () => this.renderHair(), roupas: () => this.renderClothes(), esculpir: () => this.renderSculpt(),
@@ -588,7 +672,7 @@ export class StudioUI {
     this.toolRail.hidden = !groups; this.toolCard.hidden = !groups;
     if (!groups) { this.toolRail.replaceChildren(); this.toolCard.replaceChildren(); return; }
     const active = this.activeTool(), section = sections.find(s => s.id === this.section);
-    toolbar(this.toolRail, { groups, active, label: `Ferramentas: ${section.name}`, onPick: id => this.pickTool(id) });
+    toolbar(this.toolRail, { groups, active, label: `Ferramentas: ${section.title ?? section.name}`, onPick: id => this.pickTool(id), note: this.toolNote() });
     const [name, glyph] = groups.flatMap(([, list]) => list).find(([id]) => id === active)?.slice(1) ?? ['', null];
     const options = h('div', { class: 'tool-card-body', id: 'toolCardBody' });
     if (this.section === 'cabelo') this.renderHairToolOptions(options, active);

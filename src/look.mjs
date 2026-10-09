@@ -1,6 +1,7 @@
 import { Color, SRGBColorSpace } from 'three';
 import { skinMaterialFor, skinMaps } from './human-three.mjs';
 import { tintedSkinTexture, garmentTexture, eyeTexture, irisColorOf } from './appearance.mjs';
+import { layeredSkinTexture } from './skin-layers.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { loadProxy } from './proxy.mjs';
 
@@ -123,7 +124,8 @@ export async function bakeLook(human, spec) {
   const material = human.body.material, baked = material.userData.hgsSkinTexture;
   if (baked && material.map) {
     const url = new URL(`../assets/skins/${skin.file}`, import.meta.url).href, tint = skin.tint.toArray();
-    material.map = await tintedSkinTexture(url, tint);
+    // Makeup and tattoos painted over the tinted skin (skin-layers.mjs).
+    material.map = await layeredSkinTexture(await tintedSkinTexture(url, tint), human.body.geometry, human.context.data, spec.skinLayers);
     material.color.set(0xffffff);
     material.userData.hgsSkinTexture = { url, tint };
     material.needsUpdate = true;

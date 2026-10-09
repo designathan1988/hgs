@@ -80,6 +80,8 @@ export function studioSpec(person, { undressed = false } = {}) {
     hairLocks: hairLocksOf(person),
     // The ready-made hair mesh under the locks (appearance.mjs), fitted as a MakeHuman proxy.
     hairBase: person.hairBase ?? null,
+    // Makeup and tattoos painted into the skin texture (skin-layers.mjs).
+    skinLayers: { makeup: person.makeup, tattoos: person.tattoos ?? [] },
     hairColor: hex(colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1]),
     browColor: colors.brows ? hex(colors.brows) : undefined,
     lashes: { length: person.lashLength ?? 1, curl: person.lashCurl ?? 0.5, density: person.lashDensity ?? 1, color: colors.lashes ? hex(colors.lashes) : undefined },
@@ -510,6 +512,14 @@ export class Renderer {
     this.pivotRay.setFromCamera(ndc, this.viewCamera);
     const hit = this.pivotRay.intersectObjects(objects, true).find(h => h.object.visible && h.object.isMesh && !h.object.isInstancedMesh && h.object !== this.lockEditor.hoverMark);
     return hit ? hit.point.clone() : null;
+  }
+  /** The skin's UV point under the cursor when the skin is what is seen there (not clothes or hair), else null (tattoos). */
+  bodyUVAt(ndc) {
+    const human = this.current;
+    if (!human) return null;
+    this.pivotRay.setFromCamera(ndc, this.viewCamera);
+    const hit = this.pivotRay.intersectObject(human.group, true).find(h => h.object.visible && h.object.isMesh && !h.object.material?.transparent);
+    return hit?.object === human.body ? hit.uv?.clone() ?? null : null;
   }
   /** The point under the cursor, or on the cursor's ray at the view centre's depth over empty space. */
   pointUnder(ndc) {

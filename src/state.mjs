@@ -2,6 +2,29 @@ import { normalizeSculpt } from './sculpt.mjs';
 import { normalizeGarment, newGarment } from './tailor.mjs';
 import { normalizeLocks } from './locks.mjs';
 import { hairPresetIds } from './hair-presets.mjs';
+import { defaultMakeup, tattooDesigns } from './skin-layers.mjs';
+
+const hexColor = (value, fallback) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
+const bounded = (value, min, max, fallback) => Number.isFinite(value) ? Math.round(Math.max(min, Math.min(max, value)) * 1e4) / 1e4 : fallback;
+/** Makeup layers (skin-layers.mjs): a colour and an amount per region, 0 = none. */
+function normalizeMakeup(value) {
+  const out = {};
+  for (const [region, fallback] of Object.entries(defaultMakeup)) out[region] = { color: hexColor(value?.[region]?.color, fallback.color), amount: bounded(value?.[region]?.amount, 0, 1, 0) };
+  return out;
+}
+/** Tattoos: a built-in design (or a loaded image, a data URL up to ~300 kB) at a UV point of the skin. */
+function normalizeTattoos(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 16).filter(t => t && Number.isFinite(t.u) && Number.isFinite(t.v)).map(t => {
+    const image = typeof t.image === 'string' && t.image.startsWith('data:image/') && t.image.length < 400000 ? t.image : null;
+    return {
+      design: image ? null : tattooDesigns[t.design] ? t.design : 'estrela', image,
+      text: typeof t.text === 'string' ? t.text.slice(0, 14) : 'amor',
+      u: bounded(t.u, 0, 1, 0.5), v: bounded(t.v, 0, 1, 0.5), size: bounded(t.size, 0.01, 0.3, 0.06),
+      angle: bounded(t.angle, -Math.PI, Math.PI, 0), color: hexColor(t.color, '#1d2430'), opacity: bounded(t.opacity, 0, 1, 0.9),
+    };
+  });
+}
 
 export const skinPalette = ['#f0c9ad', '#dfad8b', '#c98c66', '#b77850', '#97603f', '#75472f', '#563524', '#39261d'];
 export const hairPalette = ['#181514', '#30231e', '#4b3327', '#70503a', '#a1784c', '#c9a977', '#823d2d', '#474343', '#ddd2bf'];
@@ -148,6 +171,8 @@ export function normalizeCharacter(value = {}) {
   else if (Number.isInteger(value.hairStyle) && legacyHair[value.hairStyle]) result.hairPreset = legacyHair[value.hairStyle];
   // Characters saved before the base existed keep their hair as it was: no base.
   result.hairBase = hairBaseIds.includes(value.hairBase) ? value.hairBase : value.hairBase === undefined && !('hairPreset' in value) ? defaultCharacter.hairBase : null;
+  result.makeup = normalizeMakeup(value.makeup);
+  result.tattoos = normalizeTattoos(value.tattoos);
   result.locks = value.locks ? normalizeLocks(value.locks) : null;
   if (result.locks && !result.locks.locks.length && !Array.isArray(value.locks?.locks)) result.locks = null;
   result.garments = Array.isArray(value.garments) ? value.garments.slice(0, 8).map(normalizeGarment) : [newGarment('tshirt'), newGarment('pants')];
@@ -214,8 +239,8 @@ export function varyCharacter(character, locks = character.creation?.locks ?? {}
   const current = normalizeCharacter(character), next = randomCharacter(seed);
   const groups = {
     body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness',
-      'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs'],
-    face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes'],
+      'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs', 'tattoos'],
+    face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes', 'makeup'],
     hair: ['hairPreset', 'hairBase', 'hairColor', 'locks'],
     clothes: ['outfit', 'garments', 'topColor', 'bottomColor'],
   };
