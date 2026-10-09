@@ -1,11 +1,11 @@
 import {
-  BufferGeometry, CatmullRomCurve3, Float32BufferAttribute,
+  BufferGeometry, CatmullRomCurve3, Color, Float32BufferAttribute,
   SkinnedMesh, Triangle, Uint16BufferAttribute, Uint32BufferAttribute, Vector3,
 } from 'three';
 import { defaultHairline, hairCollider, headFrame, scalpField, vertexNormals } from './scalp.mjs';
 import { fusedHairSurface, hairFusionGroups, normalizeHairFusion } from './hair-fusion.mjs';
 import { buildHairRig } from './hair-rig.mjs';
-import { cardFromSweep, hairCapPart, hairCardMaterial } from './hair-cards.mjs';
+import { cardFromSweep, hairCapPart, hairCardMaterial, tubeFromSweep } from './hair-cards.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -36,11 +36,39 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const round = (v, digits = 1e5) => Math.round(v * digits) / digits;
 
-export const lockDefaults = Object.freeze({ width: 0.05, volume: 0.18, taper: 0.85, curl: 0, turns: 4, twist: 0, stiffness: 0.35, bend: 0 });
+export const lockDefaults = Object.freeze({ width: 0.05, volume: 0.18, taper: 0.85, curl: 0, turns: 4, twist: 0, stiffness: 0.35, bend: 0, gel: 0, frizz: 0 });
 export const lockLimits = Object.freeze({
   width: [0.001, 0.09], volume: [0.12, 1], taper: [0, 1], curl: [0, 1], turns: [0.5, 14], twist: [-TAU * 1.5, TAU * 1.5], stiffness: [0, 1], bend: [-1, 1],
-  length: [0.015, 1.1],
+  gel: [0, 1], frizz: [0, 1], length: [0.015, 1.1],
 });
+
+/**
+ * Curl types (Andre Walker's 1, 2A–2C, 3A–3C, 4A–4C), measured as De la
+ * Mettrie et al. (2007) measure hair: the curve's diameter and its waves per
+ * length. `radius` and `wave` are the clump's helix (m): what a lock's
+ * geometry follows. Tighter than about 2.5 cm a turn the curl is drawn in
+ * the card's strand texture (hair-cards.mjs strandTextureOf), the geometry
+ * keeping a looser clump wave. `flat` 1 is a wave in the card's plane (an
+ * S), 0 a round helix (a ringlet); `lift` is how much the springy curl holds
+ * the hair up against gravity (coily hair shrinks and stands out).
+ */
+export const hairTypes = Object.freeze([
+  { id: '1', name: 'Liso', radius: 0, wave: 0, flat: 0, lift: 0 },
+  { id: '2a', name: 'Ondulado 2A', radius: 0.006, wave: 0.09, flat: 1, lift: 0.05 },
+  { id: '2b', name: 'Ondulado 2B', radius: 0.01, wave: 0.07, flat: 0.8, lift: 0.1 },
+  { id: '2c', name: 'Ondulado 2C', radius: 0.013, wave: 0.055, flat: 0.6, lift: 0.15 },
+  { id: '3a', name: 'Cacheado 3A', radius: 0.013, wave: 0.045, flat: 0, lift: 0.25 },
+  { id: '3b', name: 'Cacheado 3B', radius: 0.009, wave: 0.032, flat: 0, lift: 0.35 },
+  { id: '3c', name: 'Cacheado 3C', radius: 0.006, wave: 0.026, flat: 0, lift: 0.5 },
+  { id: '4a', name: 'Crespo 4A', radius: 0.004, wave: 0.026, flat: 0, lift: 0.65 },
+  { id: '4b', name: 'Crespo 4B', radius: 0.003, wave: 0.03, flat: 0.5, lift: 0.75 },
+  { id: '4c', name: 'Crespo 4C', radius: 0.002, wave: 0.035, flat: 0.5, lift: 0.85 },
+]);
+const typeOf = lock => lock.type ? hairTypes.find(t => t.id === lock.type) ?? null : null;
+/** Solid lock kinds: a braid (three strands), a dread (one matted rope), a two-strand twist. */
+export const lockKinds = Object.freeze(['card', 'braid', 'dread', 'twist']);
+/** Colour effects over the hair's colour (`dye.mode`): ombré to the tips, highlights, other-coloured roots, dipped tips. */
+export const dyeModes = Object.freeze(['none', 'ombre', 'luzes', 'raiz', 'pontas']);
 
 // ------------------------------------------------------------- data model
 
@@ -51,6 +79,11 @@ export function normalizeLocks(value) {
   const finite = (x, a, b, fallback) => Number.isFinite(x) ? clamp(x, a, b) : fallback;
   result.R = finite(value.R, 0.03, 0.4, 0.11);
   result.scalp = value.scalp === 0 || value.scalp === false ? 0 : 1;
+  // Hairstyle-wide: colour effect, fade of the clipped sides, volume shell (kept only when set).
+  const dye = value.dye;
+  if (dye && dyeModes.includes(dye.m) && dye.m !== 'none' && Number.isInteger(dye.c)) result.dye = { m: dye.m, c: clamp(dye.c, 0, 0xffffff), a: round(finite(dye.a, 0, 1, 0.5), 1e4) };
+  if (finite(value.fd, 0, 1, 0) > 0) result.fd = round(clamp(value.fd, 0, 1), 1e4);
+  if (finite(value.sh, 0, 0.12, 0) > 0) result.sh = round(clamp(value.sh, 0, 0.12), 1e5);
   if (value.v >= 2 || value.fusion) { result.v = 2; result.fusion = normalizeHairFusion(value.fusion); }
   if (!Array.isArray(value.locks)) return result;
   const kept = new Map();
@@ -78,6 +111,11 @@ export function normalizeLocks(value) {
     for (const [key, short] of [['width', 'w'], ['volume', 'vo'], ['taper', 'ta'], ['curl', 'cu'], ['turns', 'tu'], ['twist', 'tw'], ['stiffness', 'st'], ['bend', 'be']]) {
       out[short] = round(finite(lock[short], ...lockLimits[key], lockDefaults[key]), 1e4);
     }
+    // Curl type, gel, frizz and solid kind: written only when set, so older files stay as they were.
+    if (hairTypes.some(t => t.id === lock.ty) && lock.ty !== '1') out.ty = lock.ty;
+    if (finite(lock.ge, 0, 1, 0) > 0) out.ge = round(clamp(lock.ge, 0, 1), 1e4);
+    if (finite(lock.fz, 0, 1, 0) > 0) out.fz = round(clamp(lock.fz, 0, 1), 1e4);
+    if (lockKinds.includes(lock.kd) && lock.kd !== 'card') out.kd = lock.kd;
     if (result.v >= 2) {
       out.id = typeof lock.id === 'string' && lock.id ? lock.id.slice(0, 64) : `lock-${result.locks.length}`;
       out.g = typeof lock.g === 'string' && result.fusion.groups.some(g => g.id === lock.g) ? lock.g : 'main';
@@ -94,10 +132,12 @@ export function normalizeLocks(value) {
   // Hair ties and holders (hair-accessories.mjs): type, colour, the pins each
   // holds as [lock, point] (locks renumbered as kept above), a band's direction.
   for (const acc of Array.isArray(value.accessories) ? value.accessories.slice(0, 32) : []) {
-    if (!acc || !['tie', 'clip', 'barrette', 'band'].includes(acc.t)) continue;
+    if (!acc || !['tie', 'clip', 'barrette', 'band', 'bun'].includes(acc.t)) continue;
     const h = (Array.isArray(acc.h) ? acc.h : []).filter(pair => Array.isArray(pair) && pair.length === 2 && pair.every(Number.isInteger) && kept.has(pair[0]) && pair[1] >= 2 && pair[1] < N)
       .slice(0, 800).map(([lock, point]) => [kept.get(lock), point]);
     const out = { t: acc.t, c: Number.isInteger(acc.c) ? clamp(acc.c, 0, 0xffffff) : 0x262626, h };
+    // A bun keeps the hair volume wound into it (m³), so it is sized the same on any body.
+    if (acc.t === 'bun') out.v = round(finite(acc.v, 0, 0.002, 0.00005), 1e9);
     if (acc.t === 'band') {
       if (!Array.isArray(acc.d) || acc.d.length !== 3 || !acc.d.every(Number.isFinite) || Math.hypot(...acc.d) < 1e-6) continue;
       const length = Math.hypot(...acc.d);
@@ -118,11 +158,15 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
   const collider = hairCollider(data, positions, normals, frame, context.skeleton, outfit ? context.outfitSurface ?? null : null);
   const state = { frame, normals, field, collider, data, positions, locks: [], accessories: [], scalp: saved.scalp, sim: null, fusion: saved.fusion ? normalizeHairFusion(saved.fusion) : null };
   const scale = frame.R / saved.R, kept = new Map();
+  state.dye = saved.dye ? { mode: saved.dye.m, color: saved.dye.c, amount: saved.dye.a } : null;
+  state.fade = saved.fd ?? 0;
+  state.shell = (saved.sh ?? 0) * scale;
   if (state.fusion) { state.fusion.smoothness *= scale; state.fusion.resolution *= scale; }
   for (const [index, item] of saved.locks.entries()) {
     if (item.r.v.some(v => v * 3 + 2 >= positions.length)) continue;
     const lock = makeLock(state, item.r, null, {
       width: item.w * scale, volume: item.vo, taper: item.ta, curl: item.cu, turns: item.tu, twist: item.tw, stiffness: item.st, bend: item.be,
+      type: item.ty ?? null, gel: item.ge ?? 0, frizz: item.fz ?? 0, kind: item.kd ?? 'card',
     });
     const root = lock.rootP;
     for (let i = 0; i < N; i++) for (let k = 0; k < 3; k++) {
@@ -146,7 +190,7 @@ export function prepareLocks(context, value, { outfit = true } = {}) {
     let held = 0;
     for (const [l, i] of acc.h) { const pin = kept.get(l)?.pins.get(i); if (pin) { pin.holder = id; held++; } }
     if (!held && acc.t !== 'band') continue;
-    state.accessories.push({ id, type: acc.t, color: acc.c, ...(acc.t === 'band' ? { style: acc.s, dir: [...acc.d] } : {}) });
+    state.accessories.push({ id, type: acc.t, color: acc.c, ...(acc.t === 'band' ? { style: acc.s, dir: [...acc.d] } : {}), ...(acc.t === 'bun' ? { volume: acc.v * scale ** 3 } : {}) });
   }
   state.sim = new LockShaper(state);
   return state;
@@ -157,12 +201,16 @@ export function serializeLocks(state) {
   return normalizeLocks({
     format: 'hgs-locks', v: state.fusion ? 2 : 1, R, scalp: state.scalp,
     ...(state.fusion ? { fusion: state.fusion } : {}),
+    ...(state.dye && state.dye.mode !== 'none' ? { dye: { m: state.dye.mode, c: state.dye.color, a: state.dye.amount } } : {}),
+    ...(state.fade ? { fd: state.fade } : {}),
+    ...(state.shell ? { sh: state.shell } : {}),
     locks: state.locks.map(lock => {
       const root = lock.rootP, rel = a => Array.from(a, (x, j) => x - root.getComponent(j % 3));
       return {
         r: { v: [...lock.root.v], w: [...lock.root.w] }, p: rel(lock.x), q: rel(lock.rest), sg: lock.seg, sy: lock.styled ? 1 : 0, fx: Boolean(lock.fixed),
         w: lock.width, vo: lock.volume, ta: lock.taper, cu: lock.curl, tu: lock.turns, tw: lock.twist, st: lock.stiffness, be: lock.bend,
         pins: [...lock.pins].map(([i, p]) => [i, p.x - root.x, p.y - root.y, p.z - root.z]),
+        ty: lock.type ?? undefined, ge: lock.gel || undefined, fz: lock.frizz || undefined, kd: lock.kind && lock.kind !== 'card' ? lock.kind : undefined,
         ...(state.fusion ? { id: lock.id, g: lock.group ?? 'main', dn: lock.density ?? 1, ti: lock.tipShape ?? 'round', fx: Boolean(lock.fixed), bi: Boolean(lock.bendEmbedded), rt: Boolean(lock.rootTaper), rn: lock.ribbonNormal ? [...lock.ribbonNormal] : null } : {}),
       };
     }),
@@ -170,6 +218,7 @@ export function serializeLocks(state) {
       t: acc.type, c: acc.color,
       h: state.locks.flatMap((lock, l) => [...lock.pins].filter(([, p]) => p.holder === acc.id).map(([i]) => [l, i])),
       ...(acc.type === 'band' ? { d: acc.dir, s: acc.style } : {}),
+      ...(acc.type === 'bun' ? { v: acc.volume } : {}),
     })),
   });
 }
@@ -378,7 +427,8 @@ export function bendLock(lock, base, amount, frame) {
 export function collisionRadius(lock, i) {
   const u = i / (N - 1);
   const width = lock.curl > 0 ? lock.width + (curlWidth(lock) - lock.width) * curlIn(lock, u) : lock.width;
-  return 0.5 * width * sectionVolume(lock, u) * profile(lock, u * lockLength(lock), lockLength(lock)) + 0.5 * curlRadius(lock, u) + 0.0012;
+  const typed = typeOf(lock)?.radius ? 0.5 * typeOf(lock).radius * curlIn(lock, u) : 0;
+  return 0.5 * width * sectionVolume(lock, u) * profile(lock, u * lockLength(lock), lockLength(lock)) + 0.5 * curlRadius(lock, u) + typed + 0.0012;
 }
 
 /**
@@ -399,7 +449,9 @@ export function gravityWeight(state, lock, i, force, hit = {}) {
     const r = collisionRadius(lock, i);
     hold = smooth(-0.35, -0.1, hit.ny) * (1 - smooth(r + 0.008, r + 0.016, hit.distance));
   }
-  return force * (1 - hold) * (1 - Math.exp(-rate * Math.max(0, s - start)));
+  // Gel holds the styled shape; a springy curl (type 3–4) holds the hair up and out.
+  const held = (1 - (lock.gel ?? 0)) * (1 - (typeOf(lock)?.lift ?? 0));
+  return force * held * (1 - hold) * (1 - Math.exp(-rate * Math.max(0, s - start)));
 }
 
 /**
@@ -801,19 +853,138 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
  * A lock as a hair card (hair-cards.mjs): the same centre line and frames as
  * the tube, a strip across its width facing out of the head.
  */
-export function lockCard(lock, state, { detail = 1, vertex = null } = {}) {
+export function lockCard(lock, state, { detail = 1, vertex = null, tint = null } = {}) {
   if ((lock.density ?? 1) < 1) lock = { ...lock, width: lock.width * Math.sqrt(Math.max(0, lock.density)) };
+  if ((lock.kind ?? 'card') !== 'card') return lockSolid(lock, state, { detail, vertex, tint });
   const sweep = lockSweep(lock, state, { detail });
   // A card keeps most of its width to the tip (the strands in its texture thin out there, not the card),
   // and is half again as wide as the lock so neighbouring cards overlap and no scalp shows between them.
   // A lock growing out of other hair (rootTaper) starts from nothing, with the tube's root ramp (profile).
+  // Gel gathers a lock into a narrower, flatter band (wet hair clumps); frizz spreads it.
   const rootRamp = s => lock.rootTaper ? smooth(0, Math.min(0.04, sweep.length * 0.3), s) : 0.75 + 0.25 * smooth(0, Math.min(0.03, sweep.length * 0.2), s);
+  const spread = (1 - 0.3 * (lock.gel ?? 0)) * (1 + 0.3 * (lock.frizz ?? 0));
   const half = sweep.ss.map(s => {
     const u = clamp(s / sweep.length, 0, 1);
-    return 0.75 * lock.width * (1 - 0.7 * lock.taper * Math.pow(u, 1.6)) * rootRamp(s);
+    return 0.75 * lock.width * spread * (1 - 0.7 * lock.taper * Math.pow(u, 1.6)) * rootRamp(s);
   });
   const u = sweep.ss.map(s => clamp(s / sweep.length, 0, 1));
-  return cardFromSweep({ M: sweep.M, line: sweep.line, tan: sweep.tan, side: sweep.SA, out: sweep.RA, half, u }, lock, { vertex });
+  return cardFromSweep({ M: sweep.M, line: sweep.line, tan: sweep.tan, side: sweep.SA, out: sweep.RA, half, u }, lock, { vertex, tint });
+}
+
+/** The swept centre line of a lock resampled every `step` metres from the root (no sunk sample). */
+function evenSweep(sweep, step) {
+  const { ss, line, tan, RA, SA, length } = sweep, count = Math.max(2, Math.ceil(length / step) + 1);
+  const out = { M: count, s: new Float32Array(count), line: new Float32Array(count * 3), tan: new Float32Array(count * 3), RA: new Float32Array(count * 3), SA: new Float32Array(count * 3), length };
+  let j = 1;
+  for (let k = 0; k < count; k++) {
+    const s = length * k / (count - 1);
+    while (j < ss.length - 1 && ss[j] < s) j++;
+    const t = clamp((s - ss[j - 1]) / Math.max(1e-9, ss[j] - ss[j - 1]), 0, 1);
+    out.s[k] = s;
+    for (const key of ['line', 'tan', 'RA', 'SA']) {
+      const src = key === 'line' ? line : key === 'tan' ? tan : key === 'RA' ? RA : SA, dst = out[key];
+      for (let c = 0; c < 3; c++) dst[k * 3 + c] = src[(j - 1) * 3 + c] * (1 - t) + src[j * 3 + c] * t;
+    }
+    // Directions renormalised; the width axis kept at right angles to the tangent and thickness axis.
+    for (const key of ['tan', 'RA']) { const d = out[key], l = Math.hypot(d[k * 3], d[k * 3 + 1], d[k * 3 + 2]) || 1; d[k * 3] /= l; d[k * 3 + 1] /= l; d[k * 3 + 2] /= l; }
+    const T = out.tan, R = out.RA, o = k * 3;
+    const sx = T[o + 1] * R[o + 2] - T[o + 2] * R[o + 1], sy = T[o + 2] * R[o] - T[o] * R[o + 2], sz = T[o] * R[o + 1] - T[o + 1] * R[o], sl = Math.hypot(sx, sy, sz) || 1;
+    out.SA[o] = sx / sl; out.SA[o + 1] = sy / sl; out.SA[o + 2] = sz / sl;
+  }
+  return out;
+}
+
+/** Tube data for a path of points (`pts`, flat xyz) facing `up` (flat xyz, per point): tangents and side = tan × out. */
+function pathFrames(pts, up) {
+  const M = pts.length / 3, tan = new Float32Array(M * 3), side = new Float32Array(M * 3), out = new Float32Array(M * 3);
+  for (let j = 0; j < M; j++) {
+    const a = Math.max(0, j - 1) * 3, b = Math.min(M - 1, j + 1) * 3, o = j * 3;
+    let tx = pts[b] - pts[a], ty = pts[b + 1] - pts[a + 1], tz = pts[b + 2] - pts[a + 2];
+    const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+    let ox = up[o], oy = up[o + 1], oz = up[o + 2];
+    const d = ox * tx + oy * ty + oz * tz; ox -= d * tx; oy -= d * ty; oz -= d * tz;
+    const ol = Math.hypot(ox, oy, oz) || 1; ox /= ol; oy /= ol; oz /= ol;
+    tan[o] = tx; tan[o + 1] = ty; tan[o + 2] = tz; out[o] = ox; out[o + 1] = oy; out[o + 2] = oz;
+    side[o] = ty * oz - tz * oy; side[o + 1] = tz * ox - tx * oz; side[o + 2] = tx * oy - ty * ox;
+  }
+  return { tan, side, out };
+}
+
+/** Merge parts (pos, normal, uv, color, index) into one. */
+export function mergeParts(parts) {
+  const vertices = parts.reduce((n, p) => n + p.pos.length / 3, 0), indices = parts.reduce((n, p) => n + p.index.length, 0);
+  const pos = new Float32Array(vertices * 3), normal = new Float32Array(vertices * 3), uv = new Float32Array(vertices * 2), color = new Float32Array(vertices * 3), index = new Uint32Array(indices);
+  let v = 0, i = 0;
+  for (const part of parts) {
+    pos.set(part.pos, v * 3); normal.set(part.normal, v * 3); uv.set(part.uv, v * 2); color.set(part.color, v * 3);
+    for (let k = 0; k < part.index.length; k++) index[i++] = part.index[k] + v;
+    v += part.pos.length / 3;
+  }
+  return { pos, normal, uv, color, index };
+}
+
+/**
+ * Solid locks (`kind`), tubes of opaque strands (hair-cards.mjs tubeFromSweep)
+ * around the lock's centre line, which keeps the chain's root, length,
+ * gravity and collisions:
+ * - braid: three strands, each the same curve half a turn of a figure eight
+ *   apart (x = a·cos θ across the braid, z = ½a·sin 2θ towards the head,
+ *   θ = 2πs/P − j·2π/3), flattened against the head, tied with a band near
+ *   the end and loose for the rest (the strands close to a point);
+ * - dread: one lumpy rope, rounded at the tip;
+ * - twist: two strands wound round each other (half a turn apart).
+ * Sizes follow the lock's width W: braid strands a = 0.34 W off the axis with
+ * period P = 2 W, so the lobes just touch (their closest approach, 0.24 W,
+ * against a depth radius of 0.13 W).
+ */
+function lockSolid(lock, state, { detail = 1, vertex = null, tint = null } = {}) {
+  const plain = { ...lock, type: null, curl: 0, frizz: 0, twist: 0 };
+  const W = lock.width, kind = lock.kind, sweep = lockSweep(plain, state, { detail: Math.max(detail, 0.6) });
+  const L = sweep.length, sides = detail >= 0.5 ? 8 : 5;
+  const P = kind === 'twist' ? 1.6 * W : 2 * W;
+  const even = evenSweep(sweep, Math.max(0.0015, Math.min(P / (10 + 8 * Math.min(1, detail)), 0.01)));
+  const M = even.M, u = Float32Array.from(even.s, s => s / L);
+  const hash = (lock.root.v[0] * 0.618 + lock.root.v[1] * 0.31) % 1, parts = [];
+  const tie = kind === 'braid' ? Math.max(0.55, 1 - Math.min(0.12, 0.05 / L)) : 1;
+  const tipRound = s => Math.sqrt(Math.max(0, 1 - Math.max(0, 1 - (L - s) / Math.max(0.004, 0.6 * W)) ** 2));
+  const strand = (offset, radius, scaleX) => {
+    const pts = new Float32Array(M * 3), up = new Float32Array(M * 3);
+    for (let k = 0; k < M; k++) {
+      const o = k * 3, [x, z] = offset(k);
+      for (let c = 0; c < 3; c++) { pts[o + c] = even.line[o + c] + even.SA[o + c] * x + even.RA[o + c] * z; up[o + c] = even.RA[o + c]; }
+    }
+    const { tan, side, out } = pathFrames(pts, up);
+    const r = Float32Array.from({ length: M }, (_, k) => radius(k));
+    parts.push(tubeFromSweep({ M, line: pts, tan, side, out, radius: r, u }, { sides, vertex, tint: tint ?? null, scaleX: scaleX ? new Float32Array(M).fill(scaleX) : null }));
+  };
+  if (kind === 'braid') {
+    // Past the band the three strands close in to the loose end.
+    const gather = s => s < tie * L ? 1 : 0.35 * (1 - smooth(tie * L, L, s));
+    const width = s => (1 - 0.35 * lock.taper * (s / L)) * smooth(0, Math.min(0.02, 0.15 * L), s + 0.004);
+    for (let j = 0; j < 3; j++) strand(k => {
+      const s = even.s[k], th = TAU * s / P - j * TAU / 3 + hash * TAU, a = 0.34 * W * width(s) * gather(s);
+      return [a * Math.cos(th), 0.5 * a * Math.sin(2 * th)];
+    }, k => { const s = even.s[k]; return Math.max(0.0004, 0.13 * W * width(s) * (s < tie * L ? 1 : 0.75) * tipRound(s)); }, 1.25);
+    // The band: a short dark ring round the braid where it is tied.
+    const k0 = Math.min(M - 2, Math.round(tie * (M - 1)));
+    const ring = 0.5 * W * (1 - 0.35 * lock.taper * tie) * 0.62;
+    const pts = [], up = [];
+    for (let k = 0; k <= 4; k++) { const kk = Math.min(M - 1, k0 + k - 2); for (let c = 0; c < 3; c++) { pts.push(even.line[kk * 3 + c]); up.push(even.RA[kk * 3 + c]); } }
+    const band = new Float32Array(pts), { tan, side, out } = pathFrames(band, new Float32Array(up));
+    parts.push(tubeFromSweep({ M: 5, line: band, tan, side, out, radius: new Float32Array([0.6, 1, 1, 1, 0.6].map(f => ring * f)), u: new Float32Array(5).fill(tie) }, { sides: 10, vertex, tint: () => [0.05, 0.05, 0.05], shade: 1 }));
+  } else if (kind === 'twist') {
+    for (let j = 0; j < 2; j++) strand(k => {
+      const s = even.s[k], th = TAU * s / P + j * Math.PI + hash * TAU, a = 0.24 * W * (1 - 0.3 * lock.taper * s / L);
+      return [a * Math.cos(th), a * Math.sin(th)];
+    }, k => { const s = even.s[k]; return Math.max(0.0004, 0.26 * W * (1 - 0.4 * lock.taper * s / L) * tipRound(s) * smooth(0, 0.01, s + 0.003)); });
+  } else {
+    // Dread: matted, a little lumpy, with the root narrow where it leaves the scalp.
+    strand(() => [0, 0], k => {
+      const s = even.s[k], lump = 1 + 0.12 * Math.sin(TAU * s / 0.035 + hash * 9) + 0.06 * Math.sin(TAU * s / 0.013 + hash * 5);
+      return Math.max(0.0004, 0.5 * W * lump * (1 - 0.3 * lock.taper * s / L) * tipRound(s) * (0.6 + 0.4 * smooth(0, 0.015, s)));
+    });
+  }
+  return mergeParts(parts);
 }
 
 /**
@@ -844,8 +1015,11 @@ function lockSweep(lock, state, { detail = 1 } = {}) {
     for (let k = 0; k < 3; k++) out[o + k] = table[(cursor - 1) * 3 + k] * (1 - t) + table[cursor * 3 + k] * t;
   };
   // Arc-length samples: a step along the lock (finer for curls), finer over the rounded tip.
-  const turns = lock.curl > 0 ? lock.turns : 0;
-  const h = Math.min(clamp(length / 40, 0.0035, 0.012), turns ? length / (turns * 24) : Infinity) / detail;
+  // A typed curl (hairTypes) keeps its wavelength in metres, so a cut lock keeps its curl.
+  const kind = typeOf(lock), typed = kind && kind.radius > 0;
+  const turns = typed ? length / kind.wave : lock.curl > 0 ? lock.turns : 0;
+  const amplitude = typed ? u => kind.radius * curlIn(lock, u) : u => curlRadius(lock, u), flat = typed ? kind.flat : 0;
+  const h = Math.min(clamp(length / 40, 0.0035, 0.012), turns ? length / (turns * (typed ? 14 : 24)) : Infinity) / detail;
   const cap = tipCap(lock, length), ss = [-sinkLen];
   for (let s = 0; s < length - cap - h * 0.5; s += h) ss.push(s);
   for (let k = 0; k <= 8; k++) ss.push(length - cap + cap * Math.sin(k / 8 * Math.PI / 2));
@@ -898,15 +1072,20 @@ function lockSweep(lock, state, { detail = 1 } = {}) {
   };
   // Along the coils the frame follows the axis (pure RMF): turning it
   // towards the surface there makes the helix, and the tube, kink.
-  const nudge = j => 0.35 * (1 - (turns ? smooth(0, 0.004, curlRadius(lock, clamp(ss[j] / length, 0, 1))) : 0));
+  const nudge = j => 0.35 * (1 - (turns ? smooth(0, 0.004, amplitude(clamp(ss[j] / length, 0, 1))) : 0));
   tangents(); frames(nudge);
-  if (turns) {
-    // Curl (DFTL's rendering curl): a helix around the centre line in its frame.
-    const phase = (lock.root.v[0] * 0.618) % 1 * TAU;
+  const frizz = lock.frizz ?? 0;
+  if (turns || frizz > 0) {
+    // Curl (DFTL's rendering curl): a helix around the centre line in its frame; a wave
+    // (`flat` 1) only across the card, an S in its plane. Frizz (Ornatrix's Frizz: the
+    // strands disordered along their length) adds an irregular sideways and outward jitter
+    // growing to the tip; the lock's arc length is set by the chain, not by these offsets.
+    const phase = (lock.root.v[0] * 0.618) % 1 * TAU, p1 = (lock.root.v[1] * 0.377) % 1 * TAU, p2 = (lock.root.v[2] * 0.731) % 1 * TAU;
     for (let j = 0; j < M; j++) {
-      const o = j * 3, u = clamp(ss[j] / length, 0, 1), a = curlRadius(lock, u), phi = TAU * turns * u + phase;
+      const o = j * 3, u = clamp(ss[j] / length, 0, 1), a = turns ? amplitude(u) : 0, phi = TAU * turns * u + phase;
       const sx = tan[o + 1] * rr[o + 2] - tan[o + 2] * rr[o + 1], sy = tan[o + 2] * rr[o] - tan[o] * rr[o + 2], sz = tan[o] * rr[o + 1] - tan[o + 1] * rr[o];
-      const c = Math.cos(phi) * a, sn = Math.sin(phi) * a;
+      const s = Math.max(0, ss[j]), f = frizz * 0.0035 * (0.3 + 0.7 * u) * smooth(0, 0.02, s);
+      const c = Math.cos(phi) * a * (1 - flat) + f * Math.sin(TAU * s / 0.013 + p2), sn = Math.sin(phi) * a + f * Math.sin(TAU * s / 0.031 + p1);
       line[o] += rr[o] * c + sx * sn; line[o + 1] += rr[o + 1] * c + sy * sn; line[o + 2] += rr[o + 2] * c + sz * sn;
     }
     tangents(); frames(nudge);
@@ -985,6 +1164,33 @@ export function updateGeometry(geometry, part) {
 export const lockMaterial = hairCardMaterial;
 
 /**
+ * The hairstyle's colour effect (state.dye) as a per-lock vertex tint: for
+ * each lock a function of the position along it (0 root .. 1 tip) giving the
+ * linear RGB of the hair there, mixed from the hair colour to the dye colour.
+ * Null without an effect (the material carries the colour alone). With one,
+ * the material is white and the vertex colour (glTF COLOR_0, in [0, 1])
+ * carries the whole colour.
+ * - ombré: from the base colour to the dye colour over the last `amount` of the length;
+ * - luzes (highlights): a share `amount` of the locks dyed from just below the root;
+ * - raiz: the first part of the length (`amount`) in the dye colour (grown-out or darker roots);
+ * - pontas: the tips dipped sharply in the dye colour.
+ */
+export function dyeTints(state, color) {
+  const dye = state?.dye;
+  if (!dye || dye.mode === 'none') return null;
+  const a = new Color(color), b = new Color(dye.color), amount = clamp(dye.amount ?? 0.5, 0, 1);
+  const mix = t => [a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t];
+  return lock => {
+    const h = Math.abs(Math.sin(lock.root.v[0] * 12.9898 + lock.root.v[1] * 78.233 + lock.root.w[0] * 37.719) * 43758.5453) % 1;
+    if (dye.mode === 'ombre') { const start = 1 - amount; return s => mix(smooth(start - 0.12, start + 0.28, s)); }
+    if (dye.mode === 'luzes') return h < amount ? s => mix(0.9 * smooth(0.02, 0.14, s)) : () => mix(0);
+    if (dye.mode === 'raiz') { const end = 0.06 + 0.6 * amount; return s => mix(1 - smooth(end - 0.05, end + 0.08, s)); }
+    const tip = 1 - 0.6 * amount;
+    return s => mix(smooth(tip - 0.015, tip + 0.015, s));
+  };
+}
+
+/**
  * The combing direction over the scalp: at a point, the average direction in
  * which the locks rooted within 6 cm leave the scalp (their first fifth, in
  * the skin's plane, nearer ones counting more); with none near, combed back
@@ -1042,12 +1248,17 @@ export function locksMesh(context, state, color, rig = buildHairRig(context, sta
   const point = new Vector3();
   const groups = hairFusionGroups(state), fused = new Set(groups.flatMap(g => g.locks));
   const lod = context.lod ?? 'high';
+  const tints = dyeTints(state, color);
+  const kept = state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0);
+  let sizes = [];
   const sweep = detail => {
     joints = []; weights = [];
-    return state.locks.filter(lock => !fused.has(lock) && (lock.density ?? 1) > 0).map(lock => lockCard(lock, state, {
-      detail,
+    const parts = kept.map(lock => lockCard(lock, state, {
+      detail, tint: tints ? tints(lock) : null,
       vertex: (x, y, z, u) => { const [j, w] = rig.weightsFor(lock, u, point.set(x, y, z)); joints.push(...j); weights.push(...w); },
     }));
+    sizes = parts.map(part => part.pos.length / 3);
+    return parts;
   };
   const detail = lod === 'low' ? 0.3 : lod === 'medium' ? 0.45 : 0.6;
   let parts = sweep(detail);
@@ -1057,6 +1268,20 @@ export function locksMesh(context, state, color, rig = buildHairRig(context, sta
   const swept = parts.reduce((n, part) => n + part.pos.length / 3, 0), budget = HAIR_BUDGET[lod] ?? HAIR_BUDGET.high;
   const fixed = parts.length * 10 * 3;
   if (swept > budget && swept > fixed) parts = sweep(detail * Math.max(0.05, (budget - fixed) / (swept - fixed)));
+  // Gelled or wet locks (gel ≥ ½) draw with the wet material: one more primitive, after the dry ones.
+  const wet = parts.map((_, i) => (kept[i].gel ?? 0) >= 0.5);
+  const order = parts.map((_, i) => i).sort((a, b) => wet[a] - wet[b]);
+  const reorder = list => order.map(i => list[i]);
+  const counts = order.map(i => [parts[i].pos.length / 3, wet[i]]);
+  parts = reorder(parts);
+  {
+    // Skin weights were pushed in sweep order: put them in the same order as the parts.
+    const sj = [], sw = [];
+    let at = 0;
+    const offsets = kept.map((_, i) => { const n = at; at += sizes[i]; return n; });
+    for (const i of order) for (let v = 0; v < sizes[i]; v++) { const o = (offsets[i] + v) * 4; sj.push(joints[o], joints[o + 1], joints[o + 2], joints[o + 3]); sw.push(weights[o], weights[o + 1], weights[o + 2], weights[o + 3]); }
+    joints = sj; weights = sw;
+  }
   for (const group of groups) {
     const part = fusedHairSurface(state, group.locks, lockSurface, { group: group.id });
     // Official Three.js SkinnedMesh contract: four joint indices and weights
@@ -1065,9 +1290,23 @@ export function locksMesh(context, state, color, rig = buildHairRig(context, sta
     parts.push(part);
   }
   const geometry = geometryFrom(parts, { skinIndex: new Uint16BufferAttribute(joints, 4), skinWeight: new Float32BufferAttribute(weights, 4) });
-  const mesh = new SkinnedMesh(geometry, lockMaterial(color));
+  // Dyed hair: the vertex colours carry the colour, the material is white.
+  const tone = tints ? 0xffffff : color;
+  let material = lockMaterial(tone);
+  if (counts.some(([, w]) => w)) {
+    // Index ranges per material (dry cards, then wet ones); fused surfaces stay dry, after them.
+    let start = 0, dryEnd = 0;
+    for (const [i, part] of parts.entries()) { start += part.index.length; if (i < counts.length && !counts[i][1]) dryEnd = start; }
+    const wetEnd = counts.reduce((n, [, w], i) => n + (w ? parts[i].index.length : 0), dryEnd);
+    geometry.addGroup(0, dryEnd, 0);
+    geometry.addGroup(dryEnd, wetEnd - dryEnd, 1);
+    if (start > wetEnd) geometry.addGroup(wetEnd, start - wetEnd, 0);
+    material = [material, hairCardMaterial(tone, { wet: true })];
+  }
+  const mesh = new SkinnedMesh(geometry, material);
   mesh.name = 'Hair';
   mesh.userData.style = 'locks';
+  if (tints) mesh.userData.dyed = true;
   if (state.fusion?.enabled) mesh.userData.fusion = { groups: groups.flatMap(g => g.ids), surfaces: parts.filter(p => p.stats).map(p => p.stats) };
   return mesh;
 }
