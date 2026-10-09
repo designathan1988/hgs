@@ -767,6 +767,155 @@ function fitShell(points, index, bodyNormals, beneath, { base, room, iterations,
   for (let iteration = 0; iteration < settle; iteration++) { relax(0.5); relax(-0.53); }
 }
 
+/** The upper convex chain of 2D points (Andrew's monotone chain), left to right: the outline a stretched cover takes. */
+function outerChain(list) {
+  const p = list.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]), upper = [];
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  for (const q of p) { while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), q) >= 0) upper.pop(); upper.push(q); }
+  return upper;
+}
+
+/**
+ * Give a cut garment its own silhouette instead of the body's. In cylindrical coordinates round each
+ * limb (t along it, θ round it), a trouser leg runs in straight lines from the thigh to the knee and
+ * from the knee to the hem (Müller & Sohn: the knee and hem half-widths joined by straight lines, the
+ * side seam and inseam straight from the knee up to the hip), and a sleeve from the biceps to the cuff:
+ * no point is let in nearer the axis than those lines, so the cloth bridges the knee, the calf and the
+ * elbow instead of tracing them. On the torso, below the bust and the shoulder blades, the radius round
+ * the vertical axis does not shrink going down: the fabric falls from them, as much as the ease allows
+ * (a tight tank top still follows the waist). Everything is per angle bin, smoothed round the limb.
+ */
+function hangSilhouette(points, panel, garment, layout, positions, { tuck = -Infinity, blocked = () => false } = {}) {
+  const count = points.length / 3, k = layout.k, BINS = 32, origin = v => panel.origins[v];
+  const binOf = angle => ((Math.round(angle / (Math.PI * 2) * BINS) % BINS) + BINS) % BINS;
+  const blurBins = values => { let out = values; for (let pass = 0; pass < 2; pass++) out = out.map((r, i) => Math.max(r, (out[(i + BINS - 1) % BINS] + 2 * r + out[(i + 1) % BINS]) / 4)); return out; };
+  // A limb: points of one side whose skin belongs to it, measured along the chain from its top joint.
+  const limb = (chain, side, weightOf, knots, inner) => {
+    const A = chain.A, u = chain.C.clone().sub(A).normalize(), e1 = new Vector3(1, 0, 0).addScaledVector(u, -u.x).normalize(), e2 = u.clone().cross(e1);
+    const members = [];
+    for (let v = 0; v < count; v++) {
+      const o = origin(v);
+      if (o < 0 || weightOf(o) < 0.5 || Math.sign(positions[o * 3]) !== (side === 'l' ? 1 : -1)) continue;
+      const d = new Vector3(points[v * 3] - A.x, points[v * 3 + 1] - A.y, points[v * 3 + 2] - A.z), t = d.dot(u);
+      d.addScaledVector(u, -t);
+      members.push({ v, t, r: d.length(), bin: binOf(Math.atan2(d.dot(e2), d.dot(e1))), d });
+    }
+    if (members.length < 20) return;
+    const top = Math.min(...members.map(m => m.t)), end = Math.max(...members.map(m => m.t));
+    // The knots' radius per angle: the widest the limb is around each knot (never inside the body).
+    const widest = (from, to) => blurBins(Array.from({ length: BINS }, (_, b) => Math.max(0, ...members.filter(m => m.bin === b && m.t >= from && m.t <= to).map(m => m.r))));
+    const at = knots(top, end).map(({ t, from, to, scale = 1 }) => ({ t, r: widest(from, to).map(r => r * scale) }));
+    for (const m of members) {
+      if (m.t <= at[0].t) continue;
+      let i = 0;
+      while (i + 2 < at.length && m.t > at[i + 1].t) i++;
+      const a = at[i], b = at[i + 1], s = Math.min(1, (m.t - a.t) / Math.max(1e-6, b.t - a.t)), line = a.r[m.bin] + (b.r[m.bin] - a.r[m.bin]) * s;
+      if (line <= m.r || m.r < 1e-6) continue;
+      const scale = line / m.r, o = m.v * 3;
+      const target = [A.x + u.x * m.t + m.d.x * scale, A.y + u.y * m.t + m.d.y * scale, A.z + u.z * m.t + m.d.z * scale];
+      // The two trouser legs meet at the crotch, they do not cross it.
+      if (inner && target[0] * (side === 'l' ? 1 : -1) < 0.003 * k) target[0] = (side === 'l' ? 1 : -1) * Math.max(0.003 * k, Math.abs(points[o]));
+      points[o] = target[0]; points[o + 1] = target[1]; points[o + 2] = target[2];
+    }
+  };
+  const legs = garment.type === 'pants' || garment.type === 'shorts', sleeves = ['tshirt', 'longsleeve', 'hoodie', 'dress'].includes(garment.type) && garment.sleeve > 0.05;
+  for (const side of ['l', 'r']) {
+    if (legs) {
+      const c = layout.legs[side], knee = c.l1, taper = 0.9 + 0.1 * smooth(garment.fit / 0.6);
+      limb(c, side, o => layout.legW[o], (top, end) => {
+        const thigh = top + 0.06 * k;
+        if (end <= knee + 0.04 * k) return [{ t: thigh, from: top, to: thigh + 0.03 * k }, { t: end, from: thigh, to: end }];
+        return [{ t: thigh, from: top, to: thigh + 0.03 * k }, { t: knee, from: knee - 0.06 * k, to: end }, { t: end, from: knee - 0.06 * k, to: end, scale: taper }];
+      }, true);
+    }
+    if (sleeves) {
+      const c = layout.arms[side];
+      limb(c, side, o => layout.armW[o], (top, end) => {
+        // Sleeve drafting: the biceps width and the cuff width joined by a straight line; the cuff is
+        // its own width (the wrist and its ease, an elastic cuff hugging it), never the forearm's.
+        const biceps = top + 0.35 * (c.l1 - top);
+        return [{ t: biceps, from: top, to: biceps + 0.03 * k }, { t: end, from: end - 0.04 * k, to: end }];
+      }, false);
+    }
+  }
+  // Above the crotch a trouser is one tube stretched round the hips: each horizontal section is its
+  // convex hull (fabric spans the creases between the thighs and the bulge, front and back), from 1.5 cm
+  // above the lowest point of the crotch, where the section is still one loop, up to the waistband.
+  if (legs) {
+    let crotch = Infinity, waist = -Infinity;
+    for (let v = 0; v < count; v++) {
+      if (origin(v) < 0) continue;
+      if (Math.abs(points[v * 3]) < 0.01 * k) crotch = Math.min(crotch, points[v * 3 + 1]);
+      waist = Math.max(waist, points[v * 3 + 1]);
+    }
+    if (Number.isFinite(crotch)) for (let y0 = crotch + 0.015 * k; y0 < waist; y0 += 0.01 * k) {
+      const band = [];
+      for (let v = 0; v < count; v++) if (origin(v) >= 0 && points[v * 3 + 1] >= y0 && points[v * 3 + 1] < y0 + 0.01 * k) band.push(v);
+      if (band.length < 6) continue;
+      // Front and back separately, and only in depth: each point comes out to the convex outline of its
+      // side (z against x), so nothing slides sideways and neighbours never cross.
+      const cz = band.reduce((s, v) => s + points[v * 3 + 2], 0) / band.length;
+      for (const sign of [1, -1]) {
+        const side = band.filter(v => (points[v * 3 + 2] - cz) * sign > 0);
+        if (side.length < 3) continue;
+        const chain = outerChain(side.map(v => [points[v * 3], (points[v * 3 + 2] - cz) * sign]));
+        for (const v of side) {
+          const x = points[v * 3], i = chain.findIndex((q, j) => j + 1 < chain.length && x >= q[0] && x <= chain[j + 1][0]);
+          if (i < 0) continue;
+          const [ax, az] = chain[i], [bx, bz] = chain[i + 1], reach = az + (bz - az) * (x - ax) / Math.max(1e-9, bx - ax);
+          if (reach > (points[v * 3 + 2] - cz) * sign) points[v * 3 + 2] = cz + reach * sign;
+        }
+      }
+    }
+  }
+  // The body of a top hangs from the bust and the shoulder blades.
+  if (['tshirt', 'longsleeve', 'tank', 'hoodie', 'dress'].includes(garment.type)) {
+    const hang = smooth((garment.fit - 0.05) / 0.3), bustY = Math.max(layout.bust.l?.y ?? layout.chestY, layout.bust.r?.y ?? layout.chestY);
+    if (hang <= 0) return;
+    const torso = [];
+    for (let v = 0; v < count; v++) {
+      const o = origin(v);
+      // Everything of the top that is not sleeve (the sleeves are the arm-weighted half), down to the
+      // hem over the hips: leaving the leg-weighted hem out left it tight under a hanging body, a ledge.
+      if (o >= 0 && (layout.armW[o] < 0.5 || !sleeves) && layout.headW[o] < 0.3 && points[v * 3 + 1] < bustY) torso.push(v);
+    }
+    if (torso.length < 20) return;
+    let cz = 0;
+    for (const v of torso) cz += points[v * 3 + 2];
+    cz /= torso.length;
+    torso.sort((a, b) => points[b * 3 + 1] - points[a * 3 + 1]);
+    // Tucked in: the fabric is held at both ends, so between the bust and the waistband it runs in a
+    // straight line from one to the other (per angle), never in nearer than that line.
+    if (Number.isFinite(tuck)) {
+      const ring = (from, to) => { const r = new Float32Array(BINS); for (const v of torso) { const y = points[v * 3 + 1]; if (y < from || y > to) continue; const x = points[v * 3], z = points[v * 3 + 2] - cz, b = binOf(Math.atan2(x, z)); r[b] = Math.max(r[b], Math.hypot(x, z)); } return blurBins(Array.from(r)); };
+      const topY = points[torso[0] * 3 + 1], high = ring(topY - 0.02 * k, topY), low = ring(tuck - 0.01 * k, tuck + 0.01 * k);
+      for (const v of torso) {
+        const y = points[v * 3 + 1];
+        if (y <= tuck || y >= topY) continue;
+        const x = points[v * 3], z = points[v * 3 + 2] - cz, r = Math.hypot(x, z), b = binOf(Math.atan2(x, z)), s = (topY - y) / (topY - tuck);
+        const want = r + Math.max(0, high[b] + (low[b] - high[b]) * s - r) * hang;
+        if (r > 1e-6 && want > r && !blocked(x * want / r, y, cz + z * want / r)) { points[v * 3] = x * want / r; points[v * 3 + 2] = cz + z * want / r; }
+      }
+      return;
+    }
+    const reach = new Float32Array(BINS);
+    for (let i = 0; i < torso.length;) {
+      // One horizontal band (1.5 cm) at a time, top to bottom: each bin keeps the widest seen above it.
+      const y0 = points[torso[i] * 3 + 1], band = [];
+      while (i < torso.length && points[torso[i] * 3 + 1] > y0 - 0.015 * k) band.push(torso[i++]);
+      const here = new Float32Array(BINS);
+      for (const v of band) { const x = points[v * 3], z = points[v * 3 + 2] - cz, b = binOf(Math.atan2(x, z)); here[b] = Math.max(here[b], Math.hypot(x, z)); }
+      const smoothReach = blurBins(Array.from(reach));
+      for (const v of band) {
+        const x = points[v * 3], y = points[v * 3 + 1], z = points[v * 3 + 2] - cz, r = Math.hypot(x, z), b = binOf(Math.atan2(x, z));
+        const want = r + Math.max(0, smoothReach[b] - r) * hang;
+        if (r > 1e-6 && want > r && !blocked(x * want / r, y, cz + z * want / r)) { points[v * 3] = x * want / r; points[v * 3 + 2] = cz + z * want / r; }
+      }
+      for (let b = 0; b < BINS; b++) reach[b] = Math.max(reach[b], here[b]);
+    }
+  }
+}
+
 /**
  * Close the seams of a sewn garment for good: the stitched points of each seam group (paired one
  * to one by the stitch flattening in pattern-cloth.mjs) become one vertex, with one position and
@@ -947,6 +1096,20 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
           // more round the chest, 10 cm more round the arm).
           room: v => room * (panel.elastic?.[v] ? 0.25 : 1) * (1 - 0.65 * smooth((panel.normal[v * 3 + 1] - 0.25) / 0.6)) * (1 - 0.5 * (layout.armW[panel.origins[v]] ?? 0)),
         });
+        // Its own silhouette: straight legs and sleeves, a body that falls from the bust.
+        if (!shoe) {
+          // A top under trousers or a skirt (dressed after it) is tucked in at their waistband.
+          const outer = garments.slice(layer + 1).find(g => ['pants', 'shorts', 'skirt'].includes(g.type) && !(g.authoringMode !== 'surface' && g.patternData?.panels.length));
+          const tuck = outer ? layout.hipY + (layout.waistY - layout.hipY) * (0.35 + outer.rise * 0.9) : -Infinity;
+          // The sides of a top never fall into the arms beside them (in the A pose the upper arm hangs
+          // along the ribs): a point is not moved where it would come within 8 mm of the arm's skin.
+          const regions = regionColliders(context), armSkin = [regions.arm_l, regions.arm_r], near = {};
+          const blocked = (x, y, z) => armSkin.some(arm => arm.closest(x, y, z, 0.02 * k, near) && near.distance < 0.008 * k);
+          hangSilhouette(points, panel, garment, layout, context.positions, { tuck, blocked });
+          // Moved per angle bin, the open edges (hem, cuffs) are smoothed along their own curve too.
+          taubinSmooth(points, panel.index, 4);
+          smoothRims(points, panel.index, 4);
+        }
       }
       // A shoe stands on a flat sole: the part of the shell under the foot (below 4 mm) goes down
       // to one plane 1.2 cm under the sole of the foot (above the studio floor), so the sole has its
