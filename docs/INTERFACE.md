@@ -100,8 +100,9 @@ FPS e triângulos saem do rodapé e ficam no painel Desempenho.
 - Indicador de trabalho ("Gerando · etapa…") no topo central do 3D enquanto houver operação.
 
 ### Trilho de ferramentas
-Botões com ícone **e nome** (e tecla), em lista vertical; ferramentas que não valem
-para a peça atual somem e uma linha explica por quê.
+Só ícones (pedido do usuário: "ícones, não texto"); nome e tecla no tooltip e no
+cabeçalho do cartão da ferramenta; grupos separados por uma linha fina, sem títulos.
+Ferramentas que não valem para a peça atual somem (o motivo fica no tooltip do trilho).
 
 ### Painéis
 - **Pessoa**: Sexo, Idade, Altura, Pele (cor com nome + acabamento), Ancestralidade. Sortear com "Manter" em chips marcáveis.
@@ -131,3 +132,22 @@ para a peça atual somem e uma linha explica por quê.
 | 7 | Exportar e Personagens: opções sem corte, explicações, avisos com Desfazer | ui.mjs, styles.css |
 
 Cada etapa é usada no navegador antes do commit.
+
+## 5. Revisão depois do retorno do usuário (mesmo dia)
+
+O usuário viu a primeira versão e pediu: menos texto, menos espaço, ícones onde a
+escolha é visual, rótulo ao lado do controle, nada cortado, mudança visível de
+identidade e de cena. Regras adotadas em todos os módulos:
+
+| Regra | Como ficou |
+|---|---|
+| Uma linha por controle | Slider = rótulo curto, trilha, valor discreto (caixa só ao passar o mouse); pontas dos sliders no tooltip e no `aria-valuetext`; pares esquerda/direita numa linha (E, D) |
+| Sem texto explicativo | Nenhum parágrafo nos painéis; explicação no tooltip; só estados vazios de uma linha |
+| Ícones onde a escolha é visual | Expressões (12 rostos), sobrancelhas, tipos de corpo, fases da vida, ferramentas, ações (barra de ícones com tooltip) |
+| Um nível aberto por vez | Grupos em acordeão; o técnico de cada módulo num único "Avançado" no fim |
+| Identidade nova | Palco de estúdio com degradê radial e disco no chão (sem grade); painéis como cartões de vidro sobre a cena; acento violeta; o centro da câmera no meio da área livre (`setViewOffset`) |
+
+Fontes desta revisão: Material Components, tema escuro (superfícies cinza-escuro,
+elevação mais clara); three.js `Fog` e `PerspectiveCamera.setViewOffset` (código em
+`node_modules/three`); WAI-ARIA APG Slider (`aria-valuetext`); NN/g, divulgação
+progressiva.
