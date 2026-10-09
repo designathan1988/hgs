@@ -44,8 +44,9 @@ export function restoreFocus(root, saved) {
 
 // --------------------------------------------------------------- controls
 /** A collapsible group; `onToggle(open)` remembers its state. */
-export function group(container, { title, open = true, onToggle }) {
-  const details = h('details', { class: 'group' }, h('summary', {}, icon('chevron', 14), h('span', { text: title })));
+export function group(container, { title, open = true, onToggle, advanced = false, badge }) {
+  // `advanced`: the second level of progressive disclosure (NN/g), quieter; `badge`: a count read with the title.
+  const details = h('details', { class: `group${advanced ? ' advanced' : ''}` }, h('summary', {}, icon('chevron', 14), h('span', { text: title }), badge ? h('span', { class: 'badge', text: String(badge) }) : null));
   details.open = open;
   details.addEventListener('toggle', () => onToggle?.(details.open));
   const body = h('div', { class: 'group-body' });
@@ -64,13 +65,13 @@ export function iconButton(name, title, onclick, { id, danger = false, disabled 
  * track fills up to the thumb. `scale` shows the value in other units (cm);
  * onStart/onEnd bracket one drag or one typed entry.
  */
-export function slider({ label, value, min, max, step = 0.01, scale = 1, unit = '', title, onInput, onStart, onEnd, key, ends }) {
+export function slider({ label, value, min, max, step = 0.01, scale = 1, unit = '', title, onInput, onStart, onEnd, key, ends, center = false }) {
   const id = nextId('s'), digits = step * scale >= 1 ? 0 : step * scale >= 0.1 ? 1 : 2;
   const range = h('input', { type: 'range', id, min, max, step, value, 'data-key': key });
   const number = h('input', { type: 'number', class: 'value', min: +(min * scale).toFixed(digits), max: +(max * scale).toFixed(digits), step: +(step * scale).toFixed(4), value: (value * scale).toFixed(digits), 'aria-label': `${label} (valor)` });
   // A slider from one quality to its opposite (−1…1) fills from the centre and
   // names its ends; the value is read out as words (APG Slider: aria-valuetext).
-  const bipolar = Boolean(ends) && min < 0 && max > 0;
+  const bipolar = (Boolean(ends) || center) && min < 0 && max > 0;
   const fill = v => {
     const at = ((v - min) / (max - min || 1)) * 100, zero = bipolar ? ((0 - min) / (max - min)) * 100 : 0;
     range.style.setProperty('--from', `${Math.min(at, zero)}%`); range.style.setProperty('--fill', `${Math.max(at, zero)}%`);
@@ -138,9 +139,9 @@ export function toggle({ label, checked, onChange, title, id }) {
   return h('label', { class: 'switch', title }, box, h('span', { class: 'track' }), h('span', { text: label }));
 }
 /** Palette swatches with a free colour picker; `selected` is the palette index or null when `custom` is set. */
-export function swatches({ label, palette, selected, custom, onPick, onCustom, extra = [] }) {
+export function swatches({ label, palette, selected, custom, onPick, onCustom, extra = [], names }) {
   const buttons = palette.map((hex, i) => h('button', {
-    type: 'button', class: `swatch${!custom && selected === i ? ' on' : ''}`, style: `--swatch:${hex}`, title: `${label} ${i + 1}`, 'aria-label': `${label} ${i + 1}`,
+    type: 'button', class: `swatch${!custom && selected === i ? ' on' : ''}`, style: `--swatch:${hex}`, title: names?.[i] ?? `${label} ${i + 1}`, 'aria-label': names?.[i] ? `${label}: ${names[i]}` : `${label} ${i + 1}`,
     'aria-pressed': String(!custom && selected === i),
     onclick: () => { for (const b of [...buttons, picker]) b.classList.toggle('on', b === buttons[i]); onPick(i); },
   }));

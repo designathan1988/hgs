@@ -15,7 +15,7 @@ import { importAnimation } from './timeline.mjs';
 import { categoryLabel, regionNames } from './shape-handles.mjs';
 import { namedFeatures } from './renderer-three.mjs';
 import { faceWeights, mixamoName } from './human-three.mjs';
-import { makeupNames, tattooDesigns } from './skin-layers.mjs';
+import { beardStyles, makeupNames, tattooDesigns } from './skin-layers.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames, hairBases,
@@ -69,7 +69,7 @@ const metaFields = new Set(['name', 'creation', 'version']);
 const liveShapeFields = new Set(['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength',
   'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs']);
 // Appearance: materials and textures only (look.mjs), never a rebuild. `colors` and `garments` are checked by `lookOnly`.
-const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'eyeColor', 'topColor', 'bottomColor', 'colors', 'garments', 'makeup', 'tattoos']);
+const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'eyeColor', 'topColor', 'bottomColor', 'colors', 'garments', 'makeup', 'tattoos', 'beard']);
 const liveColorKeys = new Set(['skin', 'hair', 'eyes', 'brows', 'lashes', 'top', 'bottom']);
 /** True when only colours the live look can show changed (not a garment's cut). */
 function lookOnly(prev, next, keys) {
@@ -102,6 +102,21 @@ const shapes = { tips: [['round', 'Redondas', 'tipRound'], ['point', 'Finas', 't
 const choices = list => list.map(([, name, glyph]) => [name, glyph]);
 const formOf = curl => curl > 0.6 ? 2 : curl > 0 ? 1 : 0;
 const patternNames = { solid: 'Liso', stripes: 'Listras', pinstripe: 'Risca de giz', checks: 'Xadrez', gradient: 'Degradê' };
+// The 52 ARKit face shapes in plain words (the ARKit name stays in the tooltip: it is what face-capture tools send).
+const arkitWords = {
+  eyeBlink: 'Piscar', eyeLookDown: 'Olhar para baixo', eyeLookIn: 'Olhar para dentro', eyeLookOut: 'Olhar para fora', eyeLookUp: 'Olhar para cima', eyeSquint: 'Apertar o olho', eyeWide: 'Arregalar',
+  jawForward: 'Queixo para a frente', jawLeft: 'Mandíbula para a esquerda', jawRight: 'Mandíbula para a direita', jawOpen: 'Abrir a boca',
+  mouthClose: 'Fechar os lábios', mouthFunnel: 'Boca em "ô"', mouthPucker: 'Bico', mouthLeft: 'Boca para a esquerda', mouthRight: 'Boca para a direita', mouthSmile: 'Sorriso', mouthFrown: 'Canto para baixo',
+  mouthDimple: 'Covinha', mouthStretch: 'Esticar o canto', mouthRollLower: 'Enrolar o lábio de baixo', mouthRollUpper: 'Enrolar o lábio de cima', mouthShrugLower: 'Erguer o lábio de baixo',
+  mouthShrugUpper: 'Erguer o lábio de cima', mouthPress: 'Apertar os lábios', mouthLowerDown: 'Baixar o lábio de baixo', mouthUpperUp: 'Subir o lábio de cima',
+  browDown: 'Franzir', browInnerUp: 'Erguer o meio das sobrancelhas', browOuterUp: 'Erguer a ponta da sobrancelha',
+  cheekPuff: 'Encher as bochechas', cheekSquint: 'Subir a bochecha', noseSneer: 'Torcer o nariz', tongueOut: 'Língua para fora',
+};
+const arkitLabel = name => {
+  if (arkitWords[name]) return arkitWords[name];
+  const base = name.replace(/(Left|Right)$/, '');
+  return arkitWords[base] ? `${arkitWords[base]} (${name.endsWith('Left') ? 'esq.' : 'dir.'})` : name;
+};
 const PRESET_PREFIX = 'hgs.preset.', OUTFIT_PREFIX = 'hgs.outfit.', AUTOSAVE_KEY = 'hgs.autosave', PREFS_KEY = 'hgs.ui';
 const slug = text => text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'personagem';
 const hexOf = value => `#${value.toString(16).padStart(6, '0')}`;
@@ -716,9 +731,9 @@ export class StudioUI {
   /** The hair tool in effect (a tool saved by an older version falls back to the brush). */
   hairTool() { const tool = this.state.ui.tools.cabelo; return hairTools.includes(tool) ? tool : 'brush'; }
   // Controls bound to this UI: groups remember their state; sliders mark a drag in progress.
-  group(title, { open = true } = {}) {
-    const key = `${this.section}:${title}`, saved = this.state.ui.groups[key];
-    return group(this.body, { title, open: saved ?? open, onToggle: value => this.store.dispatch({ type: 'ui/group', key, open: value, live: true }) });
+  group(title, { open = true, advanced = false, badge, key: id } = {}) {
+    const key = `${this.section}:${id ?? title}`, saved = this.state.ui.groups[key];
+    return group(this.body, { title, open: saved ?? open, advanced, badge, onToggle: value => this.store.dispatch({ type: 'ui/group', key, open: value, live: true }) });
   }
   slide(parent, { onStart, onEnd, ...options }) {
     const node = slider({
@@ -733,41 +748,38 @@ export class StudioUI {
     return node;
   }
   /** Slider bound to a character field (one undo step per drag). */
-  range(parent, key, label, min, max, step = 0.01, unit = '') {
-    return this.slide(parent, { label, value: this.person[key], min, max, step, unit, key, onInput: v => this.update(key, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
+  range(parent, key, label, min, max, step = 0.01, unit = '', { ends, title } = {}) {
+    // A slider between two named qualities reads as a percentage, not a raw −1…1 number.
+    const percent = Boolean(ends) && !unit;
+    return this.slide(parent, { label, title, ends, value: this.person[key], min, max, step, unit: percent ? '%' : unit, scale: percent ? 100 : 1, key, onInput: v => this.update(key, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
   }
+  /** Sliders between two named qualities: [key, label, [less, more], min = −1, max = 1]. */
+  ranges(parent, list) { for (const [key, label, ends, min = -1, max = 1] of list) this.range(parent, key, label, min, max, 0.01, '', { ends }); }
   segmented(parent, label, items, selected, onPick) { parent.append(segmented({ label, items, selected, onPick: i => { onPick(i); this.scheduleRender(); } })); }
   toggle(parent, label, checked, onChange, title, id) { parent.append(toggle({ label, checked, onChange, title, id })); }
-  colorSwatches(parent, key, label, palette, colorKey) {
+  colorSwatches(parent, key, label, palette, colorKey, names) {
     parent.append(swatches({
-      label, palette, selected: key ? this.person[key] : null, custom: this.person.colors[colorKey] ?? null,
+      label, palette, names, selected: key ? this.person[key] : null, custom: this.person.colors[colorKey] ?? null,
       onPick: i => { const colors = { ...this.person.colors }; delete colors[colorKey]; this.patch({ colors, ...(key ? { [key]: i } : {}) }, { history: `color:${colorKey}` }); },
       onCustom: (hex, { live = false } = {}) => this.patch({ colors: { ...this.person.colors, [colorKey]: hex } }, { history: `color:${colorKey}`, live }),
     }));
   }
 
   // ------------------------------------------------------------ sections
+  /** Pessoa: who this is (sex, age, height), the skin and the ancestry blend; the name is edited in the top bar. */
   renderCharacter() {
-    const id = this.group('Identidade');
-    const name = h('input', { type: 'text', value: this.person.name, maxlength: 42, 'aria-label': 'Nome' });
-    name.addEventListener('change', () => this.update('name', name.value));
-    id.append(row('Nome', name));
-    this.segmented(id, 'Corpo', ['Feminino', 'Masculino'], this.person.gender, v => this.update('gender', v));
+    const id = this.group('Quem é');
+    this.segmented(id, 'Sexo', ['Feminino', 'Masculino'], this.person.gender, v => this.update('gender', v));
     this.range(id, 'ageYears', 'Idade', 1, 90, 1, ' anos');
     const [min, max] = this.heightBounds();
-    this.heightField = this.range(id, 'heightMeters', 'Altura', min, max, 0.01, ' m');
-    this.colorSwatches(id, 'skin', 'Pele', skinPalette, 'skin');
-    const vary = this.group('Variações');
-    vary.append(h('p', { class: 'muted', text: 'Gera outra pessoa e mantém o que estiver marcado.' }));
-    for (const [key, label] of [['body', 'corpo e pele'], ['face', 'rosto e olhos'], ['hair', 'cabelo editado'], ['clothes', 'roupa editada']]) {
-      this.toggle(vary, `Manter ${label}`, this.person.creation.locks[key], on => this.patch({ creation: { locks: { ...this.person.creation.locks, [key]: on } } }, { history: false }));
-    }
-    vary.append(
-      h('button', { type: 'button', class: 'button primary wide', onclick: () => this.generateVariation() }, icon('dice', 16), 'Gerar variação'),
-      h('div', { class: 'button-row' },
-        h('button', { type: 'button', class: 'button', onclick: () => this.randomFace() }, 'Só rosto'),
-        h('button', { type: 'button', class: 'button', onclick: () => this.randomBody() }, 'Só corpo'),
-        h('button', { type: 'button', class: 'button', onclick: () => this.randomOutfit() }, 'Só roupa')));
+    this.heightField = this.range(id, 'heightMeters', 'Altura', min, max, 0.01, ' m', { title: 'Altura (a idade sugere uma altura típica)' });
+    id.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.randomMenu.open() }, icon('dice', 16), 'Sortear outra pessoa…'));
+    const skin = this.group('Pele');
+    this.colorSwatches(skin, 'skin', 'Tom', skinPalette, 'skin', ['Muito clara', 'Clara', 'Clara média', 'Média', 'Morena', 'Morena escura', 'Escura', 'Muito escura']);
+    this.range(skin, 'skinRoughness', 'Acabamento', 0, 1, 0.01, '', { ends: ['Brilhante', 'Fosca'] });
+    const ancestry = this.group('Origem', { open: false });
+    ancestry.append(h('p', { class: 'muted', text: 'Mistura de traços de rosto e corpo. Vale a proporção entre os três: os três iguais é uma mistura equilibrada.' }));
+    this.ranges(ancestry, [['african', 'Africana', ['Pouco', 'Muito'], 0, 1], ['asian', 'Asiática', ['Pouco', 'Muito'], 0, 1], ['caucasian', 'Europeia', ['Pouco', 'Muito'], 0, 1]]);
   }
   /** Value of a MakeHuman regional adjustment: its own field when it has one, else `morphs`. */
   morphValue(key) { const field = namedFeatures[key]; return field ? this.person[field] ?? 0 : this.person.morphs[key] ?? 0; }
@@ -778,58 +790,97 @@ export class StudioUI {
     if (value) morphs[key] = value; else delete morphs[key];
     this.patch({ morphs }, { history, live });
   }
-  /** Moldar (pull the body in the view) and every MakeHuman regional adjustment of `regions`. */
-  renderMolding(regions) {
+  /**
+   * Moldar: pull the body in the view (Sims 4's direct manipulation). A big
+   * switch at the top of Corpo and Rosto that says what it does, with the
+   * symmetry under it while it is on.
+   */
+  renderMoldCard(part) {
     const on = Boolean(this.state.ui.molding), handles = this.renderer?.shapeHandles;
-    const mold = this.group('Moldar no corpo');
-    mold.append(h('button', { type: 'button', class: `button wide${on ? ' primary' : ''}`, 'aria-pressed': String(on),
-      onclick: () => this.store.dispatch({ type: 'ui/set', changes: { molding: !on } }) }, icon('body', 16), 'Moldar'));
+    const card = this.group('Moldar', { key: 'mold' });
+    card.append(h('button', { type: 'button', class: `mode-card${on ? ' on' : ''}`, 'aria-pressed': String(on), onclick: () => this.store.dispatch({ type: 'ui/set', changes: { molding: !on } }) },
+      icon('grab', 22), h('span', {}, h('b', { text: on ? 'Moldando: puxe no 3D' : `Moldar ${part} com o mouse` }),
+        h('small', { text: on ? 'Clique de novo para parar. Alt muda só um lado.' : `Ligue e arraste ${part === 'o rosto' ? 'o nariz, o queixo, as bochechas…' : 'ombros, cintura, quadril, pernas…'} direto no personagem.` }))));
     if (on && handles) {
-      this.setHint('Arraste a parte do corpo para mudá-la · Alt: só um lado · botão direito gira a vista');
-      this.toggle(mold, 'Simetria', handles.symmetry, value => { handles.symmetry = value; }, 'Muda os dois lados juntos (como no MetaHuman Creator)');
+      this.setHint('Arraste a parte para mudá-la · Alt: só um lado · botão direito: girar');
+      this.toggle(card, 'Simetria (os dois lados juntos)', handles.symmetry, value => { handles.symmetry = value; }, 'Muda os dois lados juntos (como no MetaHuman Creator)');
     }
+  }
+  /**
+   * Every MakeHuman regional adjustment of `regions`, behind one advanced
+   * group: a search by name across the regions and "only the changed ones"
+   * (Character Creator's Morphs tab: search, Currently Used), else one region.
+   */
+  renderDetailed(regions) {
     const morpher = this.renderer?.current?.context.data.morpher;
     if (!morpher) return;
-    const all = this.group('Todos os ajustes', { open: false }), region = regions.includes(this.state.ui.morphRegion) ? this.state.ui.morphRegion : regions[0];
-    all.append(chips({ label: 'Região', items: regions.map(id => regionNames[id] ?? id), selected: regions.indexOf(region), onPick: i => this.store.dispatch({ type: 'ui/set', changes: { morphRegion: regions[i] } }) }));
-    for (const [name, { group, category }] of morpher.sliders) {
-      if (group !== region) continue;
-      const min = category.opposites ? -1 : 0;
-      this.slide(all, { label: categoryLabel(name), title: name, value: this.morphValue(name), min, max: 1, onInput: v => this.setMorph(name, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
-    }
+    const all = [...morpher.sliders].filter(([, { group }]) => regions.includes(group));
+    const changed = all.filter(([name]) => this.morphValue(name)).length;
+    const body = this.group('Ajustes detalhados', { open: false, advanced: true, badge: changed ? `${changed} alterado${changed > 1 ? 's' : ''}` : null });
+    const region = regions.includes(this.state.ui.morphRegion) ? this.state.ui.morphRegion : regions[0];
+    const list = h('div', { class: 'morph-list' });
+    // Typing filters the list in place (no panel rebuild, the caret stays where it is).
+    const fill = () => {
+      const query = (this.morphQuery ?? '').trim().toLowerCase(), only = Boolean(this.morphChanged);
+      const words = query.normalize('NFD').replace(/[̀-ͯ]/g, '').split(/\s+/).filter(Boolean);
+      // categoryLabel drops the side prefix (l-/r-): put it back, or left and right read the same.
+      const named = name => { const text = categoryLabel(name), side = name.startsWith('l-') ? ' (esq.)' : name.startsWith('r-') ? ' (dir.)' : ''; return `${text.charAt(0).toUpperCase()}${text.slice(1)}${side}`; };
+      const label = (name, group) => `${query || only ? `${regionNames[group] ?? group} · ` : ''}${named(name)}`;
+      const matches = all.filter(([name, { group }]) => {
+        if (only && !this.morphValue(name)) return false;
+        if (!words.length) return only || group === region;
+        const text = `${regionNames[group] ?? group} ${categoryLabel(name)} ${name}`.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+        return words.every(word => text.includes(word));
+      });
+      list.replaceChildren();
+      for (const [name, { group, category }] of matches.slice(0, 60)) {
+        this.slide(list, { label: label(name, group), title: `${regionNames[group] ?? group} · ${named(name)} (${name})`, value: this.morphValue(name), min: category.opposites ? -1 : 0, max: 1, center: true,
+          onInput: v => this.setMorph(name, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
+      }
+      if (!matches.length) list.append(h('p', { class: 'empty-note', text: only ? 'Nenhum ajuste alterado ainda.' : 'Nenhum ajuste com esse nome.' }));
+      if (matches.length > 60) list.append(h('p', { class: 'empty-note', text: `Mostrando 60 de ${matches.length}. Refine a busca.` }));
+      regionChips.hidden = Boolean(words.length || only);
+    };
+    const regionChips = chips({ label: 'Região', items: regions.map(id => regionNames[id] ?? id), selected: regions.indexOf(region), onPick: i => this.store.dispatch({ type: 'ui/set', changes: { morphRegion: regions[i] } }) });
+    body.append(
+      searchField({ label: 'Buscar ajuste', placeholder: 'Buscar: nariz, ponta, queixo…', value: this.morphQuery ?? '', onInput: value => { this.morphQuery = value; fill(); } }),
+      toggleChips({ label: 'Filtro', items: [[`Só os alterados (${changed})`, this.morphChanged]], onToggle: (_, on) => { this.morphChanged = on; fill(); } }),
+      regionChips, list);
+    fill();
   }
+  /** Corpo: pull it (Moldar), the main proportions with named ends, the bust, tattoos, then every regional adjustment. */
   renderBody() {
+    this.renderMoldCard('o corpo');
     const shape = this.group('Proporções');
-    for (const [key, label] of [['build', 'Peso'], ['muscle', 'Músculos'], ['shoulders', 'Ombros'], ['waist', 'Cintura'], ['hips', 'Quadril'], ['legLength', 'Pernas'], ['headSize', 'Cabeça']]) this.range(shape, key, label, key === 'muscle' ? 0 : -1, 1);
-    this.range(shape, 'proportions', 'Proporção (comum ↔ ideal)', 0, 1);
-    shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.randomBody() }, icon('dice', 16), 'Corpo aleatório'));
-    const ancestry = this.group('Ancestralidade', { open: false });
-    for (const [key, label] of [['african', 'Africana'], ['asian', 'Asiática'], ['caucasian', 'Europeia']]) this.range(ancestry, key, label, 0, 1);
+    // The ends say what each named MakeHuman target does (renderer-three.mjs namedFeatures): `waist` widens the torso, `headSize` stretches the head.
+    this.ranges(shape, [['build', 'Peso', ['Magro', 'Pesado']], ['muscle', 'Músculos', ['Pouco', 'Muito'], 0, 1], ['shoulders', 'Ombros', ['Estreitos', 'Largos']],
+      ['waist', 'Tronco', ['Estreito', 'Largo']], ['hips', 'Quadril', ['Estreito', 'Largo']], ['legLength', 'Coxas', ['Curtas', 'Longas']], ['headSize', 'Cabeça', ['Curta', 'Alongada']],
+      ['proportions', 'Proporções', ['Comuns', 'Idealizadas'], 0, 1]]);
+    shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => { this.randomBody(); this.toast('Corpo sorteado', 'info', this.undoAction()); } }, icon('dice', 16), 'Sortear o corpo'));
     const bust = this.group('Busto', { open: false });
-    this.range(bust, 'cupsize', 'Tamanho', 0, 1); this.range(bust, 'firmness', 'Firmeza', 0, 1);
-    this.renderMolding(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet']);
-    const skin = this.group('Pele', { open: false });
-    this.range(skin, 'skinRoughness', 'Brilho ↔ fosco', 0, 1);
+    this.ranges(bust, [['cupsize', 'Tamanho', ['Pequeno', 'Grande'], 0, 1], ['firmness', 'Firmeza', ['Menos', 'Mais'], 0, 1]]);
     this.renderTattoos();
+    this.renderDetailed(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet']);
   }
+  /** Rosto: pull it (Moldar), shape, eyes, expression, brows, lashes, makeup, then every regional adjustment. */
   renderFace() {
+    this.renderMoldCard('o rosto');
     const shape = this.group('Formato');
-    for (const [key, label] of [['faceWidth', 'Largura'], ['jaw', 'Queixo'], ['cheek', 'Bochechas'], ['nose', 'Nariz']]) this.range(shape, key, label, -1, 1);
-    shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.randomFace() }, icon('dice', 16), 'Rosto aleatório'));
+    this.ranges(shape, [['faceWidth', 'Largura', ['Estreito', 'Largo']], ['jaw', 'Queixo', ['Estreito', 'Largo']], ['cheek', 'Bochechas', ['Magras', 'Cheias']], ['nose', 'Nariz', ['Rente', 'Saliente']]]);
+    shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => { this.randomFace(); this.toast('Rosto sorteado', 'info', this.undoAction()); } }, icon('dice', 16), 'Sortear o rosto'));
     const eyes = this.group('Olhos');
-    this.range(eyes, 'eyeSize', 'Tamanho', -1, 1); this.range(eyes, 'eyeSpacing', 'Distância', -1, 1);
-    this.colorSwatches(eyes, 'eyeColor', 'Cor', eyePalette, 'eyes');
+    this.ranges(eyes, [['eyeSize', 'Tamanho', ['Menores', 'Maiores']], ['eyeSpacing', 'Distância', ['Juntos', 'Afastados']]]);
+    this.colorSwatches(eyes, 'eyeColor', 'Cor', eyePalette, 'eyes', ['Castanho escuro', 'Castanho claro', 'Cinza', 'Verde', 'Azul', 'Cinza claro']);
+    this.renderExpression();
     const brows = this.group('Sobrancelhas', { open: false });
     this.segmented(brows, 'Formato', ['Natural', 'Reta', 'Arqueada', 'Angulosa'], this.person.browShape, v => this.update('browShape', v));
     this.range(brows, 'browAngle', 'Inclinação', -25, 25, 1, '°');
-    this.range(brows, 'browArch', 'Arco', -1, 1); this.range(brows, 'browThickness', 'Espessura', 0.35, 2.1);
-    this.range(brows, 'browWidth', 'Largura', 0.7, 1.4); this.range(brows, 'browHeight', 'Altura', -1, 1);
-    this.range(brows, 'browDensity', 'Densidade', 0, 1);
-    this.colorSwatches(brows, null, 'Cor (padrão: a do cabelo)', hairPalette, 'brows');
+    this.ranges(brows, [['browArch', 'Arco', ['Menos', 'Mais']], ['browThickness', 'Espessura', ['Fina', 'Grossa'], 0.35, 2.1], ['browWidth', 'Comprimento', ['Curta', 'Longa'], 0.7, 1.4],
+      ['browHeight', 'Altura', ['Mais baixa', 'Mais alta']], ['browDensity', 'Densidade', ['Rala', 'Cheia'], 0, 1]]);
+    this.colorSwatches(brows, null, 'Cor (sem escolha: a do cabelo)', hairPalette, 'brows');
     const lashes = this.group('Cílios', { open: false });
-    this.range(lashes, 'lashLength', 'Comprimento', 0.4, 1.8); this.range(lashes, 'lashCurl', 'Curvatura', 0, 1);
-    this.range(lashes, 'lashDensity', 'Densidade', 0, 1);
-    this.colorSwatches(lashes, null, 'Cor', ['#201915', '#3a2a22', '#5b4636', '#11131a'], 'lashes');
+    this.ranges(lashes, [['lashLength', 'Comprimento', ['Curtos', 'Longos'], 0.4, 1.8], ['lashCurl', 'Curvatura', ['Retos', 'Curvados'], 0, 1], ['lashDensity', 'Densidade', ['Ralos', 'Cheios'], 0, 1]]);
+    this.colorSwatches(lashes, null, 'Cor', ['#201915', '#3a2a22', '#5b4636', '#11131a'], 'lashes', ['Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Preto azulado']);
     // Makeup layers painted into the skin texture (skin-layers.mjs): an amount and a colour per region.
     const makeup = this.group('Maquiagem', { open: false });
     for (const [region, name] of Object.entries(makeupNames)) {
@@ -837,7 +888,35 @@ export class StudioUI {
       this.slide(makeup, { label: name, value: this.person.makeup[region].amount, min: 0, max: 1, onInput: v => set({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
       makeup.append(row(`Cor: ${name.toLowerCase()}`, h('input', { type: 'color', value: this.person.makeup[region].color, 'aria-label': `Cor: ${name.toLowerCase()}`, onchange: event => set({ color: event.target.value }) })));
     }
-    this.renderMolding(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears']);
+    // Beard painted on the skin (skin-layers.mjs): a style, how strong, how dense; the hair's colour unless one is chosen.
+    const beard = this.group('Barba', { open: this.person.beard.style !== 'nenhuma' });
+    const setBeard = (changes, options) => this.patch({ beard: { ...this.person.beard, ...changes } }, { history: 'beard', ...options });
+    const styles = Object.keys(beardStyles);
+    beard.append(chips({ label: 'Estilo', items: styles.map(id => beardStyles[id].name), selected: styles.indexOf(this.person.beard.style), onPick: i => { setBeard({ style: styles[i] }); this.scheduleRender(); } }));
+    if (this.person.beard.style !== 'nenhuma') {
+      this.slide(beard, { label: 'Intensidade', value: this.person.beard.amount, min: 0, max: 1, onInput: v => setBeard({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
+      this.slide(beard, { label: 'Densidade', value: this.person.beard.density, min: 0, max: 1, onInput: v => setBeard({ density: v }, { live: true }), onEnd: () => this.commitLive() });
+      beard.append(row('Cor', h('input', { type: 'color', value: this.person.beard.color ?? this.person.colors.hair ?? hairPalette[this.person.hairColor], 'aria-label': 'Cor da barba', onchange: event => setBeard({ color: event.target.value }) })));
+    }
+    this.renderDetailed(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears']);
+  }
+  /** Expression (a preview on the face, also what a timeline key records), with the 52 ARKit shapes as fine adjustments under it. */
+  renderExpression() {
+    const face = this.group('Expressão');
+    face.append(chips({ label: 'Expressão', items: expressionNames, selected: this.person.expression, onPick: i => this.update('expression', i) }));
+    this.range(face, 'expressionIntensity', 'Intensidade', 0, 1, 0.01, '', { ends: ['Leve', 'Forte'] });
+    const touched = Object.values(this.person.faceShapes).filter(Boolean).length;
+    const fine = this.group('Expressão: ajuste fino', { open: false, advanced: true, badge: touched || null });
+    fine.classList.add('long-labels');
+    fine.append(h('p', { class: 'muted', text: 'Os 52 movimentos do rosto (padrão ARKit, o nome original aparece ao passar o mouse). Somam-se à expressão escolhida.' }));
+    const regions = [['Olhos e olhar', /^eye/], ['Sobrancelhas', /^brow/], ['Mandíbula', /^jaw/], ['Boca', /^mouth/], ['Bochechas e nariz', /^(cheek|nose)/], ['Língua', /^tongue/]];
+    for (const [title, test] of regions) {
+      fine.append(h('div', { class: 'step-label', text: title }));
+      for (const name of blendshapeNames.filter(shape => test.test(shape))) {
+        this.slide(fine, { label: arkitLabel(name), title: `${arkitLabel(name)} (${name})`, value: this.person.faceShapes[name] ?? 0, min: -1, max: 1, center: true, onInput: v => this.patch({ faceShapes: { ...this.person.faceShapes, [name]: v } }, { history: `faceShapes:${name}`, live: true }) });
+      }
+    }
+    fine.append(h('button', { type: 'button', class: 'button wide', disabled: !touched, onclick: () => this.patch({ faceShapes: {} }) }, icon('reset', 16), 'Zerar o ajuste fino'));
   }
   /** Tattoos: pick a design (or load an image), then click the skin where it goes; each placed one can be resized, turned, recoloured or removed. */
   renderTattoos() {
@@ -1370,18 +1449,6 @@ export class StudioUI {
     this.segmented(pose, null, ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], this.person.pose, v => this.update('pose', v));
     this.renderPosing();
     this.renderTimeline();
-    const face = this.group('Expressão');
-    face.append(chips({ label: 'Expressão', items: expressionNames, selected: this.person.expression, onPick: i => this.update('expression', i) }));
-    this.range(face, 'expressionIntensity', 'Intensidade', 0, 1);
-    // The 52 ARKit shapes by region (names kept: they are what face-capture tools send).
-    const regions = [['Olhos e olhar', /^eye/], ['Sobrancelhas', /^brow/], ['Mandíbula', /^jaw/], ['Boca', /^mouth/], ['Bochechas e nariz', /^(cheek|nose)/], ['Língua', /^tongue/]];
-    for (const [title, test] of regions) {
-      const fine = this.group(`Ajuste fino · ${title}`, { open: false });
-      for (const name of blendshapeNames.filter(shape => test.test(shape))) {
-        this.slide(fine, { label: name, value: this.person.faceShapes[name] ?? 0, min: -1, max: 1, onInput: v => this.patch({ faceShapes: { ...this.person.faceShapes, [name]: v } }, { history: `faceShapes:${name}`, live: true }) });
-      }
-    }
-    face.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.patch({ faceShapes: {} }) }, 'Zerar ajustes finos'));
   }
 
   // ------------------------------------------------------------ files and export

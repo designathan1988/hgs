@@ -277,6 +277,9 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 .chip.check .icon { opacity: .25; }
 .chip.check.on .icon { opacity: 1; }
 
+/* Detailed adjustments: long names get their own line above the track. */
+.morph-list .field, .long-labels .field { grid-template-columns: minmax(0, 1fr) auto; row-gap: 2px; margin-bottom: 8px; }
+.morph-list .field > label, .long-labels .field > label { grid-column: 1 / -1; white-space: normal; font-size: 12px; }
 /* Search over a long list. */
 .search { display: flex; align-items: center; gap: 8px; height: 34px; margin-bottom: 10px; padding: 0 10px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); color: var(--muted); }
 .search:focus-within { border-color: var(--accent); }
