@@ -103,13 +103,20 @@ function meshNormalDelta(geometry) {
  */
 function eyeLook(geometry) {
   const position = geometry.getAttribute('position'), normal = geometry.getAttribute('normal');
+  // Only the drawn eyeball: the eyes proxy keeps its corneal shell's vertices, unindexed, in front of
+  // the globe; counting them moved the centre forward and the turned eye out of the lids.
+  const drawn = new Uint8Array(position.count);
+  if (geometry.index) for (const v of geometry.index.array) drawn[v] = 1; else drawn.fill(1);
   const centre = sign => {
     const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < position.count; i++) {
-      if (Math.sign(position.getX(i)) !== sign) continue;
+      if (!drawn[i] || Math.sign(position.getX(i)) !== sign) continue;
       for (let k = 0; k < 3; k++) { const v = position.getComponent(i, k); min[k] = Math.min(min[k], v); max[k] = Math.max(max[k], v); }
     }
-    return new Vector3((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
+    // The proxy's eyeball is a spherical cap (measured: 3.0 cm wide and tall, 2.0 cm deep), not a
+    // whole sphere: its centre is one radius behind its front, not the middle of its box.
+    const radius = (max[0] - min[0] + max[1] - min[1]) / 4;
+    return new Vector3((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, max[2] - radius);
   };
   const centres = { 1: centre(1), [-1]: centre(-1) }, X = new Vector3(1, 0, 0), Y = new Vector3(0, 1, 0), deg = Math.PI / 180;
   // Per shape: the eye it moves (+1 left, -1 right) and its rotation.
