@@ -4,6 +4,14 @@ Atualizado em 2026-10-09, depois de usar o app no navegador item por item.
 Detalhe de cada pedido e da evidência: [AUDITORIA.md](AUDITORIA.md).
 Etapas em andamento: [PLANO.md](PLANO.md).
 
+## Varredura geral de funcionamento (09/10, no app)
+
+- Cabelo: os 7 penteados carregam (~1 s cada); rabo de cavalo, coque, fivela e arco prendem as mechas; o grampo prende as mechas escolhidas (sem seleção, o ponto padrão no lado da cabeça não pega mecha do Longo: aparece o aviso). Nuca do Curto sem placa preta (0bff940), conferida em mulher 1,72 m e 2,00 m e homem 1,55 m com cabelo preto, no editor e no personagem final.
+- Roupa: 4 conjuntos prontos e as 23 peças sob medida vestem sem erro no console (1–4 s por peça). Moletom por moldes sobre camiseta não deixa a camiseta atravessar correndo (c530192). Roupa por moldes não espeta durante o arrasto de Peso de −100 % a 100 % (deddb3e).
+- Rosto: 6 expressões aplicam. Posar: 7 poses prontas. Linha do tempo: 2 chaves gravadas e tocadas. Exportação pela interface: GLB (30 MB, 34 clipes, 113 juntas) e Pacote LOD (44.045 / 26.061 / 6.425 triângulos). `npm run export:glb`: validador 0 erros, 0 avisos.
+- Rodada com 3 personagens sorteados (Aisha Okafor: homem magro 1,78 m, terno, andando; Leo Silva: mulher 46 anos 1,71 m, casual, sambando; Ari Chen: homem 1,73 m, Cacheado, sob medida, acenando): sem erros no console.
+- Pendente desta varredura: capuz do moletom por moldes fica levantado e o cabelo longo passa por fora dele; nome sorteado não segue o sexo (Aisha em corpo masculino, Leo em corpo feminino); personagem de teste com 13 chamadas de desenho (orçamento 10).
+
 ## Ativo no app e conferido em uso
 
 - Abertura: 1,8 s com cache de construção (IndexedDB); pessoa nova com roupa pronta em ~4,4 s.
