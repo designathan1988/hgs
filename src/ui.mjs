@@ -10,6 +10,7 @@ import { icon, hairPictogram } from './icons.mjs';
 import { h, group, row, iconButton, slider, segmented, chips, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
+import { libraryPose, poseLibrary } from './motion.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames,
@@ -54,7 +55,7 @@ const clothHints = {
   clothUnpin: 'Clique numa região fixada para liberá-la',
 };
 // Changing these only re-poses or relights the character; it is never rebuilt.
-const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity', 'faceShapes']);
+const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity', 'faceShapes', 'posing']);
 // These change no mesh at all.
 const metaFields = new Set(['name', 'creation', 'version']);
 // Body shape: the character on screen follows at once (live.mjs); the full build refines it when the drag ends.
@@ -275,7 +276,11 @@ export class StudioUI {
     const rebuilt = this.syncUndress();
     if (sculptOn && wasOn && retarget && !rebuilt) r.freezeForSculpt();
     if (mode === 'hair' && previous !== 'hair') this.startLocks();
+    // Posing lives in Animação and only while the viewport is otherwise just for looking.
+    r.setPoseMode(mode === 'view' && this.section === 'animacao' && Boolean(this.state.ui.posing));
   }
+  /** The viewport's left button picks bones and drags the gizmo while posing (main.mjs). */
+  get posing() { return Boolean(this.renderer?.poseMode); }
   /** Hand the store's active tools to the engines; true when the sculpt target changed. */
   syncEngines(mode, action) {
     const r = this.renderer, ui = this.state.ui, s = r.sculpt.settings;
@@ -1069,6 +1074,30 @@ export class StudioUI {
   }
 
   // ------------------------------------------------------------ animation
+  /** Pose: click a bone to turn it with the gizmo; drag the orange handles to place hands and feet (IK). */
+  renderPosing() {
+    const r = this.renderer, editor = r?.poseEditor, on = Boolean(this.state.ui.posing);
+    const group = this.group('Pose', { open: on });
+    group.append(h('button', {
+      type: 'button', class: `button wide${on ? ' primary' : ''}`, 'aria-pressed': String(on),
+      onclick: () => this.store.dispatch({ type: 'ui/set', changes: { posing: !on } }),
+    }, icon('person', 16), 'Posar'));
+    if (!on || !editor) return;
+    editor.onCommit = posing => this.patch({ posing }, { history: 'posing' });
+    this.setHint('Clique num osso e gire pelo anel · arraste as esferas laranja para levar mãos e pés (IK) · botão direito gira a vista');
+    this.toggle(group, 'Simetria', editor.symmetry, value => { editor.symmetry = value; }, 'Espelha no outro lado o que você gira ou puxa');
+    group.append(h('div', { class: 'actions' },
+      iconButton('reset', 'Zerar o osso escolhido', () => editor.reset(false)),
+      iconButton('trash', 'Voltar à pose de repouso (A)', () => editor.reset(true), { danger: true })),
+      h('div', { class: 'button-grid' },
+        h('button', { type: 'button', class: 'button', onclick: () => editor.mirrorSide('l') }, 'Esquerda → direita'),
+        h('button', { type: 'button', class: 'button', onclick: () => editor.mirrorSide('r') }, 'Direita → esquerda')));
+    const names = { A: 'Repouso (A)', T: 'T', natural: 'Em pé', hips: 'Mãos na cintura', sit: 'Sentado', wave: 'Acenando', run: 'Correndo' };
+    group.append(chips({ label: 'Poses prontas', items: poseLibrary.map(id => names[id]), selected: -1, onPick: i => {
+      const posing = libraryPose(r.current.context.skeleton, poseLibrary[i]);
+      editor.apply(posing); this.patch({ posing }, { history: true });
+    } }));
+  }
   renderAnimation() {
     const motion = this.group('Movimento');
     motion.append(chips({ label: 'Movimento', items: animationNames, selected: this.person.animation, onPick: i => this.update('animation', i) }));
@@ -1076,6 +1105,7 @@ export class StudioUI {
     motion.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.renderer?.replay() }, icon('reset', 16), 'Repetir do início'));
     const pose = this.group('Postura');
     this.segmented(pose, null, ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], this.person.pose, v => this.update('pose', v));
+    this.renderPosing();
     const face = this.group('Expressão');
     face.append(chips({ label: 'Expressão', items: expressionNames, selected: this.person.expression, onPick: i => this.update('expression', i) }));
     this.range(face, 'expressionIntensity', 'Intensidade', 0, 1);

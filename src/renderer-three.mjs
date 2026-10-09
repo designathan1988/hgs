@@ -8,6 +8,7 @@ import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './hu
 import { buildClips, oneShotClips } from './motion.mjs';
 import { LiveShape } from './live.mjs';
 import { liveLook, bakeLook } from './look.mjs';
+import { PoseEditor } from './pose.mjs';
 import { SculptSession } from './sculpt.mjs';
 import { HairEditor } from './hair-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
@@ -182,6 +183,7 @@ export class Renderer {
     this.sculpt = new SculptSession(this); this.sculptMode = false; this.undressed = false;
     this.lockEditor = new HairEditor(this); this.locksMode = false;
     this.clothEditor = new ClothEditor(this);
+    this.poseEditor = new PoseEditor(this); this.poseMode = false;
     this.pivotRay = new Raycaster();
   }
   cancelBuild() { this.buildController?.abort(); this.token++; }
@@ -203,6 +205,7 @@ export class Renderer {
       this.hairColor = studioSpec(person).hairColor;
       const previous = this.current;
       if (previous) { this.scene.remove(previous.group); }
+      this.poseEditor.end();
       const crowdSeed = this.person?.seed;
       this.person = person;
       this.current = human; this.scene.add(human.group);
@@ -220,6 +223,7 @@ export class Renderer {
       if (crowdSeed !== person.seed || this.crowdBuiltFor !== this.requestedCrowd) this.setCrowdCount(this.requestedCrowd);
       if (this.sculptMode) this.freezeForSculpt();
       if (this.locksMode) this.beginLocks();
+      if (this.poseMode) this.beginPose();
       previous?.dispose();
       return true;
     } catch (error) {
@@ -230,13 +234,15 @@ export class Renderer {
   /** Animation, playback speed and lighting change without rebuilding the mesh. */
   setPresentation(person) {
     if (this.person) Object.assign(this.person, { animation: person.animation, animationSpeed: person.animationSpeed, lighting: person.lighting,
-      expression: person.expression, expressionIntensity: person.expressionIntensity, faceShapes: person.faceShapes });
+      expression: person.expression, expressionIntensity: person.expressionIntensity, faceShapes: person.faceShapes, posing: person.posing });
     this.faceBase = faceWeights(person.expression, person.expressionIntensity ?? 0.5, person.faceShapes);
     if (this.current && !this.frozen) applyFaceWeights(this.current.faceMeshes, this.faceBase);
     // Lighting presets change the lights only; the neutral backdrop stays (key, fill).
     const light = [[2.3, 0.9], [1.7, 1.3], [2.6, 0.85], [3.2, 0.3], [2.8, 1.0]][person.lighting ?? 2];
     this.keyLight.intensity = light[0]; this.fillLight.intensity = light[1];
     if (!this.current || !this.mixer || this.frozen) return;
+    // Posing: no clip plays; the character holds its own pose (undo, redo and rebuilds re-apply it).
+    if (this.poseMode) { if (this.poseEditor.active) this.poseEditor.apply(person.posing ?? {}); return; }
     const clip = this.current.animations[person.animation ?? 0] ?? this.current.animations[0];
     const action = this.mixer.clipAction(clip);
     if (action !== this.action) {
@@ -289,6 +295,21 @@ export class Renderer {
     this.sculpt.cursor.visible = false;
     if (on) this.freezeForSculpt();
     else if (this.person) { this.sculpt.target = null; this.setPresentation(this.person); }
+  }
+  /** Posing (Animação → Posar): clips stop, the gizmo and IK handles act on the skeleton. */
+  setPoseMode(on) {
+    if (on === this.poseMode) return;
+    this.poseMode = on;
+    if (on) { this.beginPose(); return; }
+    this.poseEditor.end();
+    this.action = null;
+    if (this.person) this.setPresentation(this.person);
+  }
+  beginPose() {
+    if (!this.current || this.frozen) return;
+    this.mixer?.stopAllAction(); this.action = null;
+    this.springs?.reset();
+    this.poseEditor.begin(this.current, this.person?.posing ?? {});
   }
   /** Live edits apply to the character on screen when it is neither frozen (sculpt, hair) nor in a crowd. */
   get canLive() { return Boolean(this.current) && !this.frozen && !this.requestedCrowd; }
@@ -446,7 +467,7 @@ export class Renderer {
     }
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (this.liveRequest && this.canLive) this.runLive();
-    if (!this.frozen) { this.mixer?.update(dt); this.springs?.update(dt); }
+    if (!this.frozen) { if (!this.poseMode) this.mixer?.update(dt); this.springs?.update(dt); }
     if (this.locksMode && this.lockEditor.active) {
       this.lockEditor.tickPhysics(dt || 1 / 60);
       this.lockEditor.step();

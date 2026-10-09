@@ -67,6 +67,24 @@ const ranges = {
 
 export const colorKeys = ['skin', 'hair', 'eyes', 'top', 'bottom', 'brows', 'lashes'];
 
+/**
+ * A pose ({ bone: [x, y, z, w], $pelvis: [dx, dy, dz] }, motion.mjs convention):
+ * bone names as in the rig, unit quaternions, a pelvis offset of at most 1 m.
+ */
+export function normalizePose(value) {
+  const out = {};
+  if (!value || typeof value !== 'object') return out;
+  for (const [name, entry] of Object.entries(value).slice(0, 80)) {
+    if (!Array.isArray(entry) || !entry.every(Number.isFinite)) continue;
+    if (name === '$pelvis' && entry.length === 3) { out[name] = entry.map(v => Math.round(Math.max(-1, Math.min(1, v)) * 1e4) / 1e4); continue; }
+    if (!/^[A-Za-z][A-Za-z0-9_]{1,31}$/.test(name) || entry.length !== 4) continue;
+    const length = Math.hypot(...entry);
+    if (length < 1e-6) continue;
+    out[name] = entry.map(v => Math.round(v / length * 1e5) / 1e5);
+  }
+  return out;
+}
+
 export function normalizeCharacter(value = {}) {
   const result = { ...defaultCharacter };
   result.version = 2;
@@ -86,6 +104,8 @@ export function normalizeCharacter(value = {}) {
     }
   }
   result.sculpt = normalizeSculpt(value.sculpt);
+  // The character's own pose (Animação → Posar).
+  result.posing = normalizePose(value.posing);
   // Hair: a ready-made style, and the locks edited from it (null = the style as made).
   if (hairPresetIds.includes(value.hairPreset)) result.hairPreset = value.hairPreset;
   else if (Number.isInteger(value.hairStyle) && legacyHair[value.hairStyle]) result.hairPreset = legacyHair[value.hairStyle];

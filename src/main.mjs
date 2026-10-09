@@ -28,6 +28,8 @@ canvas.addEventListener('pointerdown', event => {
     return;
   }
   if (event.button !== 0) { drag = null; return; }
+  // Posing: the gizmo (TransformControls, its own listener) owns the pointer when it is under the cursor.
+  if (ui.posing && renderer.poseEditor.busy) { drag = null; return; }
   if (ui.pinning) {
     ui.pinCloth(sculptNdc(event, canvas), renderer.viewCamera); drag = null; return;
   }
@@ -93,6 +95,8 @@ canvas.addEventListener('pointermove', event => {
 const release = event => {
   // A click (no drag) on a made-to-measure garment selects that piece.
   if (drag?.ndc && ui.dressing && event && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) ui.pickGarment(renderer.clothEditor.garmentAt(drag.ndc, renderer.viewCamera));
+  // A click (no drag) while posing picks the bone or IK handle under the cursor.
+  if (drag?.ndc && ui.posing && event && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) renderer.poseEditor.pick(drag.ndc);
   if (drag?.locks) renderer.lockEditor.pointerUp();
   if (drag?.cloth) ui.clothEdgeEnd(renderer.clothEditor.up());
   if (drag?.sculpt) {

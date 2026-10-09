@@ -173,13 +173,79 @@ function armRotations(rest, [up, fore]) {
   return [upper, new Quaternion().setFromUnitVectors(rest.fore, local)];
 }
 
-/** Procedural clips for the editor preview and GLB export, in clipNames order. */
-export function buildClips(skeleton, stance = 0, faceMeshes = []) {
-  const has = name => skeleton.byName.has(name);
-  const rest = {
+/**
+ * Pose convention shared by clips, posing and the timeline: a bone's rotation D
+ * is given against a world-aligned rest, and its local rotation is
+ * R_parent⁻¹ · D · R_bone (R: world rest rotations, skeleton.rest).
+ */
+function parentRestInverse(skeleton, index) {
+  const parent = skeleton.bones[index].parent;
+  return parent?.isBone ? skeleton.rest[skeleton.bones.indexOf(parent)].clone().invert() : new Quaternion();
+}
+/** Local rotation of bone `index` for the rotation D. */
+export function toLocal(skeleton, index, D, out = new Quaternion()) {
+  if (!skeleton.rest) return out.copy(D);
+  return out.copy(D).premultiply(parentRestInverse(skeleton, index)).multiply(skeleton.rest[index]);
+}
+/** The rotation D of bone `index` from its local rotation (inverse of toLocal). */
+export function fromLocal(skeleton, index, local, out = new Quaternion()) {
+  if (!skeleton.rest) return out.copy(local);
+  return out.copy(local).premultiply(parentRestInverse(skeleton, index).invert()).multiply(skeleton.rest[index].clone().invert());
+}
+
+function armRest(skeleton) {
+  return {
     l: { upper: restDirection(skeleton, 'upperarm_l', 'lowerarm_l'), fore: restDirection(skeleton, 'lowerarm_l', 'hand_l') },
     r: { upper: restDirection(skeleton, 'upperarm_r', 'lowerarm_r'), fore: restDirection(skeleton, 'lowerarm_r', 'hand_r') },
   };
+}
+/** The rotations D of a sampled pose ({ rot, arms, root }), by bone name. */
+export function sampleRotations(rest, pose, rootName) {
+  const quaternions = new Map();
+  for (const [bone, euler] of Object.entries(pose.rot ?? {})) quaternions.set(bone, new Quaternion().setFromEuler(new Euler(...euler)));
+  for (const side of ['l', 'r']) {
+    if (!pose.arms?.[side]) continue;
+    const dirs = pose.arms[side].map(([x, y, z]) => side === 'r' ? [-x, y, z] : [x, y, z]);
+    const [upper, fore] = armRotations(rest[side], dirs);
+    quaternions.set(`upperarm_${side}`, upper); quaternions.set(`lowerarm_${side}`, fore);
+  }
+  if (pose.root && rootName) quaternions.set(rootName, new Quaternion().setFromEuler(new Euler(...pose.root)));
+  return quaternions;
+}
+
+/** The mirror image of a pose across the body's midplane: left and right swap, D → (x, −y, −z, w). */
+export function mirrorPose(pose) {
+  const out = {};
+  for (const [name, value] of Object.entries(pose)) {
+    if (name === '$pelvis') { out[name] = [-value[0], value[1], value[2]]; continue; }
+    const other = name.replace(/_l$/, '_R').replace(/_r$/, '_l').replace(/_R$/, '_r');
+    out[other] = [value[0], -value[1], -value[2], value[3]];
+  }
+  return out;
+}
+
+/** Ready-made poses as { bone: D [x, y, z, w], $pelvis: [dx, dy, dz] } (A is the rest pose). */
+export const poseLibrary = ['A', 'T', 'natural', 'hips', 'sit', 'wave', 'run'];
+export function libraryPose(skeleton, name) {
+  const rest = armRest(skeleton), thigh = skeleton.heads[skeleton.byName.get('calf_l')].distanceTo(skeleton.heads[skeleton.byName.get('thigh_l')]);
+  const sampled = {
+    A: { rot: {} },
+    // Arms level and straight out to the sides.
+    T: { rot: {}, arms: { l: [[1, 0, 0], [1, 0, 0]], r: [[1, 0, 0], [1, 0, 0]] } },
+    natural: stancePose(0), hips: stancePose(3),
+    sit: seated(1, thigh), wave: clips.wave.sample(0.125, { stance: 0 }), run: gait(0.25, gaits.run),
+  }[name];
+  if (!sampled) return {};
+  const out = {};
+  for (const [bone, q] of sampleRotations(rest, sampled, skeleton.roots[0]?.name)) out[bone] = q.toArray();
+  if (sampled.pelvis) out.$pelvis = [...sampled.pelvis];
+  return out;
+}
+
+/** Procedural clips for the editor preview and GLB export, in clipNames order. */
+export function buildClips(skeleton, stance = 0, faceMeshes = []) {
+  const has = name => skeleton.byName.has(name);
+  const rest = armRest(skeleton);
   const context = { stance, thigh: skeleton.heads[skeleton.byName.get('calf_l')].distanceTo(skeleton.heads[skeleton.byName.get('thigh_l')]) };
   const pelvis = skeleton.bones[skeleton.byName.get('pelvis')];
   const rootName = skeleton.roots[0]?.name;
@@ -192,15 +258,7 @@ export function buildClips(skeleton, stance = 0, faceMeshes = []) {
     const rotations = new Map([...animatedBones, rootName].filter(bone => bone && has(bone))
       .map(bone => [bone, Array.from({ length: (frames + 1) * 4 }, (_, k) => k % 4 === 3 ? 1 : 0)]));
     poses.forEach((pose, frame) => {
-      const quaternions = new Map();
-      for (const [bone, euler] of Object.entries(pose.rot ?? {})) quaternions.set(bone, new Quaternion().setFromEuler(new Euler(...euler)));
-      for (const side of ['l', 'r']) {
-        const dirs = pose.arms[side].map(([x, y, z]) => side === 'r' ? [-x, y, z] : [x, y, z]);
-        const [upper, fore] = armRotations(rest[side], dirs);
-        quaternions.set(`upperarm_${side}`, upper); quaternions.set(`lowerarm_${side}`, fore);
-      }
-      if (pose.root && rootName) quaternions.set(rootName, new Quaternion().setFromEuler(new Euler(...pose.root)));
-      for (const [bone, q] of quaternions) {
+      for (const [bone, q] of sampleRotations(rest, pose, rootName)) {
         if (!rotations.has(bone)) continue;
         rotations.get(bone).splice(frame * 4, 4, q.x, q.y, q.z, q.w);
       }
