@@ -16,7 +16,9 @@ import { fabricMaterialParameters, cardMaterialParameters } from './fabrics.mjs'
  * the two chain joints around their arc position past it.
  */
 export const costumeAccessories = new Set(['fringe', 'backpiece', 'headdress', 'crown']);
-const SEGMENTS = 3;
+// Two springs (three joints) per chain: the swing of a plume or a strand reads with two, and the
+// character keeps within the joint budget for games (docs/PROJETO.md).
+const SEGMENTS = 2;
 const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const round = (value, digits = 4) => Math.round(value * 10 ** digits) / 10 ** digits;
 

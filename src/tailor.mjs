@@ -55,9 +55,10 @@ const defaults = {
   swimsuit: { neckline: 0.55, leg: 0.4, fit: 0, color: '#b0123c', fabric: 'rhinestone', roughness: 0.3 },
   armband: { sleeve: 0.15, length: 0.4, fit: 0, color: '#d4a63a', fabric: 'sequin', roughness: 0.18 },
   anklet: { leg: 0.85, length: 0.35, fit: 0, color: '#d4a63a', fabric: 'sequin', roughness: 0.18 },
-  fringe: { rise: 0.35, length: 0.6, flare: 0.6, fit: 0, color: '#e8c25a', color2: '#ffffff', fabric: 'sequin', roughness: 0.2 },
-  backpiece: { length: 0.7, flare: 0.75, fit: 0, color: '#f2f2f2', color2: '#e0b03a', fabric: 'sequin', roughness: 0.2 },
-  headdress: { length: 0.55, flare: 0.6, fit: 0, color: '#f2f2f2', color2: '#e0b03a', fabric: 'sequin', roughness: 0.2 },
+  fringe: { rise: 0.35, length: 0.6, flare: 0.6, fit: 0, color: '#e8c25a', color2: '#ffffff', fabric: 'sequin', roughness: 0.18 },
+  // Same sequin roughness as the other pieces: one material (one draw call) for all of them.
+  backpiece: { length: 0.7, flare: 0.75, fit: 0, color: '#f2f2f2', color2: '#e0b03a', fabric: 'sequin', roughness: 0.18 },
+  headdress: { length: 0.55, flare: 0.6, fit: 0, color: '#f2f2f2', color2: '#e0b03a', fabric: 'sequin', roughness: 0.18 },
   crown: { length: 0.45, fit: 0, color: '#e0b03a', fabric: 'rhinestone', roughness: 0.3 },
   // Shoes: `color` the upper, `color2` the sole; boots' height in `leg`.
   sneakers: { fit: 0.08, color: '#2b2f3a', color2: '#f2f2f2', fabric: 'cotton' },
