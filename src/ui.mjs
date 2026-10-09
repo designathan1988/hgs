@@ -12,6 +12,8 @@ import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
 import { libraryPose, poseLibrary } from './motion.mjs';
 import { importAnimation } from './timeline.mjs';
+import { categoryLabel, regionNames } from './shape-handles.mjs';
+import { namedFeatures } from './renderer-three.mjs';
 import { faceWeights, mixamoName } from './human-three.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
@@ -62,7 +64,7 @@ const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', '
 const metaFields = new Set(['name', 'creation', 'version']);
 // Body shape: the character on screen follows at once (live.mjs); the full build refines it when the drag ends.
 const liveShapeFields = new Set(['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength',
-  'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'ancestry', 'cupsize', 'firmness', 'morphs']);
+  'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs']);
 // Appearance: materials and textures only (look.mjs), never a rebuild. `colors` and `garments` are checked by `lookOnly`.
 const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'eyeColor', 'topColor', 'bottomColor', 'colors', 'garments']);
 const liveColorKeys = new Set(['skin', 'hair', 'eyes', 'brows', 'lashes', 'top', 'bottom']);
@@ -280,6 +282,15 @@ export class StudioUI {
     if (mode === 'hair' && previous !== 'hair') this.startLocks();
     // Posing lives in Animação and only while the viewport is otherwise just for looking.
     r.setPoseMode(mode === 'view' && this.section === 'animacao' && Boolean(this.state.ui.posing));
+    r.setMoldMode(mode === 'view' && ['corpo', 'rosto'].includes(this.section) && Boolean(this.state.ui.molding));
+  }
+  /** The viewport's left button pulls the body into shape (main.mjs). */
+  get molding() { return Boolean(this.renderer?.moldMode); }
+  /** A Moldar drag step: the adjustment that follows the pointer, shown live. */
+  moldTo(change) {
+    if (!change) return;
+    this.setHint(`Moldando: ${change.label}`);
+    this.setMorph(change.key, Math.round(change.value * 1000) / 1000, { live: true });
   }
   /** The viewport's left button picks bones and drags the gizmo while posing (main.mjs). */
   get posing() { return Boolean(this.renderer?.poseMode); }
@@ -654,10 +665,45 @@ export class StudioUI {
         h('button', { type: 'button', class: 'button', onclick: () => this.randomBody() }, 'Só corpo'),
         h('button', { type: 'button', class: 'button', onclick: () => this.randomOutfit() }, 'Só roupa')));
   }
+  /** Value of a MakeHuman regional adjustment: its own field when it has one, else `morphs`. */
+  morphValue(key) { const field = namedFeatures[key]; return field ? this.person[field] ?? 0 : this.person.morphs[key] ?? 0; }
+  setMorph(key, value, { live = false } = {}) {
+    const field = namedFeatures[key];
+    if (field) { this.patch({ [field]: value }, { history: `morph:${key}`, live }); return; }
+    const morphs = { ...this.person.morphs };
+    if (value) morphs[key] = value; else delete morphs[key];
+    this.patch({ morphs }, { history: `morph:${key}`, live });
+  }
+  /** Moldar (pull the body in the view) and every MakeHuman regional adjustment of `regions`. */
+  renderMolding(regions) {
+    const on = Boolean(this.state.ui.molding), handles = this.renderer?.shapeHandles;
+    const mold = this.group('Moldar no corpo');
+    mold.append(h('button', { type: 'button', class: `button wide${on ? ' primary' : ''}`, 'aria-pressed': String(on),
+      onclick: () => this.store.dispatch({ type: 'ui/set', changes: { molding: !on } }) }, icon('body', 16), 'Moldar'));
+    if (on && handles) {
+      this.setHint('Arraste a parte do corpo para mudá-la · Alt: só um lado · botão direito gira a vista');
+      this.toggle(mold, 'Simetria', handles.symmetry, value => { handles.symmetry = value; }, 'Muda os dois lados juntos (como no MetaHuman Creator)');
+    }
+    const morpher = this.renderer?.current?.context.data.morpher;
+    if (!morpher) return;
+    const all = this.group('Todos os ajustes', { open: false }), region = regions.includes(this.state.ui.morphRegion) ? this.state.ui.morphRegion : regions[0];
+    all.append(chips({ label: 'Região', items: regions.map(id => regionNames[id] ?? id), selected: regions.indexOf(region), onPick: i => this.store.dispatch({ type: 'ui/set', changes: { morphRegion: regions[i] } }) }));
+    for (const [name, { group, category }] of morpher.sliders) {
+      if (group !== region) continue;
+      const min = category.opposites ? -1 : 0;
+      this.slide(all, { label: categoryLabel(name), title: name, value: this.morphValue(name), min, max: 1, onInput: v => this.setMorph(name, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
+    }
+  }
   renderBody() {
     const shape = this.group('Proporções');
     for (const [key, label] of [['build', 'Peso'], ['muscle', 'Músculos'], ['shoulders', 'Ombros'], ['waist', 'Cintura'], ['hips', 'Quadril'], ['legLength', 'Pernas'], ['headSize', 'Cabeça']]) this.range(shape, key, label, key === 'muscle' ? 0 : -1, 1);
+    this.range(shape, 'proportions', 'Proporção (comum ↔ ideal)', 0, 1);
     shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.randomBody() }, icon('dice', 16), 'Corpo aleatório'));
+    const ancestry = this.group('Ancestralidade', { open: false });
+    for (const [key, label] of [['african', 'Africana'], ['asian', 'Asiática'], ['caucasian', 'Europeia']]) this.range(ancestry, key, label, 0, 1);
+    const bust = this.group('Busto', { open: false });
+    this.range(bust, 'cupsize', 'Tamanho', 0, 1); this.range(bust, 'firmness', 'Firmeza', 0, 1);
+    this.renderMolding(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet']);
     const skin = this.group('Pele', { open: false });
     this.range(skin, 'skinRoughness', 'Brilho ↔ fosco', 0, 1);
   }
@@ -679,6 +725,7 @@ export class StudioUI {
     this.range(lashes, 'lashLength', 'Comprimento', 0.4, 1.8); this.range(lashes, 'lashCurl', 'Curvatura', 0, 1);
     this.range(lashes, 'lashDensity', 'Densidade', 0, 1);
     this.colorSwatches(lashes, null, 'Cor', ['#201915', '#3a2a22', '#5b4636', '#11131a'], 'lashes');
+    this.renderMolding(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears']);
   }
 
   // ------------------------------------------------------------ hair

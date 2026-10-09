@@ -28,6 +28,8 @@ export const defaultCharacter = Object.freeze({
   expression: 1, expressionIntensity: 0.38, animation: 0,
   animationSpeed: 1, lighting: 2, pose: 0, faceShapes: {}, colors: {},
   lashLength: 1, lashCurl: 0.5, lashDensity: 1,
+  // MakeHuman macros (macro.mjs normalises the three ancestries to sum 1).
+  proportions: 0.5, african: 1 / 3, asian: 1 / 3, caucasian: 1 / 3, cupsize: 0.5, firmness: 0.5,
 });
 
 // Approximate visual defaults informed by WHO/CDC child curves and adult
@@ -64,6 +66,7 @@ const ranges = {
   lashLength: [0.4, 1.8], lashCurl: [0, 1], lashDensity: [0, 1],
   bottomColor: [0, 5, true], expression: [0, 11, true], expressionIntensity: [0, 1],
   animation: [0, 16, true], animationSpeed: [0.4, 1.8], lighting: [0, 4, true], pose: [0, 3, true],
+  proportions: [0, 1], african: [0, 1], asian: [0, 1], caucasian: [0, 1], cupsize: [0, 1], firmness: [0, 1],
 };
 
 export const colorKeys = ['skin', 'hair', 'eyes', 'top', 'bottom', 'brows', 'lashes'];
@@ -120,6 +123,13 @@ export function normalizeCharacter(value = {}) {
     }
   }
   result.sculpt = normalizeSculpt(value.sculpt);
+  // Every MakeHuman regional adjustment by category name ("l-"/"r-" for one side only), -1..1.
+  result.morphs = {};
+  if (value.morphs && typeof value.morphs === 'object') {
+    for (const [name, amount] of Object.entries(value.morphs).slice(0, 300)) {
+      if (/^([lr]-)?[a-z0-9-]{3,60}$/.test(name) && Number.isFinite(amount) && amount !== 0) result.morphs[name] = Math.round(Math.max(-1, Math.min(1, amount)) * 1000) / 1000;
+    }
+  }
   // The character's own pose (Animação → Posar) and keyed clip (Linha do tempo).
   result.posing = normalizePose(value.posing);
   result.clip = normalizeClip(value.clip);
@@ -189,7 +199,8 @@ export function randomCharacter(seed = Math.floor(Math.random() * 4294967296)) {
 export function varyCharacter(character, locks = character.creation?.locks ?? {}, seed = Math.floor(Math.random() * 4294967296)) {
   const current = normalizeCharacter(character), next = randomCharacter(seed);
   const groups = {
-    body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness'],
+    body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness',
+      'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs'],
     face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes'],
     hair: ['hairPreset', 'hairColor', 'locks'],
     clothes: ['outfit', 'garments', 'topColor', 'bottomColor'],

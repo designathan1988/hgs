@@ -9,6 +9,7 @@ import { buildClips, oneShotClips } from './motion.mjs';
 import { LiveShape } from './live.mjs';
 import { liveLook, bakeLook } from './look.mjs';
 import { PoseEditor } from './pose.mjs';
+import { ShapeHandles } from './shape-handles.mjs';
 import { buildUserClip, USER_CLIP } from './timeline.mjs';
 import { clipNames } from './motion.mjs';
 import { SculptSession } from './sculpt.mjs';
@@ -41,19 +42,19 @@ function studioBackdrop() {
 /** The locks a character's hair is built from: its edited locks, else its ready-made style. */
 export const hairLocksOf = person => person.locks ?? hairPresetData(person.hairPreset);
 
+/** MakeHuman regional categories that have their own character field (and slider). */
+export const namedFeatures = {
+  'nose-scale-depth-decr-incr': 'nose', 'head-scale-horiz-decr-incr': 'faceWidth', 'head-scale-vert-decr-incr': 'headSize',
+  'chin-width-decr-incr': 'jaw', 'cheek-volume-decr-incr': 'cheek', 'eye-scale-decr-incr': 'eyeSize', 'eye-trans-in-out': 'eyeSpacing',
+  'measure-shoulder-dist-decr-incr': 'shoulders', 'torso-scale-horiz-decr-incr': 'waist', 'measure-hips-circ-decr-incr': 'hips',
+  'upperlegs-height-decr-incr': 'legLength',
+};
+
 export function studioSpec(person, { undressed = false } = {}) {
   const features = {
-    'nose-scale-depth-decr-incr': person.nose,
-    'head-scale-horiz-decr-incr': person.faceWidth,
-    'head-scale-vert-decr-incr': person.headSize,
-    'chin-width-decr-incr': person.jaw,
-    'cheek-volume-decr-incr': person.cheek,
-    'eye-scale-decr-incr': person.eyeSize,
-    'eye-trans-in-out': person.eyeSpacing ?? 0,
-    'measure-shoulder-dist-decr-incr': person.shoulders,
-    'torso-scale-horiz-decr-incr': person.waist,
-    'measure-hips-circ-decr-incr': person.hips,
-    'upperlegs-height-decr-incr': person.legLength,
+    // Every regional adjustment the user made (Moldar, Todos os ajustes); the named fields win.
+    ...(person.morphs ?? {}),
+    ...Object.fromEntries(Object.entries(namedFeatures).map(([category, field]) => [category, person[field] ?? 0])),
   };
   const female = person.gender < 0.5;
   const colors = person.colors ?? {};
@@ -63,6 +64,8 @@ export function studioSpec(person, { undressed = false } = {}) {
   return {
     seed: person.seed, gender: person.gender, ageYears: age,
     muscle: person.muscle, weight: clamp((person.build + 1) / 2, 0, 1),
+    proportions: person.proportions, african: person.african, asian: person.asian, caucasian: person.caucasian,
+    cupsize: person.cupsize, firmness: person.firmness,
     // Tall or short for the age shifts proportions; heightMeters sets the size.
     height: clamp(0.5 + (stature - 1) / 0.24, 0, 1),
     heightMeters: person.heightMeters ?? person.height,
@@ -188,6 +191,7 @@ export class Renderer {
     this.lockEditor = new HairEditor(this); this.locksMode = false;
     this.clothEditor = new ClothEditor(this);
     this.poseEditor = new PoseEditor(this); this.poseMode = false;
+    this.shapeHandles = new ShapeHandles(this); this.moldMode = false;
     this.pivotRay = new Raycaster();
   }
   cancelBuild() { this.buildController?.abort(); this.token++; }
@@ -248,6 +252,8 @@ export class Renderer {
     if (!this.current || !this.mixer || this.frozen) return;
     // Posing: no clip plays; the character holds its own pose (undo, redo and rebuilds re-apply it).
     if (this.poseMode) { if (this.poseEditor.active) this.poseEditor.apply(person.posing ?? {}); return; }
+    // Moldar: the body holds its bind pose, where the pointer meets the mesh in the targets' space.
+    if (this.moldMode) { this.mixer.stopAllAction(); this.action = null; this.current.body.skeleton.pose(); return; }
     const clip = this.current.animations[person.animation ?? 0] ?? this.current.animations[0];
     const action = this.mixer.clipAction(clip);
     if (action !== this.action) {
@@ -323,6 +329,13 @@ export class Renderer {
     if (action !== this.action) { this.mixer.stopAllAction(); action.reset().play(); this.action = action; }
     action.paused = true; action.time = Math.max(0, Math.min(clip.duration, t));
     this.mixer.update(0);
+  }
+  /** Moldar (Corpo, Rosto): the body rests in its bind pose while it is pulled into shape. */
+  setMoldMode(on) {
+    if (on === this.moldMode) return;
+    this.moldMode = on;
+    this.action = null;
+    if (this.person) this.setPresentation(this.person);
   }
   /** Posing (Animação → Posar): clips stop, the gizmo and IK handles act on the skeleton. */
   setPoseMode(on) {
@@ -495,7 +508,7 @@ export class Renderer {
     }
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (this.liveRequest && this.canLive) this.runLive();
-    if (!this.frozen) { if (!this.poseMode) this.mixer?.update(dt); this.springs?.update(dt); }
+    if (!this.frozen) { if (!this.poseMode && !this.moldMode) this.mixer?.update(dt); this.springs?.update(dt); }
     if (this.locksMode && this.lockEditor.active) {
       this.lockEditor.tickPhysics(dt || 1 / 60);
       this.lockEditor.step();
