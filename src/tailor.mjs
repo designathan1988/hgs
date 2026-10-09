@@ -349,7 +349,8 @@ function footwearCoverage(garment, v, layout, positions) {
   if (garment.type === 'sneakers') return along - (ankle - 0.035 * k);
   if (garment.type === 'boots') return along - (ankle - (0.06 + 0.3 * garment.leg) * k);
   const forward = z - chain.C.z;
-  return Math.max(0.016 * k - y, 0.012 * k - Math.abs(along - (ankle - 0.012 * k)),
+  // The sole: only what is under the foot (the toes stay bare above it).
+  return Math.max(0.007 * k - y, 0.012 * k - Math.abs(along - (ankle - 0.012 * k)),
     Math.min(0.013 * k - Math.abs(forward - 0.115 * k), 0.06 * k - y), Math.min(0.012 * k - Math.abs(forward - 0.05 * k), 0.08 * k - y));
 }
 
@@ -679,7 +680,7 @@ function taubinSmooth(points, index, iterations, lambda = 0.5, mu = -0.53) {
  * (hem, neckline, cuffs) are smoothed along their own curve, which removes the cut's zigzag. Then
  * the spanned surface is offset by `room(v)` metres of ease and settled.
  */
-function fitShell(points, index, bodyNormals, beneath, { base, room, iterations, settle = 6 }) {
+function fitShell(points, index, bodyNormals, beneath, { base, room, iterations, settle = 6, snapping = true }) {
   const count = points.length / 3, neighbours = Array.from({ length: count }, () => []), edgeUse = new Map();
   for (let i = 0; i < index.length; i += 3) for (let e = 0; e < 3; e++) {
     const a = index[i + e], b = index[i + (e + 1) % 3], key = a < b ? a * 4194304 + b : b * 4194304 + a;
@@ -709,6 +710,8 @@ function fitShell(points, index, bodyNormals, beneath, { base, room, iterations,
   // Shrinkwrap "Outside" with the base offset: a point nearer the surface beneath moves out along
   // that surface's normal; one already farther stays.
   const snap = () => {
+    // Without snapping (a shoe cut from its smooth last) the shell is only offset and smoothed.
+    if (!snapping) return;
     for (let v = 0; v < count; v++) {
       facing[0] = bodyNormals[v * 3]; facing[1] = bodyNormals[v * 3 + 1]; facing[2] = bodyNormals[v * 3 + 2];
       if (!beneath.closest(points[v * 3], points[v * 3 + 1], points[v * 3 + 2], 0.12, hit, facing)) continue;
@@ -906,7 +909,8 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
     const authored=garment.authoringMode!=='surface'&&garment.patternData?.panels.length;
     if (authored) panels.push(buildPatternPanels(context, garment, layout, layer, skin));
     else if (garment.type !== 'skirt' && !accessoryOnly.has(garment.type)) {
-      const { panel, covered: faces } = cutPanel(context, garment, layout, layer);
+      // Shoes are cut from the last (shoeLast), not from the toes.
+      const { panel, covered: faces } = cutPanel(footwearTypes.includes(garment.type) ? { ...context, positions: shoeLast(context).positions } : context, garment, layout, layer);
       panel.uvScale = layout.uvScale;
       if (panel.index.length) panels.push(panel);
       // Skin under a see-through net (tulle) stays.
@@ -923,24 +927,39 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       // under a coat keeps the coat outside it everywhere.
       // A cut piece rests on the drafting skin (no nipples, navel or ribs to trace, see draftSkin).
       const shell = !panel.pattern && !panel.skirt;
-      const beneath = layeredCollider(shell ? { cell: collider.cell, layers: [draftSkin(context), ...collider.layers.slice(1)] } : collider, k);
+      const drafting = shell ? new SurfaceCollider(collider.cell) : collider;
+      if (shell) drafting.layers.push(footwearTypes.includes(garment.type) ? shoeLast(context).skin : draftSkin(context), ...collider.layers.slice(1));
+      const beneath = layeredCollider(drafting, k);
       // Ease: a garment is bigger than the body (wearing ease, plus design ease for looser
       // styles). The cut is drafted into a shell that spans the body's hollows and keeps the ease
       // from it (fitShell). Gravity rests a garment on what faces up (shoulders, the top of the
       // hips), so there the ease is a third; it hangs away from the sides and from under the bust.
       // Elastic bands (waistbands, cuffs) grip with a quarter of it.
       if (shell) {
-        const base = 0.004 * k, room = garment.fit * 0.038 * k;
+        // A shoe is stiff: it spans the gaps between the toes and the hollow of the arch, and stands
+        // a few millimetres off the foot (more smoothing, more base).
+        const shoe = footwearTypes.includes(garment.type) && garment.type !== 'sandals';
+        const base = 0.004 * k, room = garment.fit * 0.038 * k + (shoe ? 0.006 * k : 0);
         fitShell(points, panel.index, panel.normal, beneath, {
-          base, iterations: Math.round(18 + garment.fit * 22), settle: Math.round(4 + garment.fit * 26),
+          base, iterations: shoe ? 0 : Math.round(18 + garment.fit * 22), settle: shoe ? 8 : Math.round(4 + garment.fit * 26), snapping: !shoe,
           // A sleeve has about half the ease of the body it is sewn to (a loose sweater: some 20 cm
           // more round the chest, 10 cm more round the arm).
           room: v => room * (panel.elastic?.[v] ? 0.25 : 1) * (1 - 0.65 * smooth((panel.normal[v * 3 + 1] - 0.25) / 0.6)) * (1 - 0.5 * (layout.armW[panel.origins[v]] ?? 0)),
         });
       }
-      // A shoe stands on a flat sole: what lies under the foot goes down to one plane (1.2 cm under
-      // the sole of the foot, above the studio floor), giving the sole its thickness.
-      if (shell && footwearTypes.includes(garment.type)) for (let v = 0; v < points.length / 3; v++) if (points[v * 3 + 1] < 0.006 * k) points[v * 3 + 1] = -0.012 * k;
+      // A shoe stands on a flat sole: the part of the shell under the foot (below 4 mm) goes down
+      // to one plane 1.2 cm under the sole of the foot (above the studio floor), so the sole has its
+      // thickness and a crisp edge. Only what is under the foot moves: lowering the toe caps sank
+      // them into the toes, and pushing them out again crumpled the front.
+      // The sole juts out a few millimetres round the foot (its horizontal normal), as soles do.
+      if (shell && footwearTypes.includes(garment.type)) {
+        for (let v = 0; v < points.length / 3; v++) {
+          if (points[v * 3 + 1] >= 0.004 * k) continue;
+          const nx = panel.normal[v * 3], nz = panel.normal[v * 3 + 2], side = Math.hypot(nx, nz);
+          points[v * 3 + 1] = -0.012 * k;
+          if (side > 0.2) { points[v * 3] += nx / side * 0.005 * k; points[v * 3 + 2] += nz / side * 0.005 * k; }
+        }
+      }
       const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
       resolvePenetration(points, panel.index, beneath, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
       // A cut piece's shell already rests at its ease (the hollows spanned, the ease hanging from
@@ -1044,8 +1063,9 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
     for (let v = 0; v < panel.pos.length / 3; v++) {
       const p = new Vector3(panel.pos[v * 3], panel.pos[v * 3 + 1], panel.pos[v * 3 + 2]);
       const pieceMaterial = panel.materials?.[v] ?? panel.materials?.[panel.origins[v]];
-      // Shoes: the sole (the lowest centimetre) in the second colour.
-      const color = footwearTypes.includes(garment.type) && p.y < 0.008 * k ? new Color(garment.color2) : patternColor(pieceMaterial ? {...garment,...pieceMaterial} : garment, p, k);
+      // Shoes: the sole (the points brought down to its plane) in the second colour; its wall shades
+      // from one colour to the other.
+      const color = footwearTypes.includes(garment.type) && p.y < -0.006 * k ? new Color(garment.color2) : patternColor(pieceMaterial ? {...garment,...pieceMaterial} : garment, p, k);
       meshData.pos.push(p.x, p.y, p.z); meshData.color.push(color.r, color.g, color.b);
     }
     for (const key of ['joints','weights','keys']) for (const value of panel[key]) meshData[key].push(value);
@@ -1141,4 +1161,97 @@ function draftSkin(context) {
   taubinSmooth(smoothed, index, 12);
   context.tailorDraftSkin = new SurfaceCollider(0.012 * layout.k).add(smoothed, layout.normals, index).layers[0];
   return context.tailorDraftSkin;
+}
+
+/**
+ * The last a shoe is made on: the body with each foot below the ankle smoothed hard (Taubin λ|μ,
+ * 60 passes over the foot's faces only, its edge at the ankle held), so the toes and the gaps
+ * between them become one rounded front and the arch one smooth curve, at the foot's size. Shoes
+ * are cut from it and rest on it. Returns the positions and their surface; cached per body.
+ */
+function shoeLast(context) {
+  if (context.tailorShoeLast) return context.tailorShoeLast;
+  const { data, positions } = context, layout = bodyLayout(context), index = [], footIndex = [];
+  const foot = v => {
+    if (layout.legW[v] < 0.5) return false;
+    const chain = layout.legs[positions[v * 3] >= 0 ? 'l' : 'r'];
+    return layout.leg[v] > chain.l1 + chain.l2 - 0.02 * layout.k;
+  };
+  for (const face of layout.faces) {
+    const ids = [0, 1, 2, 3].map(c => data.faces[face * 4 + c]);
+    index.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
+    if (ids.every(foot)) footIndex.push(ids[0], ids[1], ids[2], ids[0], ids[2], ids[3]);
+  }
+  const smoothed = Float32Array.from(positions), count = positions.length / 3;
+  // First the hollows are filled (a Laplacian step along the normal, outwards only: the gaps
+  // between the toes and the arch rise to the surface around them, nothing shrinks), then
+  // Taubin λ|μ steps round off the toe tips.
+  const neighbours = Array.from({ length: count }, () => new Set()), rim = new Uint8Array(count), uses = new Map();
+  for (let i = 0; i < footIndex.length; i += 3) for (let e = 0; e < 3; e++) {
+    const a = footIndex[i + e], b = footIndex[i + (e + 1) % 3], key = a < b ? a * 4194304 + b : b * 4194304 + a;
+    neighbours[a].add(b); neighbours[b].add(a); uses.set(key, (uses.get(key) ?? 0) + 1);
+  }
+  for (const [key, used] of uses) if (used === 1) { rim[Math.floor(key / 4194304)] = 1; rim[key % 4194304] = 1; }
+  const normal = new Float32Array(count * 3);
+  for (let iteration = 0; iteration < 200; iteration++) {
+    normal.fill(0);
+    for (let i = 0; i < footIndex.length; i += 3) {
+      const a = footIndex[i] * 3, b = footIndex[i + 1] * 3, c = footIndex[i + 2] * 3;
+      const ux = smoothed[b] - smoothed[a], uy = smoothed[b + 1] - smoothed[a + 1], uz = smoothed[b + 2] - smoothed[a + 2];
+      const vx = smoothed[c] - smoothed[a], vy = smoothed[c + 1] - smoothed[a + 1], vz = smoothed[c + 2] - smoothed[a + 2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      for (const o of [a, b, c]) { normal[o] += nx; normal[o + 1] += ny; normal[o + 2] += nz; }
+    }
+    const next = smoothed.slice();
+    for (let v = 0; v < count; v++) {
+      if (rim[v] || !neighbours[v].size) continue;
+      let nx = normal[v * 3], ny = normal[v * 3 + 1], nz = normal[v * 3 + 2];
+      const length = Math.hypot(nx, ny, nz) || 1, sign = nx * layout.normals[v * 3] + ny * layout.normals[v * 3 + 1] + nz * layout.normals[v * 3 + 2] < 0 ? -1 : 1;
+      nx *= sign / length; ny *= sign / length; nz *= sign / length;
+      let x = 0, y = 0, z = 0;
+      for (const u of neighbours[v]) { x += smoothed[u * 3]; y += smoothed[u * 3 + 1]; z += smoothed[u * 3 + 2]; }
+      const n = neighbours[v].size, along = (x / n - smoothed[v * 3]) * nx + (y / n - smoothed[v * 3 + 1]) * ny + (z / n - smoothed[v * 3 + 2]) * nz;
+      if (along > 0) { next[v * 3] += 0.5 * along * nx; next[v * 3 + 1] += 0.5 * along * ny; next[v * 3 + 2] += 0.5 * along * nz; }
+    }
+    smoothed.set(next);
+  }
+  // The toe box: in each horizontal slice (5 mm) of the forefoot, every point goes out to the
+  // slice's convex hull (Andrew's monotone chain), as a shoe's front is one smooth curve round all
+  // the toes; then Taubin steps join the slices.
+  const footIds = [...new Set(footIndex)];
+  for (const side of ['l', 'r']) {
+    const chain = layout.legs[side], slices = new Map();
+    for (const v of footIds) {
+      if ((smoothed[v * 3] >= 0 ? 'l' : 'r') !== side || smoothed[v * 3 + 2] - chain.C.z < 0.04 * layout.k) continue;
+      const key = Math.round(smoothed[v * 3 + 1] / (0.005 * layout.k));
+      (slices.get(key) ?? slices.set(key, []).get(key)).push(v);
+    }
+    for (const ids of slices.values()) {
+      if (ids.length < 4) continue;
+      const pts = ids.map(v => [smoothed[v * 3], smoothed[v * 3 + 2]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lower = [], upper = [];
+      for (const p of pts) { while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), p) <= 0) lower.pop(); lower.push(p); }
+      for (const p of [...pts].reverse()) { while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), p) <= 0) upper.pop(); upper.push(p); }
+      const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+      if (hull.length < 3) continue;
+      const cx = hull.reduce((s, p) => s + p[0], 0) / hull.length, cz = hull.reduce((s, p) => s + p[1], 0) / hull.length;
+      for (const v of ids) {
+        // Out from the hull's centre through the point to the hull's edge (ray–segment intersection).
+        const dx = smoothed[v * 3] - cx, dz = smoothed[v * 3 + 2] - cz, length = Math.hypot(dx, dz);
+        if (length < 1e-6) continue;
+        let reach = length;
+        for (let i = 0; i < hull.length; i++) {
+          const [ax, az] = hull[i], [bx, bz] = hull[(i + 1) % hull.length], ex = bx - ax, ez = bz - az, d = dx * ez - dz * ex;
+          if (Math.abs(d) < 1e-12) continue;
+          const t = ((ax - cx) * ez - (az - cz) * ex) / d, u = ((ax - cx) * dz - (az - cz) * dx) / d;
+          if (t > 0 && u >= 0 && u <= 1) reach = Math.max(reach, t * length);
+        }
+        smoothed[v * 3] = cx + dx / length * reach; smoothed[v * 3 + 2] = cz + dz / length * reach;
+      }
+    }
+  }
+  taubinSmooth(smoothed, footIndex, 150);
+  context.tailorShoeLast = { positions: smoothed, skin: new SurfaceCollider(0.012 * layout.k).add(smoothed, layout.normals, index).layers[0] };
+  return context.tailorShoeLast;
 }

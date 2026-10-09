@@ -20,6 +20,7 @@ import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPal
 import { buildHumanInWorker } from './generation.mjs';
 import { hydrateHumanAppearance } from './appearance.mjs';
 import { SpringBones } from './spring-bones.mjs';
+import { footwearTypes } from './tailor.mjs';
 
 const femaleOutfits = ['female_casualsuit01', 'female_casualsuit02', 'female_elegantsuit01', 'female_sportsuit01'];
 const maleOutfits = ['male_casualsuit01', 'male_casualsuit02', 'male_elegantsuit01', 'male_worksuit01'];
@@ -105,7 +106,8 @@ export function studioSpec(person, { undressed = false } = {}) {
     lashes: { length: person.lashLength ?? 1, curl: person.lashCurl ?? 0.5, density: person.lashDensity ?? 1, color: colors.lashes ? hex(colors.lashes) : undefined },
     clothing: undressed ? { style: 'none' } : outfit === 'tailor' ? { style: 'tailor', garments: person.garments ?? [] } : { style: outfit, color: hex(colors.top ?? topPalette[person.topColor] ?? topPalette[0]),
       bottomColor: hex(colors.bottom ?? bottomPalette[person.bottomColor] ?? bottomPalette[0]) },
-    shoes: undressed ? 'none' : 'shoes01',
+    // Made-to-measure shoes (tailor.mjs footwearTypes) replace the ready-made pair.
+    shoes: undressed || (outfit === 'tailor' && (person.garments ?? []).some(garment => footwearTypes.includes(garment.type))) ? 'none' : 'shoes01',
     sculpt: person.sculpt,
     animationSpeed: person.animationSpeed,
     pose: person.pose,

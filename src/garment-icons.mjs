@@ -25,6 +25,9 @@ const shapes = {
   backpiece: '<path d="M24 30 8 10M24 30 12 6M24 30 18 4M24 30V3M24 30 30 4M24 30 36 6M24 30 40 10M24 30 5 17M24 30 43 17" stroke-width="2.2"/><circle cx="24" cy="31" r="3.5"/>',
   headdress: '<path d="M16 30a8 8 0 0 0 16 0" stroke-opacity=".45"/><path d="M15 28h18l-1-3H16Z M18 25 12 9M21 25 18 5M24 25V3M27 25 30 5M30 25 36 9" stroke-width="2"/>',
   crown: '<path d="M11 34h26l2-18-7 7-8-11-8 11-7-7Z M11 38h26" stroke-width="2.2"/>',
+  sneakers: '<path d="M8 33c0-5 2-8 4-11l6 2c3 1 5 3 8 3l9 2c3 1 5 3 5 6v2H8Z M8 37h32M18 24l-2 6M22 25l-2 6"/>',
+  boots: '<path d="M14 6h12v22l10 4c2 1 3 3 3 5v2H12V8Z M12 39h27"/>',
+  sandals: '<path d="M7 36c1-2 4-3 8-3h18c4 0 7 1 8 3l-1 2H8Z M14 33c2-6 6-8 10-8M28 33c1-4 3-6 6-7M20 33l4-9"/>',
 };
 
 /** A garment's pictogram (span.pictogram, as the hair styles). */
