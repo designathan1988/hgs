@@ -79,6 +79,40 @@ export function buildUserClip(skeleton, clip, faceMeshes = []) {
   return new AnimationClip(USER_CLIP, Math.max(clip.duration ?? 0, all.at(-1).t), tracks);
 }
 
+/** The neighbouring keys of `t` among `keys` (sorted) and how far between them, with the clip's curve. */
+function between(keys, t, mode) {
+  if (!keys.length) return null;
+  let j = keys.findIndex(key => key.t > t);
+  if (j < 0) return { a: keys.at(-1), b: keys.at(-1), u: 0 };
+  if (j === 0) return { a: keys[0], b: keys[0], u: 0 };
+  const a = keys[j - 1], b = keys[j], raw = (t - a.t) / Math.max(1e-6, b.t - a.t);
+  return { a, b, u: mode === 'step' ? 0 : mode === 'smooth' ? smoothstep(raw) : raw };
+}
+/** The body pose of the clip at time `t` ({ bone: D, $pelvis }), as it plays: for editing in between keys. */
+export function poseAt(clip, t) {
+  const found = between(clip.keys.filter(key => key.pose), t, clip.interpolation);
+  if (!found) return {};
+  const { a, b, u } = found, out = {}, p = new Quaternion(), q = new Quaternion();
+  for (const name of new Set([...Object.keys(a.pose), ...Object.keys(b.pose)])) {
+    if (name === '$pelvis') continue;
+    p.fromArray(a.pose[name] ?? [0, 0, 0, 1]); q.fromArray(b.pose[name] ?? [0, 0, 0, 1]);
+    out[name] = p.slerp(q, u).toArray().map(v => Math.round(v * 1e5) / 1e5);
+  }
+  if (a.pose.$pelvis || b.pose.$pelvis) {
+    const pa = a.pose.$pelvis ?? [0, 0, 0], pb = b.pose.$pelvis ?? [0, 0, 0];
+    out.$pelvis = pa.map((v, c) => Math.round((v + (pb[c] - v) * u) * 1e4) / 1e4);
+  }
+  return out;
+}
+/** The face of the clip at time `t` ({ shape: weight }). */
+export function faceAt(clip, t) {
+  const found = between(clip.keys.filter(key => key.face), t, clip.interpolation);
+  if (!found) return null;
+  const { a, b, u } = found, out = {};
+  for (const name of new Set([...Object.keys(a.face), ...Object.keys(b.face)])) out[name] = (a.face[name] ?? 0) + ((b.face[name] ?? 0) - (a.face[name] ?? 0)) * u;
+  return out;
+}
+
 /** Within half a frame at 30 fps: the same key time. */
 export const sameTime = (a, b) => Math.abs(a - b) < 1 / 60;
 
@@ -211,7 +245,7 @@ export async function importAnimation(buffer, human, { fps = 10, alias = name =>
       if (1 - Math.abs(D.w) > 1e-6) pose[bone.name] = D.toArray().map(v => Math.round(v * 1e5) / 1e5);
     });
     pose.$pelvis = pelvisFromLocal(rig, pelvis.position.clone().sub(pelvisRest)).map(v => Math.round(v * 1e4) / 1e4);
-    keys.push({ t: Math.round(t * 1000) / 1000, pose, face: {} });
+    keys.push({ t: Math.round(t * 1000) / 1000, pose, face: null });
   }
   mixer.stopAllAction();
   target.skeleton.pose();

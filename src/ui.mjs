@@ -13,11 +13,9 @@ import { icon, hairPictogram } from './icons.mjs';
 import { h, group, row, iconButton, slider, sliderPair, segmented, chips, iconChoices, toggleChips, searchField, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
-import { libraryPose, poseLibrary } from './motion.mjs';
-import { importAnimation } from './timeline.mjs';
+import { renderAnimationPanel } from './animation-panel.mjs';
 import { categoryLabel, regionNames } from './shape-handles.mjs';
 import { namedFeatures } from './renderer-three.mjs';
-import { faceWeights, mixamoName } from './human-three.mjs';
 import { beardStyles, makeupNames, tattooDesigns } from './skin-layers.mjs';
 import { accessoryNames, accessoryStyles, metals } from './accessories.mjs';
 import {
@@ -1540,106 +1538,8 @@ export class StudioUI {
   }
 
   // ------------------------------------------------------------ animation
-  /**
-   * Timeline of the character's own clip ("Personalizada"): a key holds the
-   * pose (Posar) and the face (expression and fine shapes) at a time; the
-   * cursor shows the clip at that time; an imported .glb becomes keys.
-   */
-  renderTimeline() {
-    const clip = this.person.clip, r = this.renderer, custom = animationNames.length - 1;
-    const group = this.group('Linha do tempo', { open: clip.keys.length > 0 });
-    this.timeAt = Math.min(this.timeAt ?? 0, clip.duration);
-    const setClip = (changes, history = 'clip') => this.patch({ clip: { ...this.person.clip, ...changes } }, { history });
-    this.slide(group, { label: 'Duração', value: clip.duration, min: 0.5, max: 20, step: 0.1, unit: ' s', onInput: v => setClip({ duration: Math.max(v, clip.keys.at(-1)?.t ?? 0) }, 'clip:duration'), onEnd: () => this.scheduleRender() });
-    this.slide(group, { label: 'Tempo', value: this.timeAt, min: 0, max: clip.duration, step: 0.05, unit: ' s', onInput: v => { this.timeAt = v; r?.scrubUserClip(v); } });
-    const near = key => Math.abs(key.t - this.timeAt) < 0.026;
-    // The keys on a track (diamonds; click one to go to it), the cursor at the time above.
-    const goTo = i => {
-      this.timeAt = this.person.clip.keys[i].t;
-      if (r?.poseEditor.active) { r.poseEditor.apply(this.person.clip.keys[i].pose); r.poseEditor.commit(); } else r?.scrubUserClip(this.timeAt);
-      this.scheduleRender();
-    };
-    group.append(h('div', { class: 'timeline', role: 'group', 'aria-label': `Chaves (${clip.keys.length})` },
-      h('span', { class: 'cursor', style: `left:${(this.timeAt / clip.duration) * 100}%` }),
-      clip.keys.map((key, i) => h('button', { type: 'button', class: `key${near(key) ? ' on' : ''}`, style: `left:${(key.t / clip.duration) * 100}%`, title: `Chave em ${key.t.toFixed(2).replace('.', ',')} s`, 'aria-label': `Chave em ${key.t.toFixed(2)} segundos`, onclick: () => goTo(i) }))));
-    group.append(h('div', { class: 'icon-bar' },
-      iconButton('key', 'Gravar chave: a pose (Posar) e a expressão atuais neste tempo', () => {
-        const pose = r?.poseEditor.active ? r.poseEditor.read() : this.person.posing;
-        const face = faceWeights(this.person.expression, this.person.expressionIntensity ?? 0.5, this.person.faceShapes);
-        const keys = [...this.person.clip.keys.filter(key => !near(key)), { t: Math.round(this.timeAt * 1000) / 1000, pose, face }];
-        setClip({ keys, duration: Math.max(this.person.clip.duration, this.timeAt) }, true);
-      }),
-      iconButton('close', 'Apagar a chave deste tempo', () => setClip({ keys: this.person.clip.keys.filter(key => !near(key)) }, true), { disabled: !clip.keys.some(near) }),
-      iconButton('play', 'Tocar a sua animação', () => { this.store.dispatch({ type: 'ui/set', changes: { posing: false } }); this.update('animation', custom); }, { disabled: !clip.keys.length }),
-      iconButton('file', 'Importar animação (.glb do Mixamo)', () => file.click()),
-      h('span', { class: 'spacer' }),
-      iconButton('trash', 'Apagar todas as chaves', () => { if (confirm(`Apagar as ${clip.keys.length} chaves da sua animação?`)) setClip({ keys: [] }, true); }, { danger: true, disabled: !clip.keys.length })));
-    // An animation from a file (Mixamo or this app's rig) becomes editable keys.
-    const file = h('input', { type: 'file', accept: '.glb,.gltf', hidden: true });
-    file.addEventListener('change', async () => {
-      const chosen = file.files[0];
-      file.value = '';
-      if (!chosen || !/\.(glb|gltf)$/i.test(chosen.name) || !r?.current) { if (chosen) this.toast('Escolha um arquivo .glb ou .gltf', 'error'); return; }
-      try {
-        this.store.begin('import', { label: 'Importando animação…', cancellable: false });
-        const imported = await importAnimation(await chosen.arrayBuffer(), r.current, { alias: mixamoName });
-        this.patch({ clip: imported }, { history: true });
-        this.update('animation', custom);
-        this.toast(`Animação "${imported.name}" importada · ${imported.keys.length} chaves`);
-      } catch (error) { this.toast(`Não foi possível importar: ${error.message}`, 'error'); }
-      finally { this.store.end('import'); r.setPresentation(this.person); }
-    });
-    group.append(file);
-  }
-  /** Pose: click a bone to turn it with the gizmo; drag the orange handles to place hands and feet (IK). One line to switch it on. */
-  renderPosing() {
-    const r = this.renderer, editor = r?.poseEditor, on = Boolean(this.state.ui.posing);
-    const group = this.group('Pose');
-    const mirror = editor ? h('button', { type: 'button', class: `icon-button${editor.symmetry ? ' on' : ''}`, 'aria-pressed': String(editor.symmetry), title: 'Simetria: espelha o que você gira ou puxa', 'aria-label': 'Simetria',
-      onclick: event => { editor.symmetry = !editor.symmetry; event.currentTarget.classList.toggle('on', editor.symmetry); event.currentTarget.setAttribute('aria-pressed', String(editor.symmetry)); } }, icon('mirror', 18)) : null;
-    group.append(h('div', { class: 'mode-row' },
-      h('button', { type: 'button', class: `mode-card${on ? ' on' : ''}`, 'aria-pressed': String(on), title: 'Posar: clique num osso e gire pelo anel; arraste as esferas laranja para levar mãos e pés',
-        onclick: () => this.store.dispatch({ type: 'ui/set', changes: { posing: !on } }) }, icon('figure', 18), h('span', { text: on ? 'Posando no 3D' : 'Posar no 3D' })),
-      on ? mirror : null));
-    const names = { A: 'Repouso (A)', T: 'T', natural: 'Em pé', hips: 'Mãos na cintura', sit: 'Sentado', wave: 'Acenando', run: 'Correndo' };
-    group.append(chips({ label: 'Poses prontas', items: poseLibrary.map(id => names[id]), selected: -1, onPick: i => {
-      if (!r?.current) return;
-      if (!on) this.store.dispatch({ type: 'ui/set', changes: { posing: true } });
-      const posing = libraryPose(r.current.context.skeleton, poseLibrary[i]);
-      r.poseEditor.apply(posing); this.patch({ posing }, { history: true });
-    } }));
-    if (!on || !editor) return;
-    editor.onCommit = posing => this.patch({ posing }, { history: 'posing' });
-    this.setHint('Clique num osso e gire pelo anel · arraste as esferas laranja: mãos e pés · botão direito: girar');
-    group.append(h('div', { class: 'icon-bar' },
-      iconButton('reset', 'Zerar o osso escolhido', () => editor.reset(false)),
-      iconButton('mirrorToRight', 'Copiar o lado esquerdo para o direito', () => editor.mirrorSide('l')),
-      iconButton('mirrorToLeft', 'Copiar o lado direito para o esquerdo', () => editor.mirrorSide('r')),
-      h('span', { class: 'spacer' }),
-      iconButton('figure', 'Voltar à pose de repouso (A)', () => { editor.reset(true); this.toast('Pose de repouso', 'info', this.undoAction()); }, { danger: true })));
-  }
-  /** Animação: what plays (with play/pause), how the body stands, posing, and the user's own clip. */
-  renderAnimation() {
-    const motion = this.group('Movimento');
-    const action = () => this.renderer?.action;
-    const playing = action() ? !action().paused : true;
-    motion.append(h('div', { class: 'icon-bar' },
-      iconButton(playing ? 'pause' : 'resume', playing ? 'Pausar' : 'Tocar', event => {
-        const a = action(); if (!a) return;
-        a.paused = !a.paused;
-        const button = event.currentTarget;
-        button.replaceChildren(icon(a.paused ? 'resume' : 'pause', 18)); button.title = a.paused ? 'Tocar' : 'Pausar'; button.setAttribute('aria-label', button.title);
-      }),
-      iconButton('reset', 'Repetir do início', () => this.renderer?.replay())));
-    // While posing the movement is stopped: no movement is shown as playing (picking one leaves Posar).
-    const posing = Boolean(this.state.ui.posing);
-    motion.append(chips({ label: 'Movimento', items: animationNames, selected: posing ? -1 : this.person.animation, onPick: i => { if (posing) this.store.dispatch({ type: 'ui/set', changes: { posing: false } }); this.update('animation', i); } }));
-    this.range(motion, 'animationSpeed', 'Velocidade', 0.4, 1.8, 0.01, '×');
-    const pose = this.group('Postura', { open: false });
-    pose.append(chips({ label: 'Postura parada', items: ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], selected: this.person.pose, onPick: v => this.update('pose', v) }));
-    this.renderPosing();
-    this.renderTimeline();
-  }
+  /** Animação: the clip library, posing and the user's own timeline (animation-panel.mjs). */
+  renderAnimation() { renderAnimationPanel(this); }
 
   // ------------------------------------------------------------ files and export
   loadPreset(name) {

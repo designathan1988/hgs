@@ -243,6 +243,8 @@ export class PoseEditor {
     if (!this.ray.ray.intersectPlane(this.dragPlane, this.dragOffset)) return false;
     this.dragOffset.sub(handle.position);
     this.dragging = handle;
+    // The gizmo's own pointerdown (it runs after the app's) must not start a second drag of its own.
+    this.controls.enabled = false;
     return true;
   }
   /** Cursor moved while a handle is held: the handle goes there and the limb (or the body) follows. */
@@ -258,6 +260,7 @@ export class PoseEditor {
   releaseHandle() {
     if (!this.dragging) return;
     this.dragging = null;
+    this.controls.enabled = true;
     this.capturePins();
     this.syncHandles();
     this.commit();
@@ -276,8 +279,13 @@ export class PoseEditor {
     const [root, mid, end, bend] = chains[name].map((part, i) => i < 3 ? this.bone(part) : part);
     if (!root || !mid || !end) return [];
     const forward = new Vector3(...bend).applyQuaternion(this.human.group.getWorldQuaternion(new Quaternion()));
+    // The hand or foot keeps its orientation in the world (Unreal's Two Bone IK "maintain effector
+    // relative rotation" off, i.e. the effector's world rotation held): a foot stays flat on the floor.
+    const held = end.getWorldQuaternion(new Quaternion());
     solveTwoBone(root, mid, end, target, forward);
-    return [root, mid];
+    end.quaternion.copy(mid.getWorldQuaternion(new Quaternion()).invert().multiply(held));
+    end.updateMatrixWorld(true);
+    return [root, mid, end];
   }
   /** Keep bone `bone` within its joint limits (in the axes of its rest pose). True when it was clamped. */
   clampBone(bone) {

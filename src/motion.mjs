@@ -507,7 +507,7 @@ export function libraryKeys(skeleton, variant, { fps = 15, start = 0, limit = 60
       if (1 - Math.abs(q.w) > 1e-6) pose[bone] = q.toArray().map(v => Math.round(v * 1e5) / 1e5);
     }
     pose.$pelvis = sample(variant.pelvis.times, variant.pelvis.values, 3, t).map(v => Math.round(v * H * 1e4) / 1e4);
-    keys.push({ t: Math.round((start + t - from) * 1000) / 1000, pose, face: {} });
+    keys.push({ t: Math.round((start + t - from) * 1000) / 1000, pose, face: null });
   }
   return keys;
 }

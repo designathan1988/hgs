@@ -30,10 +30,11 @@ canvas.addEventListener('pointerdown', event => {
   if (event.button !== 0) { drag = null; return; }
   // Tattoo tool (Corpo → Tatuagens): a click on the skin places the chosen design there.
   if (ui.tattooingSkin) { ui.placeTattoo(renderer.bodyUVAt(sculptNdc(event, canvas))); drag = null; return; }
+  // Posing: a press on a handle (orange: hand or foot by IK; blue: the hips) drags it directly, even
+  // where the rotation gizmo's rings pass over it (the handle is the smaller, explicit target).
+  if (ui.posing && renderer.poseEditor.grabHandle(sculptNdc(event, canvas))) { drag = { pose: true }; return; }
   // Posing: the gizmo (TransformControls, its own listener) owns the pointer when it is under the cursor.
   if (ui.posing && renderer.poseEditor.grabs(event)) { drag = null; return; }
-  // Posing: a press on an orange IK handle drags the hand or foot directly.
-  if (ui.posing && renderer.poseEditor.grabHandle(sculptNdc(event, canvas))) { drag = { pose: true }; return; }
   // Moldar: a press on the body pulls it into shape; elsewhere the left button still orbits.
   if (ui.molding && renderer.shapeHandles.begin(sculptNdc(event, canvas), key => ui.morphValue(key))) { drag = { mold: true }; return; }
   if (ui.pinning) {
