@@ -103,9 +103,20 @@ export class LiveShape {
       else {
         if (!surface) { const triangles = bodyTriangles(this.data); surface = new SurfaceCollider().add(this.P0, vertexNormals(this.P0, triangles), triangles); }
         const refs = new Uint32Array(position.count * 3), bary = new Float32Array(position.count * 3), hit = {}, v0 = part.v0;
+        // Each vertex is tied to the skin its own dominant bone moves (Blender's Surface Deform: a point
+        // bound to a surface it does not rest on deforms with artefacts). Tied to the nearest skin of the
+        // whole body, the inside of a sleeve hanging by the ribs took the chest and spiked out of the
+        // sleeve as the body grew.
+        const skinIndex = g.getAttribute('skinIndex'), skinWeight = g.getAttribute('skinWeight'), names = mesh.skeleton?.bones.map(bone => bone.name);
         for (let i = 0; i < position.count; i++) {
+          let region = null;
+          if (skinIndex && skinWeight && names) {
+            let best = 0, bone = -1;
+            for (let k = 0; k < 4; k++) if (skinWeight.getComponent(i, k) > best) { best = skinWeight.getComponent(i, k); bone = skinIndex.getComponent(i, k); }
+            region = bone >= 0 ? this.boneSkin(names[bone]) : null;
+          }
           // A vertex with no skin within 30 cm keeps its place (zero weights).
-          if (!surface.closest(v0[i * 3], v0[i * 3 + 1], v0[i * 3 + 2], 0.3, hit)) continue;
+          if (!(region?.closest(v0[i * 3], v0[i * 3 + 1], v0[i * 3 + 2], 0.3, hit)) && !surface.closest(v0[i * 3], v0[i * 3 + 1], v0[i * 3 + 2], 0.3, hit)) continue;
           refs[i * 3] = hit.a; refs[i * 3 + 1] = hit.b; refs[i * 3 + 2] = hit.c;
           bary[i * 3] = hit.u; bary[i * 3 + 1] = hit.v; bary[i * 3 + 2] = hit.w;
         }
@@ -113,6 +124,19 @@ export class LiveShape {
       }
       this.parts.push(part);
     }
+  }
+  /** The body triangles a bone moves (one of their corners weighted to it), as a collider; null for a bone with no skin. */
+  boneSkin(name) {
+    this.boneSkins ??= new Map();
+    if (this.boneSkins.has(name)) return this.boneSkins.get(name);
+    const { data } = this, bone = data.skeleton.bones.findIndex(b => b.name === name);
+    const moved = v => { for (let k = 0; k < 4; k++) if (data.joints[v * 4 + k] === bone && data.weights[v * 4 + k] > 0.1 * 65535) return true; return false; };
+    const all = this.bodyTriangles ??= bodyTriangles(data), picked = [];
+    if (bone >= 0) for (let t = 0; t < all.length; t += 3) if (moved(all[t]) || moved(all[t + 1]) || moved(all[t + 2])) picked.push(all[t], all[t + 1], all[t + 2]);
+    const triangles = Uint32Array.from(picked);
+    const collider = triangles.length ? new SurfaceCollider().add(this.P0, vertexNormals(this.P0, triangles), triangles) : null;
+    this.boneSkins.set(name, collider);
+    return collider;
   }
   /** True when (almost) all of the mesh's skin weight is on the head, the neck or hair joints. */
   headish(geometry, bones) {
