@@ -5,7 +5,7 @@ import {
 import { defaultHairline, hairCollider, headFrame, scalpField, vertexNormals } from './scalp.mjs';
 import { fusedHairSurface, hairFusionGroups, normalizeHairFusion } from './hair-fusion.mjs';
 import { buildHairRig } from './hair-rig.mjs';
-import { cardFromSweep, hairCapPart, hairCardMaterial, tubeFromSweep } from './hair-cards.mjs';
+import { cardFromSweep, fadeProfile, hairCapPart, hairCardMaterial, tubeFromSweep } from './hair-cards.mjs';
 
 /**
  * Mesh hair locks ("mechas"): stylised hair built from solid, smooth locks,
@@ -853,7 +853,39 @@ export function lockSurface(lock, state, { sides = SIDES, detail = 1, vertex = n
  * A lock as a hair card (hair-cards.mjs): the same centre line and frames as
  * the tube, a strip across its width facing out of the head.
  */
+/**
+ * A fade (degradê, a taper): the hair gets progressively shorter from the top of the head down to the
+ * lower edge of the sides and the nape. A lock is drawn at its length times the fade's profile at its
+ * root's height (the cap's own profile, hairCapPart), at least 6 % (a buzz); a copy, so the lock
+ * itself (its points, rest and pins) is untouched and the fade can be turned down again.
+ */
+function fadedLock(lock, state) {
+  const fade = state?.fade ?? 0, shell = state?.shell ?? 0, frame = state?.frame;
+  if (!(fade > 0 || shell > 0) || !frame || !lock.rootP) return lock;
+  let x = lock.x, seg = lock.seg, rootP = lock.rootP, width = lock.width;
+  if (fade > 0) {
+    const height = (lock.rootP.y - frame.C.y) / frame.R, factor = Math.max(0.06, fadeProfile(fade, height));
+    if (factor < 0.999) { const length = Math.max(0.006, lockLength(lock) * factor); x = resamplePolyline(lock.x, length); seg = length / (N - 1); }
+    // Below 15 % of its length a lock is stubble: the thinned cap draws it, a card would be a dash.
+    if (factor < 0.15) width = 0;
+  }
+  // Volume (the cap's shell, an afro's mass): the hair stands off the scalp by `shell`, so a lock
+  // grows out of the shell's surface and falls from it, the lift fading over its first 8–20 cm.
+  if (shell > 0) {
+    const out = lock.rootP.clone().sub(frame.C).normalize();
+    x = Float32Array.from(x);
+    for (let i = 0; i < N; i++) {
+      const lift = shell * (1 - smooth(0.08, 0.2, i * seg));
+      x[i * 3] += out.x * lift; x[i * 3 + 1] += out.y * lift; x[i * 3 + 2] += out.z * lift;
+    }
+    rootP = lock.rootP.clone().addScaledVector(out, shell);
+  }
+  if (x === lock.x) return lock;
+  return { ...lock, x, seg, rootP, width, facing: new Float32Array(N * 3), facingAt: undefined };
+}
+
 export function lockCard(lock, state, { detail = 1, vertex = null, tint = null } = {}) {
+  lock = fadedLock(lock, state);
   if ((lock.density ?? 1) < 1) lock = { ...lock, width: lock.width * Math.sqrt(Math.max(0, lock.density)) };
   if ((lock.kind ?? 'card') !== 'card') return lockSolid(lock, state, { detail, vertex, tint });
   const sweep = lockSweep(lock, state, { detail });

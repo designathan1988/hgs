@@ -281,6 +281,17 @@ function drawCurledColumns(g, W, H, random) {
  * along the flow, 4 cm per tile. Colour RGBA: darker than the hair (it lies
  * under it) and alpha fading out across the hairline.
  */
+/**
+ * How much of its length the hair keeps in a fade (degradê, a taper) at a height on the head (head
+ * radii from its centre): the hair gets shorter towards the lower edge of the sides and the nape, and
+ * the amount is how high the fade goes (low at the nape, high up to the temples); it grows back over
+ * 0.6 R above that. The locks are shortened by it (locks.mjs) and the cap thinned by it alike.
+ */
+export function fadeProfile(fade, height) {
+  const top = -0.3 + 0.7 * fade;
+  return fade > 0 ? smooth(top - 0.6, top, height) : 1;
+}
+
 export function hairCapPart(state, flow) {
   const { positions, normals, field, frame, data } = state;
   // The hairline fades over 1.2 cm: over 3 cm the cap was cut away (alpha test) 1.5 cm inside the
@@ -300,7 +311,7 @@ export function hairCapPart(state, flow) {
     uv.push((p.x * across[0] + p.y * across[1] + p.z * across[2]) / tile, (p.x * along[0] + p.y * along[1] + p.z * along[2]) / tile);
     // A fade (degradê): the clippers leave the hair shorter, and the skin shows, lower on the
     // sides and the nape; the cap's strands thin out there (alpha against the alpha test).
-    const height = (p.y - frame.C.y) / frame.R, faded = 1 - (state.fade ?? 0) * (1 - smooth(-0.6, 0.12, height));
+    const height = (p.y - frame.C.y) / frame.R, faded = fadeProfile(state.fade ?? 0, height);
     const alpha = smooth(-0.004, fade, field[v]) * faded;
     color.push(0.62, 0.62, 0.62, alpha);
     index.set(v, at);

@@ -2,7 +2,7 @@ import {
   BufferGeometry, DoubleSide, Float32BufferAttribute, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, Raycaster, SphereGeometry, Vector3,
 } from 'three';
 import {
-  LOCK_POINTS as N, arcLengthAt, bendLock, capGeometry, combLock, dyeTints, geometryFrom, lockCard, lockLength, lockLimits, locksCap, makeLock, normalizeLocks, prepareLocks,
+  LOCK_POINTS as N, arcLengthAt, bendLock, bunParts, capGeometry, combLock, dyeTints, geometryFrom, lockCard, lockLength, lockLimits, locksCap, makeLock, normalizeLocks, prepareLocks,
   resamplePolyline, rootFrame, rootFromHit, serializeLocks, setLockLength, setLockShape, updateGeometry,
 } from './locks.mjs';
 import { hairCapMaterial, hairCardMaterial } from './hair-cards.mjs';
@@ -88,7 +88,10 @@ export class HairEditor {
     this.accessoryMesh.frustumCulled = false;
     this.capMesh = new Mesh(new BufferGeometry(), this.materials.cap);
     this.capMesh.frustumCulled = false;
-    this.group.add(this.guide.wire, this.hoverMark, this.strokeLine, this.accessoryMesh, this.capMesh);
+    // Buns: the wound hair (bunParts), drawn here as the character build draws it.
+    this.bunMesh = new Mesh(new BufferGeometry(), this.materials.normal);
+    this.bunMesh.frustumCulled = false;
+    this.group.add(this.guide.wire, this.hoverMark, this.strokeLine, this.accessoryMesh, this.capMesh, this.bunMesh);
     this.scalpVertices = null; this.sites = null;
     this.syncMeshes(true); this.updateCap(); this.updateHelpers();
   }
@@ -175,7 +178,7 @@ export class HairEditor {
       mesh.userData.index = n;
       mesh.visible = !lock.erased && !lock.hidden;
       mesh.material = this.selected.has(n) ? this.materials.selected : this.materials.normal;
-      const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1},${lock.type},${lock.gel},${lock.frizz},${lock.kind},${dye}`;
+      const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1},${lock.type},${lock.gel},${lock.frizz},${lock.kind},${dye},${this.state.fade ?? 0},${this.state.shell ?? 0}`;
       if (!all && mesh.userData.lock === lock && lock.built && key === lock.builtKey && !moved(lock.built, lock.x)) return;
       mesh.userData.lock = lock;
       lock.built = Float32Array.from(lock.x); lock.builtKey = key;
@@ -190,6 +193,11 @@ export class HairEditor {
     const parts = accessoryParts(this.state);
     this.accessoryMesh.geometry.dispose();
     this.accessoryMesh.geometry = parts.length ? geometryFrom(parts) : new BufferGeometry();
+    if (this.bunMesh) {
+      const buns = bunParts(this.state, { tint: dyeTints(this.state, this.color), detail: 0.6 });
+      this.bunMesh.geometry.dispose();
+      this.bunMesh.geometry = buns.length ? geometryFrom(buns) : new BufferGeometry();
+    }
   }
   /** The guide cage shows while drawing or retouching. */
   updateHelpers() {
