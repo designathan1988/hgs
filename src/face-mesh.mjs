@@ -212,7 +212,9 @@ function sealLips(body, close, positions) {
   const after = slits();
   let weight = 0;
   columns.forEach((_, c) => { const rate = (before[c] - after[c]) / 0.1; if (before[c] > 0 && rate > 0) weight = Math.max(weight, (before[c] + 0.0004) / rate); });
-  weight = Math.min(0.3, weight);
+  // Capped low: mouthClose lifts the lower lip forward as well as up, and the measurement often asks for
+  // the cap, so a cap of 0.3 gave every face a pout (seen in the app); 0.06 keeps the lips as modelled.
+  weight = Math.min(0.06, weight);
   apply(weight);
   position.needsUpdate = true;
   probe.material.dispose(); geometry.setIndex(null);

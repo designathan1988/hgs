@@ -555,11 +555,67 @@ const eyeTextureURL = name => new URL(`../assets/proxies/eye-${name}.webp`, impo
 
 /**
  * Iris statistics of an eye texture: the sclera is its brightest skin of the
- * eyeball (95th percentile of linear luminance); a texel's iris weight is how
- * much darker than the sclera it is, and the iris mean is taken over texels
- * clearly iris (not sclera, not pupil).
+ * eyeball (95th percentile of linear luminance); the iris is the disc around
+ * each pupil (irisDiscs), and the iris mean is taken over texels well inside it
+ * (not the pupil).
  */
 const irisCache = new WeakMap();
+/**
+ * Where the iris is, per texel (1 inside, 0 outside, soft at the limbus). Darkness alone missed it:
+ * the light MakeHuman irises are barely darker than the sclera, so most of the iris kept its grey
+ * and every eye colour came out pale. Each pupil is a black blob; its iris is the disc around it out
+ * to where the rings get back to the sclera's brightness.
+ */
+function irisDiscs(luminance, width, height, sclera) {
+  const weight = new Float32Array(luminance.length), seen = new Uint8Array(luminance.length);
+  let discs = 0;
+  const dark = i => luminance[i] < 0.06 * sclera;
+  for (let start = 0; start < luminance.length; start++) {
+    if (seen[start] || !dark(start)) continue;
+    const stack = [start]; seen[start] = 1;
+    let sx = 0, sy = 0, area = 0;
+    while (stack.length) {
+      const i = stack.pop(), x = i % width, y = (i - x) / width;
+      sx += x; sy += y; area++;
+      for (const j of [x > 0 ? i - 1 : -1, x < width - 1 ? i + 1 : -1, y > 0 ? i - width : -1, y < height - 1 ? i + width : -1]) {
+        if (j >= 0 && !seen[j] && dark(j)) { seen[j] = 1; stack.push(j); }
+      }
+    }
+    // A pupil is a small blob; large dark areas (the texture's unused margins) are not.
+    if (area < 12 || area > luminance.length * 0.01) continue;
+    const cx = sx / area, cy = sy / area, pupil = Math.sqrt(area / Math.PI);
+    // Mean luminance per one-texel ring; the iris ends at the first ring back near the sclera.
+    let radius = pupil * 2.6;
+    for (let r = Math.ceil(pupil * 1.4); r < pupil * 6; r++) {
+      let sum = 0, n = 0;
+      for (let a = 0; a < 48; a++) {
+        const x = Math.round(cx + r * Math.cos(a / 48 * 2 * Math.PI)), y = Math.round(cy + r * Math.sin(a / 48 * 2 * Math.PI));
+        if (x >= 0 && y >= 0 && x < width && y < height) { sum += luminance[y * width + x]; n++; }
+      }
+      if (n && sum / n > 0.82 * sclera) { radius = r; break; }
+    }
+    discs++;
+    const reach = Math.ceil(radius + 2);
+    for (let y = Math.max(0, Math.floor(cy - reach)); y <= Math.min(height - 1, cy + reach); y++) {
+      for (let x = Math.max(0, Math.floor(cx - reach)); x <= Math.min(width - 1, cx + reach); x++) {
+        const t = Math.max(0, Math.min(1, (radius + 0.5 - Math.hypot(x - cx, y - cy)) / 2)), i = y * width + x;
+        weight[i] = Math.max(weight[i], t * t * (3 - 2 * t));
+      }
+    }
+  }
+  return { weight, discs };
+}
+/** Mean colour and luminance of the texels well inside the iris (not the pupil). */
+function irisMean(stats) {
+  const { data: d, luminance, sclera, irisWeight } = stats;
+  let r = 0, g = 0, b = 0, lum = 0, n = 0;
+  for (let i = 0; i < luminance.length; i++) {
+    if (irisWeight[i] < 0.99 || luminance[i] < 0.05 * sclera) continue;
+    r += LINEAR[d[i * 4]]; g += LINEAR[d[i * 4 + 1]]; b += LINEAR[d[i * 4 + 2]]; lum += luminance[i]; n++;
+  }
+  n = Math.max(1, n);
+  stats.mean = [r / n, g / n, b / n]; stats.irisLuminance = Math.max(1e-3, lum / n);
+}
 function irisStats(image) {
   if (irisCache.has(image)) return irisCache.get(image);
   const canvas = document.createElement('canvas');
@@ -570,13 +626,9 @@ function irisStats(image) {
   const luminance = new Float32Array(count);
   for (let i = 0; i < count; i++) luminance[i] = 0.2126 * LINEAR[d[i * 4]] + 0.7152 * LINEAR[d[i * 4 + 1]] + 0.0722 * LINEAR[d[i * 4 + 2]];
   const sclera = Math.max(1e-3, Float32Array.from(luminance).sort()[Math.floor(count * 0.95)]);
-  let r = 0, g = 0, b = 0, lum = 0, n = 0;
-  for (let i = 0; i < count; i++) {
-    const weight = 1 - luminance[i] / sclera;
-    if (weight < 0.5 || luminance[i] < 0.02 * sclera) continue;
-    r += LINEAR[d[i * 4]]; g += LINEAR[d[i * 4 + 1]]; b += LINEAR[d[i * 4 + 2]]; lum += luminance[i]; n++;
-  }
-  const stats = { width: canvas.width, height: canvas.height, data: d, luminance, sclera, mean: [r / n, g / n, b / n], irisLuminance: lum / n };
+  const { weight: irisWeight, discs } = irisDiscs(luminance, canvas.width, canvas.height, sclera);
+  const stats = { width: canvas.width, height: canvas.height, data: d, luminance, sclera, irisWeight, discs };
+  irisMean(stats);
   irisCache.set(image, stats);
   return stats;
 }
@@ -592,21 +644,28 @@ export async function eyeTexture(color, { cache = true } = {}) {
     const images = await Promise.all(eyeTextureNames.map(name => imageTexture(eyeTextureURL(name))));
     const chroma = ([r, g, b]) => { const s = r + g + b || 1; return [r / s, g / s, b / s]; };
     const want = chroma([target.r, target.g, target.b]);
+    const all = images.map(image => irisStats(image.image));
+    // A dark iris (brown) merges with its pupil, so no disc is found there; the textures share one UV
+    // layout, so such a texture takes the discs found on a light one.
+    const reference = all.find(stats => stats.discs === 2);
+    for (const stats of all) if (stats.discs !== 2 && reference && stats.width === reference.width && stats.height === reference.height) {
+      stats.irisWeight = reference.irisWeight; stats.discs = 2; irisMean(stats);
+    }
     let best = null;
-    for (const image of images) {
-      const stats = irisStats(image.image), have = chroma(stats.mean);
+    for (const stats of all) {
+      const have = chroma(stats.mean);
       const distance = Math.hypot(have[0] - want[0], have[1] - want[1], have[2] - want[2]);
       if (!best || distance < best.distance) best = { stats, distance };
     }
-    const { width, height, data, luminance, sclera, irisLuminance } = best.stats;
+    const { width, height, data, luminance, irisWeight, irisLuminance } = best.stats;
     const canvas = document.createElement('canvas');
     canvas.width = width; canvas.height = height;
     const drawing = canvas.getContext('2d'), pixels = new ImageData(Uint8ClampedArray.from(data), width, height), d = pixels.data;
     for (let i = 0; i < luminance.length; i++) {
-      const t = Math.max(0, Math.min(1, ((1 - luminance[i] / sclera) - 0.25) / 0.35)), weight = t * t * (3 - 2 * t);
+      const weight = irisWeight[i];
       if (!weight) continue;
       // The texel's brightness relative to the iris mean, carried by the new colour (the mean texel becomes the colour).
-      const shade = luminance[i] / Math.max(1e-3, irisLuminance);
+      const shade = Math.min(1.8, luminance[i] / Math.max(1e-3, irisLuminance));
       const tone = [target.r * shade, target.g * shade, target.b * shade];
       for (let c = 0; c < 3; c++) d[i * 4 + c] = encode(Math.min(1, LINEAR[d[i * 4 + c]] * (1 - weight) + tone[c] * weight));
     }

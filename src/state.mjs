@@ -52,7 +52,7 @@ function normalizeTattoos(list) {
 export const skinPalette = ['#f0c9ad', '#dfad8b', '#c98c66', '#b77850', '#97603f', '#75472f', '#563524', '#39261d'];
 export const hairPalette = ['#181514', '#30231e', '#4b3327', '#70503a', '#a1784c', '#c9a977', '#823d2d', '#474343', '#ddd2bf'];
 // Iris colours as rendered on the eyeball (appearance.mjs uses this list).
-export const eyePalette = ['#563622', '#80583b', '#7b7568', '#53725a', '#4c6484', '#858b8b'];
+export const eyePalette = ['#563622', '#80583b', '#7b7568', '#53725a', '#3f5576', '#6c7474'];
 export const topPalette = ['#45403d', '#293b49', '#a66141', '#94837a', '#75836a', '#7c6474'];
 export const bottomPalette = ['#626152', '#343944', '#4d554d', '#4b5361', '#a3947e', '#393634'];
 export const outfitNames = ['Casual', 'Esporte fino', 'Social', 'Trabalho', 'Sob medida'];
@@ -242,7 +242,8 @@ export function rng(seed) {
   };
 }
 
-const givenNames = ['Maya', 'Elena', 'Amira', 'Nora', 'Sofia', 'Ari', 'Kai', 'Leo', 'Mateo', 'Noah', 'Sam', 'Rafael', 'Inez', 'Theo', 'Aisha', 'Jules'];
+// Given names by sex (gender 0 female, 1 male), so a drawn man is not called Nora.
+const givenNames = [['Maya', 'Elena', 'Amira', 'Nora', 'Sofia', 'Inez', 'Aisha', 'Julia', 'Clara', 'Luana'], ['Kai', 'Leo', 'Mateo', 'Noah', 'Rafael', 'Theo', 'Lucas', 'Pedro', 'Daniel', 'Gabriel']];
 const familyNames = ['Chen', 'Silva', 'Park', 'Rivera', 'Okafor', 'Mendes', 'Khan', 'Moreau', 'Costa', 'Tanaka', 'Diaz', 'Bennett'];
 const pick = (random, max) => Math.floor(random() * max);
 const signed = random => random() * 2 - 1;
@@ -253,29 +254,49 @@ export function randomCharacter(seed = Math.floor(Math.random() * 4294967296)) {
   const age = 19 + pick(random, 54);
   const build = signed(random) * 0.65;
   const height = 1.57 + random() * 0.35 + gender * 0.04;
+  // One coherent ancestry: skin tone, MakeHuman's ethnic face blend, eye and hair colour drawn together
+  // (an even three-way blend on every skin, with icy eyes and platinum hair on dark skin, looked wrong).
+  // Palette indices: eyes 0 dark brown, 1 light brown, 2 grey, 3 green, 4 blue, 5 light grey; hair 0 black,
+  // 1 very dark brown, 2 dark brown, 3 brown, 4 light brown, 5 blonde, 6 red, 7 dark grey, 8 platinum.
+  const among = list => list[pick(random, list.length)];
   const family = pick(random, 4);
-  const skinGroup = [pick(random, 3), 2 + pick(random, 3), 4 + pick(random, 4), pick(random, 8)][family];
+  const lead = 0.72 + random() * 0.2, rest = (1 - lead) / 2;
+  const origin = [
+    { skin: among([0, 1, 1, 2]), blend: [rest, rest, lead], eyes: [0, 1, 1, 1, 3, 4, 4, 5], hair: [1, 2, 2, 3, 3, 4, 5, 6] },
+    { skin: among([1, 2, 2, 3]), blend: [rest, lead, rest], eyes: [0, 0, 1], hair: [0, 0, 1] },
+    { skin: among([4, 5, 5, 6, 7]), blend: [lead, rest, rest], eyes: [0, 0, 0, 1], hair: [0, 0, 1] },
+    { skin: among([2, 3, 3, 4]), blend: [0.333, 0.333, 0.333], eyes: [0, 0, 1, 1], hair: [0, 1, 1, 2] },
+  ][family];
+  const skinGroup = origin.skin;
+  // Grey hair comes with age.
+  const hairColor = age > 55 && random() < (age - 45) / 30 ? among([7, 7, 8]) : among(origin.hair);
   return normalizeCharacter({
     ...defaultCharacter, seed, gender, age,
-    name: `${givenNames[pick(random, givenNames.length)]} ${familyNames[pick(random, familyNames.length)]}`,
+    name: `${among(givenNames[gender])} ${familyNames[pick(random, familyNames.length)]}`,
     ageYears: age,
     height, heightMeters: height,
     build, muscle: 0.14 + random() * 0.66,
     shoulders: (gender ? 0.18 : -0.08) + signed(random) * 0.35,
     waist: build * 0.55 + signed(random) * 0.2,
     hips: (gender ? -0.06 : 0.2) + signed(random) * 0.28,
-    legLength: signed(random) * 0.42, headSize: signed(random) * 0.28,
-    faceWidth: signed(random) * 0.65, jaw: signed(random) * 0.65,
-    cheek: signed(random) * 0.6, nose: signed(random) * 0.6,
-    eyeSize: signed(random) * 0.45, eyeSpacing: signed(random) * 0.45,
+    legLength: signed(random) * 0.3, headSize: signed(random) * 0.12,
+    // MakeHuman modifiers: the full range (±1) is caricature, so a drawn face stays near the average
+    // (±0.65 on width and jaw and ±0.45 on the eyes made swollen heads and staring, far-set eyes).
+    faceWidth: signed(random) * 0.2, jaw: signed(random) * 0.25,
+    cheek: signed(random) * 0.25, nose: signed(random) * 0.25,
+    eyeSize: signed(random) * 0.12, eyeSpacing: signed(random) * 0.1,
+    african: origin.blend[0], asian: origin.blend[1], caucasian: origin.blend[2],
+    browThickness: gender ? 1.05 + random() * 0.3 : 0.85 + random() * 0.25, browDensity: 0.85 + random() * 0.15,
+    browArch: gender ? signed(random) * 0.15 : 0.1 + random() * 0.25,
     skin: skinGroup, skinDetail: 0.45 + random() * 0.5,
     skinRoughness: 0.43 + random() * 0.3,
     // A ready-made hair mesh, no locks over it (the editor adds them).
     hairPreset: 'careca', hairBase: (gender ? ['short01', 'short02', 'culturalibre_hair_06', 'short02'] : ['long01', 'toigo_blunt_bob', 'toigo_curled_under_bob_with_bangs', 'toigo_inverted_bob', 'bob01', 'braid01'])[pick(random, gender ? 4 : 6)],
-    hairColor: pick(random, 9),
-    eyeColor: pick(random, 6), outfit: pick(random, 4),
+    hairColor,
+    eyeColor: among(origin.eyes), outfit: pick(random, 4),
     topColor: pick(random, 6), bottomColor: pick(random, 6),
-    expression: pick(random, 12), expressionIntensity: 0.2 + random() * 0.45,
+    // A drawn person looks like an ordinary passer-by: neutral, relaxed or a light smile, never a grimace.
+    expression: [0, 1, 1, 2][pick(random, 4)], expressionIntensity: 0.2 + random() * 0.3,
     animationSpeed: 0.78 + random() * 0.45,
     lighting: 2,
   });
