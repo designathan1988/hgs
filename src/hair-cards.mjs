@@ -283,7 +283,9 @@ function drawCurledColumns(g, W, H, random) {
  */
 export function hairCapPart(state, flow) {
   const { positions, normals, field, frame, data } = state;
-  const lift = 0.0008, tile = 0.04, fade = 0.03;
+  // The hairline fades over 1.2 cm: over 3 cm the cap was cut away (alpha test) 1.5 cm inside the
+  // hairline, and the skin showed in stripes between the cards rooted there.
+  const lift = 0.0008, tile = 0.04, fade = 0.012;
   const index = new Map(), pos = [], normal = [], uv = [], color = [], faces = [];
   const p = { x: 0, y: 0, z: 0 }, n = { x: 0, y: 0, z: 0 };
   const vertex = v => {
@@ -350,6 +352,12 @@ export function hairCapTexture() {
   g.lineCap = 'round';
   let seed = 11;
   const random = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+  // The scalp under the cards is covered: an opaque base a little darker than the strands (tinted by
+  // the hair colour like them), so the gaps between cards show hair, never skin (Reallusion: no bald
+  // spots). The hairline still fades by the cap's vertex alpha.
+  // Its alpha (0.75) is below the strands' (0.7–1 over it): where the hairline fades the base drops
+  // out first and the strands thin out one by one, so the edge is strand by strand, not a step.
+  g.fillStyle = 'rgba(150,150,150,0.75)'; g.fillRect(0, 0, size, size);
   for (let s = 0; s < 900; s++) {
     const x = random() * size, y = random() * size, length = size * (0.3 + 0.5 * random()), light = Math.round(140 + random() * 115), width = 1.2 + random() * 2.2;
     g.strokeStyle = `rgba(${light},${light},${light},${(0.7 + 0.3 * random()).toFixed(2)})`; g.lineWidth = width;
