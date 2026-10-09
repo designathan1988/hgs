@@ -1,7 +1,8 @@
 import {
   AmbientLight, AnimationMixer, CanvasTexture, CircleGeometry, DirectionalLight, Fog, Group, Mesh,
-  MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, SRGBColorSpace, Scene, Vector3, WebGLRenderer,
+  MeshStandardMaterial, PMREMGenerator, PerspectiveCamera, PlaneGeometry, Raycaster, SRGBColorSpace, Scene, Vector3, WebGLRenderer,
 } from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
 import { characterClips, createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
@@ -199,7 +200,16 @@ export class Renderer {
     this.scene.fog = new Fog(HORIZON, 12, 60);
     this.viewCamera = new PerspectiveCamera(36, 1, 0.025, 180);
     this.camera = new Camera();
-    this.scene.add(new AmbientLight(0xffffff, 1.2));
+    // Image-based light: a studio room prefiltered by PMREM (three.js PMREMGenerator.fromScene), so
+    // metal, sequins, lamé and jewellery have something to reflect; it also lights diffusely, so the
+    // flat ambient is halved.
+    if (typeof document !== 'undefined') {
+      const pmrem = new PMREMGenerator(this.renderer), room = new RoomEnvironment();
+      this.scene.environment = pmrem.fromScene(room, 0.04).texture;
+      this.scene.environmentIntensity = 0.5;
+      room.dispose(); pmrem.dispose();
+    }
+    this.scene.add(new AmbientLight(0xffffff, 0.6));
     const key = new DirectionalLight(0xfff2df, 2.6); key.position.set(-3, 7, 5); this.scene.add(key); this.keyLight = key;
     // A barely cool fill: a strongly blue one tinted dark hair and shadows blue on the neutral backdrop.
     const fill = new DirectionalLight(0xdde5f2, 0.85); fill.position.set(3, 4, -4); this.scene.add(fill); this.fillLight = fill;
