@@ -641,7 +641,10 @@ export async function exportHumanGLB(human, { skeleton = 'unreal', animations = 
         if (owner?.userData && Object.keys(owner.userData).length) { stashed.push([owner, owner.userData]); owner.userData = {}; }
       }
     });
-    const rename = new Map(original.map((name, i) => [name, bones[i].name]));
+    // Tracks address bones by uuid when renamed: three.js PropertyBinding reserves ':' in track names
+    // (_RESERVED_CHARS_RE), so "mixamorig:Hips.position" cannot be bound and every clip of the
+    // Mixamo-named export was dropped; findNode also matches a node's uuid.
+    const rename = new Map(original.map((name, i) => [name, bones[i].name === name ? name : bones[i].uuid]));
     const clips = !animations ? [] : human.animations.map(clip => {
       const copy = clip.clone();
       copy.tracks = copy.tracks.filter(track => blendshapes || !track.name.includes('morphTargetInfluences'));

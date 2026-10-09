@@ -232,27 +232,37 @@ export async function addFaceRig(context, weights = {}) {
     shape.indices.forEach((v, i) => values.set(shape.deltas.subarray(i * 3, i * 3 + 3), v * 3));
     return [name, values];
   }));
-  const perVertex = (ids, name) => {
-    const source = dense.get(name), out = new Float32Array(ids.length * 3);
+  const perVertex = (ids, name, from = dense) => {
+    const source = from.get(name), out = new Float32Array(ids.length * 3);
     ids.forEach((v, i) => { if (v >= 0) out.set(source.subarray(v * 3, v * 3 + 3), i * 3); });
     return out;
   };
   const meshes = [];
   // The neutral face with the lips together, as ARKit's neutral (measured slit, see sealLips).
-  body.geometry.userData.lipSeal = sealLips(body, dense.get('mouthClose'), positions);
+  const seal = body.geometry.userData.lipSeal = sealLips(body, dense.get('mouthClose'), positions);
+  // That closure is not ARKit's jawOpen: "jawOpen 1, mouthClose 0" is the mouth wide open (Apple,
+  // mouthClose). So jawOpen takes the seal back out as it opens: at 1 the lips part exactly as the shape
+  // was authored, at 0 they rest together.
+  // Only the body carries the seal (the mouth interior and the grooms keep the shapes as authored).
+  const skin = new Map(dense);
+  if (seal && dense.has('jawOpen') && dense.has('mouthClose')) {
+    const jaw = Float32Array.from(dense.get('jawOpen')), close = dense.get('mouthClose');
+    for (let i = 0; i < jaw.length; i++) jaw[i] -= seal * close[i];
+    skin.set('jawOpen', jaw);
+  }
   // Body normals per base vertex, neutral and for each shape, so a shape's normal
   // displacement is exactly zero wherever no face around a vertex moves.
   const bodyGroup = data.base.faceGroups.indexOf('body'), bodyFaces = [];
   for (let f = 0; f < data.faceGroup.length; f++) if (data.faceGroup[f] === bodyGroup) bodyFaces.push(f);
   const neutral = baseNormals(data, bodyFaces, positions);
   const bodyNormal = name => {
-    const delta = dense.get(name), shaped = Float32Array.from(positions);
+    const delta = skin.get(name), shaped = Float32Array.from(positions);
     for (let i = 0; i < shaped.length; i++) shaped[i] += delta[i];
     const normals = baseNormals(data, bodyFaces, shaped), ids = body.geometry.userData.baseIds, out = new Float32Array(ids.length * 3);
     ids.forEach((v, i) => { for (let k = 0; k < 3; k++) out[i * 3 + k] = normals[v * 3 + k] - neutral[v * 3 + k]; });
     return out;
   };
-  setMorphs(body.geometry, name => perVertex(body.geometry.userData.baseIds, name), bodyNormal);
+  setMorphs(body.geometry, name => perVertex(body.geometry.userData.baseIds, name, skin), bodyNormal);
   meshes.push(body);
   const mouth = mouthMesh(context);
   if (mouth) { setMorphs(mouth.geometry, name => perVertex(mouth.geometry.userData.baseIds, name), meshNormalDelta(mouth.geometry)); meshes.push(mouth); }
