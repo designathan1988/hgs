@@ -404,8 +404,26 @@ export function restPosition(skeleton, index) {
   if (p < 0) return skeleton.heads[index].clone();
   return skeleton.heads[index].clone().sub(skeleton.heads[p]).applyQuaternion(skeleton.rest[p].clone().invert());
 }
-/** Height of the pelvis above the floor at rest: library offsets are in these units. */
-const hipHeight = skeleton => skeleton.heads[skeleton.byName.get('pelvis')].y;
+/** Height of the hip joints (thigh heads) over the floor at rest: library pelvis offsets are in these units. */
+const hipHeight = skeleton => ['thigh_l', 'thigh_r'].reduce((sum, name) => sum + skeleton.heads[skeleton.byName.get(name)].y / 2, 0);
+
+/**
+ * The pelvis offset of a pose ($pelvis, world axes of the character at rest: +y up, +z forward) as a
+ * change of pelvis.position, which is in the parent's space (Root rests turned −90° about X).
+ */
+export function pelvisToLocal(skeleton, offset, out = new Vector3()) {
+  const p = skeleton.byName.get('pelvis'), parent = p === undefined ? null : skeleton.bones[p].parent;
+  out.set(offset[0], offset[1], offset[2]);
+  if (parent?.isBone && skeleton.rest) out.applyQuaternion(skeleton.rest[skeleton.bones.indexOf(parent)].clone().invert());
+  return out;
+}
+/** The world offset $pelvis from a change of pelvis.position (inverse of pelvisToLocal). */
+export function pelvisFromLocal(skeleton, local) {
+  const p = skeleton.byName.get('pelvis'), parent = p === undefined ? null : skeleton.bones[p].parent;
+  const out = local.clone();
+  if (parent?.isBone && skeleton.rest) out.applyQuaternion(skeleton.rest[skeleton.bones.indexOf(parent)]);
+  return out.toArray();
+}
 
 /** Blinks as sparse keys: closed at each blink's middle, open 90 ms either side. */
 function blinkTrack(seconds) {
@@ -446,8 +464,11 @@ function libraryClip(skeleton, name, variant, faceMeshes) {
   const p = skeleton.byName.get('pelvis');
   if (p !== undefined) {
     const rest = restPosition(skeleton, p), H = hipHeight(skeleton), { times, values } = variant.pelvis;
-    const out = new Float32Array(values.length);
-    for (let k = 0; k < values.length; k += 3) { out[k] = rest.x + values[k] * H; out[k + 1] = rest.y + values[k + 1] * H; out[k + 2] = rest.z + values[k + 2] * H; }
+    const out = new Float32Array(values.length), v = new Vector3();
+    for (let k = 0; k < values.length; k += 3) {
+      pelvisToLocal(skeleton, [values[k] * H, values[k + 1] * H, values[k + 2] * H], v).add(rest);
+      out[k] = v.x; out[k + 1] = v.y; out[k + 2] = v.z;
+    }
     tracks.push(new VectorKeyframeTrack('pelvis.position', times, out));
   }
   const seconds = variant.duration, blink = blinkTrack(seconds);
@@ -496,13 +517,15 @@ export function libraryKeys(skeleton, variant, { fps = 15, start = 0, limit = 60
  * (loadMotionLibrary; the variant of the body's sex) and procedural ones for the rest (and for
  * every clip when the library is not given, e.g. inside the generation worker).
  */
-export function buildClips(skeleton, stance = 0, faceMeshes = [], { library = null, gender = 0.5 } = {}) {
+export function buildClips(skeleton, stance = 0, faceMeshes = [], { library = null, gender = 0.5, only = null } = {}) {
   const has = name => skeleton.byName.has(name);
   const rest = armRest(skeleton);
   const context = { stance, thigh: skeleton.heads[skeleton.byName.get('calf_l')].distanceTo(skeleton.heads[skeleton.byName.get('thigh_l')]) };
   const pelvis = skeleton.bones[skeleton.byName.get('pelvis')];
   const rootName = skeleton.roots[0]?.name;
+  // `only`: just that clip is built (null in the others' places), e.g. while a slider reshapes the body.
   const built = clipNames.map(name => {
+    if (only && name !== only) return null;
     const captured = name === 'idle' ? null : libraryVariant(library, name, gender);
     if (captured) return libraryClip(skeleton, name, captured, faceMeshes);
     // Without the library, a captured-only clip stands still (procedural idle under its own name).
@@ -534,10 +557,9 @@ export function buildClips(skeleton, stance = 0, faceMeshes = [], { library = nu
     }
     const tracks = [...rotations].map(([bone, values]) => new QuaternionKeyframeTrack(`${bone}.quaternion`, times, values));
     if (pelvis) {
-      const values = poses.flatMap(pose => {
-        const [dx, dy, dz] = pose.pelvis ?? [0, 0, 0];
-        return [pelvis.position.x + dx, pelvis.position.y + dy, pelvis.position.z + dz];
-      });
+      // pose.pelvis is in the character's axes (down is −y); pelvis.position is in Root's space.
+      const rest = restPosition(skeleton, skeleton.byName.get('pelvis')), v = new Vector3();
+      const values = poses.flatMap(pose => pelvisToLocal(skeleton, pose.pelvis ?? [0, 0, 0], v).add(rest).toArray());
       tracks.push(new VectorKeyframeTrack('pelvis.position', times, values));
     }
     for (const [shape, curve] of Object.entries(faceCurves(name, seconds))) {
@@ -549,8 +571,9 @@ export function buildClips(skeleton, stance = 0, faceMeshes = [], { library = nu
   // Every clip keys the same bones and shapes (a bone a clip leaves out holds its rest pose there),
   // so switching clips never leaves a limb in the previous clip's pose, in the app or in an engine.
   const everyTrack = new Map();
-  for (const clip of built) for (const track of clip.tracks) if (!everyTrack.has(track.name)) everyTrack.set(track.name, track);
+  for (const clip of built) for (const track of clip?.tracks ?? []) if (!everyTrack.has(track.name)) everyTrack.set(track.name, track);
   for (const clip of built) {
+    if (!clip) continue;
     const present = new Set(clip.tracks.map(track => track.name));
     for (const [trackName, sample] of everyTrack) {
       if (present.has(trackName)) continue;

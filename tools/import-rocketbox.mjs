@@ -14,7 +14,8 @@
 // direction of the matching bone of our A-pose rest (the smallest rotation, so twist is kept).
 // The world change ΔW_b = W_b(t) · S_b⁻¹ then applies to our bone at rest: world = ΔW_b · R_b, and
 // the stored key is the pose rotation of motion.mjs, D_b = ΔW_parent⁻¹ · ΔW_b. The pelvis
-// position is stored in units of the source's hip height, so it scales to any body.
+// offset from rest (world axes) is stored in units of the source's leg height (hip joints over
+// the floor), so it scales to any body by its own leg height.
 //
 // Storage. Each track keeps the frames that slerp (as three.js QuaternionLinearInterpolant) cannot
 // rebuild within a per-bone angle tolerance, checked on every frame in between (linear key
@@ -25,6 +26,11 @@ import path from 'node:path';
 import { AnimationMixer, LoadingManager, LoopOnce, Quaternion, Texture, Vector3 } from 'three';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { createHuman } from '../src/human-three.mjs';
+import { pelvisToLocal, restPosition, toLocal } from '../src/motion.mjs';
+
+// Lowest foot joint (ankle or ball/toe) over the floor.
+const lowestFoot = byName => Math.min(...['Bip01_L_Foot', 'Bip01_R_Foot', 'Bip01_L_Toe0', 'Bip01_R_Toe0'].map(name => byName.get(name).getWorldPosition(new Vector3()).y));
+const lowestTarget = rig => Math.min(...['foot_l', 'foot_r', 'ball_l', 'ball_r'].map(name => rig.bones[rig.byName.get(name)].getWorldPosition(new Vector3()).y));
 
 const REPO = 'https://raw.githubusercontent.com/microsoft/Microsoft-Rocketbox/master/Assets/';
 const FPS = 30;
@@ -133,8 +139,10 @@ function referencePose(avatar, rig) {
   }
   const out = new Map();
   for (const [ours, theirs] of pairs) out.set(ours, avatar.byName.get(theirs).getWorldQuaternion(new Quaternion()));
+  // Offsets of the pelvis scale with the legs: the height of the hip joints (thigh heads) over the floor.
   const hip = avatar.byName.get('Bip01_Pelvis').getWorldPosition(new Vector3());
-  return { rotations: out, hipHeight: hip.y };
+  const legs = ['Bip01_L_Thigh', 'Bip01_R_Thigh'].reduce((sum, name) => sum + avatar.byName.get(name).getWorldPosition(new Vector3()).y / 2, 0);
+  return { rotations: out, hipHeight: legs, pelvisHeight: hip.y, low: lowestFoot(avatar.byName) };
 }
 
 /** Slerp key reduction: indices of the frames kept so every frame is rebuilt within `tol` radians. */
@@ -183,7 +191,7 @@ function convertClip(file, rig, reference, loop) {
   const names = rig.bones.map(bone => bone.name);
   const parentOf = rig.bones.map(bone => (bone.parent?.isBone ? names.indexOf(bone.parent.name) : -1));
   const rotations = names.map(() => new Float32Array(frames * 4));
-  const hips = new Float32Array(frames * 3);
+  const hips = new Float32Array(frames * 3), lows = new Float32Array(frames);
   const identity = new Quaternion(), world = new Quaternion(), delta = names.map(() => new Quaternion()), D = new Quaternion(), hip = new Vector3();
   const inverseReference = new Map([...reference.rotations].map(([name, S]) => [name, S.clone().invert()]));
   for (let f = 0; f < frames; f++) {
@@ -204,6 +212,7 @@ function convertClip(file, rig, reference, loop) {
     });
     source.byName.get('Bip01_Pelvis').getWorldPosition(hip);
     hips.set([hip.x, hip.y, hip.z], f * 3);
+    lows[f] = lowestFoot(source.byName);
   }
   // Pelvis in hip heights, from its rest point over the feet. A loop drops its travel (in place, as a
   // game's in-place clip: the line from the first to the last frame, then the mean); a one-shot keeps
@@ -214,13 +223,27 @@ function convertClip(file, rig, reference, loop) {
     const u = f / (frames - 1);
     const x = hips[f * 3] - (loop ? first[0] + (last[0] - first[0]) * u : first[0]);
     const z = hips[f * 3 + 2] - (loop ? first[1] + (last[1] - first[1]) * u : first[1]);
-    offsets.set([x / H, hips[f * 3 + 1] / H - 1, z / H], f * 3);
+    offsets.set([x / H, (hips[f * 3 + 1] - reference.pelvisHeight) / H, z / H], f * 3);
   }
   if (loop) for (const c of [0, 2]) {
     let mean = 0;
     for (let f = 0; f < frames; f++) mean += offsets[f * 3 + c] / frames;
     for (let f = 0; f < frames; f++) offsets[f * 3 + c] -= mean;
   }
+  // Foot grounding: legs of other proportions bent by the same angles lift or sink the feet (a deep
+  // crouch sank them 17 cm). Per frame, the pelvis moves up or down so our lowest foot joint is as far
+  // above its rest height as the source's, scaled by the leg heights (Unreal's IK Retargeter keeps the
+  // feet by IK goals; only the height is needed here, and moving the pelvis keeps every rotation).
+  const Ht = rig.legHeight, target = rig.bones, pelvis = rig.byName.get('pelvis'), rest = restPosition(rig, pelvis), v = new Vector3();
+  for (let f = 0; f < frames; f++) {
+    target.forEach((bone, i) => toLocal(rig, i, D.fromArray(rotations[i], f * 4), bone.quaternion));
+    target[pelvis].position.copy(pelvisToLocal(rig, [offsets[f * 3] * Ht, offsets[f * 3 + 1] * Ht, offsets[f * 3 + 2] * Ht], v).add(rest));
+    rig.roots[0].updateMatrixWorld(true);
+    const ours = lowestTarget(rig) - rig.restLow, theirs = (lows[f] - reference.low) * Ht / H;
+    offsets[f * 3 + 1] += (theirs - ours) / Ht;
+  }
+  target.forEach((bone, i) => bone.quaternion.copy(rig.restLocal[i]));
+  target[pelvis].position.copy(rest);
   const travel = [last[0] - first[0], last[1] - first[1]];
   return { duration: (frames - 1) / FPS, frames, names, rotations, offsets, travel, hipStart: hips[1], hipEnd: hips[(frames - 1) * 3 + 1] };
 }
@@ -248,6 +271,11 @@ async function main() {
     const human = await createHuman({ seed: 42, ageYears: 30, gender: gender === 'm' ? 1 : 0 });
     const rig = human.context.skeleton;
     bones ??= rig.bones.map(bone => bone.name);
+    // At rest: local rotations to restore, leg height (thigh heads) and the lowest foot joint.
+    human.body.skeleton.pose(); human.group.updateMatrixWorld(true);
+    rig.restLocal = rig.bones.map(bone => bone.quaternion.clone());
+    rig.legHeight = (rig.heads[rig.byName.get('thigh_l')].y + rig.heads[rig.byName.get('thigh_r')].y) / 2;
+    rig.restLow = lowestTarget(rig);
     const avatar = parseFBX(path.join(dir, path.basename(avatars[gender])));
     const reference = referencePose(avatar, rig);
     console.log(`${gender}: referência com ${reference.rotations.size} ossos, quadril ${reference.hipHeight.toFixed(1)} cm`);
@@ -285,7 +313,7 @@ async function main() {
     source: 'Microsoft Rocketbox Avatar Library, https://github.com/microsoft/Microsoft-Rocketbox',
     license: 'MIT', copyright: 'Copyright (c) 2020 Microsoft',
     citation: 'Gonzalez-Franco et al., "The Rocketbox library and the utility of freely available rigged avatars", Frontiers in Virtual Reality, 2020, doi:10.3389/frvir.2020.561558',
-    convention: 'D rotations (motion.mjs): world = D_root…D_bone · rest; pelvis offset in hip heights',
+    convention: 'D rotations (motion.mjs): world = D_root…D_bone · rest; pelvis offset from rest in world axes, in leg heights (hip joints over the floor)',
     fps: FPS, quaternionScale: 32767, pelvisScale: 8192, bones, clips,
   };
   fs.writeFileSync(new URL('rocketbox.bin', out), bytes);

@@ -144,19 +144,30 @@ export function normalizePose(value) {
   return out;
 }
 
-/** The keyed clip: { name, duration (s, ≤ 60), keys: [{ t, pose, face }] } sorted by time, at most 240 keys. */
+/**
+ * The keyed clip (timeline.mjs): { name, duration (s, ≤ 60), loop, interpolation, keys: [{ t, pose, face }] }
+ * sorted by time, at most 600 keys. A key's pose or face is null when that key holds only the other part.
+ */
 export function normalizeClip(value) {
   const keys = [];
-  for (const key of Array.isArray(value?.keys) ? value.keys.slice(0, 240) : []) {
+  for (const key of Array.isArray(value?.keys) ? value.keys.slice(0, 600) : []) {
     if (!Number.isFinite(key?.t)) continue;
-    const face = {};
-    for (const [shape, weight] of Object.entries(key.face ?? {})) if (/^[a-zA-Z]{3,32}$/.test(shape) && Number.isFinite(weight)) face[shape] = Math.round(Math.max(0, Math.min(1, weight)) * 1000) / 1000;
-    keys.push({ t: Math.round(Math.max(0, Math.min(60, key.t)) * 1000) / 1000, pose: normalizePose(key.pose), face });
+    let face = null;
+    if (key.face && typeof key.face === 'object') {
+      face = {};
+      for (const [shape, weight] of Object.entries(key.face)) if (/^[a-zA-Z]{3,32}$/.test(shape) && Number.isFinite(weight)) face[shape] = Math.round(Math.max(0, Math.min(1, weight)) * 1000) / 1000;
+    }
+    const pose = key.pose && typeof key.pose === 'object' ? normalizePose(key.pose) : null;
+    if (!pose && !face) continue;
+    keys.push({ t: Math.round(Math.max(0, Math.min(60, key.t)) * 1000) / 1000, pose, face });
   }
   keys.sort((a, b) => a.t - b.t);
   const last = keys.at(-1)?.t ?? 0;
   const duration = Number.isFinite(value?.duration) ? Math.max(last, Math.min(60, Math.max(0.1, value.duration))) : Math.max(2, last);
-  return { name: typeof value?.name === 'string' ? value.name.slice(0, 40) : 'Personalizada', duration: Math.round(duration * 1000) / 1000, keys };
+  return {
+    name: typeof value?.name === 'string' ? value.name.slice(0, 40) : 'Personalizada', duration: Math.round(duration * 1000) / 1000,
+    loop: value?.loop !== false, interpolation: ['smooth', 'linear', 'step'].includes(value?.interpolation) ? value.interpolation : 'linear', keys,
+  };
 }
 
 export function normalizeCharacter(value = {}) {
