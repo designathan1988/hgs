@@ -88,7 +88,7 @@ function garmentPieces(positions, index, waistY) {
  * mean of 1 over the mesh, in linear light. The colour lives in the texture,
  * so neither the material factor nor a vertex colour has to exceed 1.
  */
-function garmentTexture(image, proxy, lower, top, bottom) {
+export function garmentTexture(image, proxy, lower, top, bottom) {
   const canvas = document.createElement('canvas');
   canvas.width = image.width; canvas.height = image.height;
   const drawing = canvas.getContext('2d', { willReadFrequently: true });

@@ -9,6 +9,7 @@ import { createPatternTemplate } from './patterns.mjs';
 import { icon, hairPictogram } from './icons.mjs';
 import { h, group, row, iconButton, slider, segmented, chips, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
+import { onlyGarmentColour } from './look.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames,
@@ -59,6 +60,15 @@ const metaFields = new Set(['name', 'creation', 'version']);
 // Body shape: the character on screen follows at once (live.mjs); the full build refines it when the drag ends.
 const liveShapeFields = new Set(['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength',
   'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'ancestry', 'cupsize', 'firmness', 'morphs']);
+// Appearance: materials and textures only (look.mjs), never a rebuild. `colors` and `garments` are checked by `lookOnly`.
+const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'topColor', 'bottomColor', 'colors', 'garments']);
+const liveColorKeys = new Set(['skin', 'hair', 'brows', 'lashes', 'top', 'bottom']);
+/** True when only colours the live look can show changed (not the eyes, not a garment's cut). */
+function lookOnly(prev, next, keys) {
+  if (!keys.every(key => liveLookFields.has(key))) return false;
+  if (keys.includes('colors')) for (const key of new Set([...Object.keys(prev.colors), ...Object.keys(next.colors)])) if (prev.colors[key] !== next.colors[key] && !liveColorKeys.has(key)) return false;
+  return !keys.includes('garments') || onlyGarmentColour(prev.garments, next.garments);
+}
 // Viewing choices, not edits: they stay out of the undo history.
 const noHistory = new Set(['lighting', 'animation', 'animationSpeed']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
@@ -195,12 +205,17 @@ export class StudioUI {
       // Shape: shown on the next frame; a drag refines on release (commitLive), a click right away.
       this.renderer.liveShape(next);
       if (action.live) this.pendingRefine = true; else this.queueCharacter(action.rebuild ?? 150);
+    } else if (build.length && lookOnly(prev, next, build) && this.renderer?.current) {
+      // Colours: on screen at once; a click or a closed picker bakes them into the textures.
+      this.renderer.liveLook(next, { garments: build.includes('garments') });
+      if (action.live) this.pendingBake = true; else this.renderer.bakeLook(next);
     } else if (build.length && action.rebuild !== false) this.queueCharacter(action.rebuild ?? 80);
     this.updateMeta();
     this.scheduleAutosave();
   }
   /** End of a drag: the full build (drape, hair gravity, facial rig) refines what was shown live. */
   commitLive() {
+    if (this.pendingBake) { this.pendingBake = false; this.renderer?.bakeLook(this.person); }
     if (!this.pendingRefine) return;
     this.pendingRefine = false;
     this.queueCharacter(150);
@@ -604,7 +619,7 @@ export class StudioUI {
     parent.append(swatches({
       label, palette, selected: key ? this.person[key] : null, custom: this.person.colors[colorKey] ?? null,
       onPick: i => { const colors = { ...this.person.colors }; delete colors[colorKey]; this.patch({ colors, ...(key ? { [key]: i } : {}) }, { history: `color:${colorKey}` }); },
-      onCustom: hex => this.patch({ colors: { ...this.person.colors, [colorKey]: hex } }, { history: `color:${colorKey}` }),
+      onCustom: (hex, { live = false } = {}) => this.patch({ colors: { ...this.person.colors, [colorKey]: hex } }, { history: `color:${colorKey}`, live }),
     }));
   }
 

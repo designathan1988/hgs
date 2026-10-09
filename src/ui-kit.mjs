@@ -121,7 +121,10 @@ export function swatches({ label, palette, selected, custom, onPick, onCustom, e
     onclick: () => { for (const b of [...buttons, picker]) b.classList.toggle('on', b === buttons[i]); onPick(i); },
   }));
   const picker = h('input', { type: 'color', class: `swatch-picker${custom ? ' on' : ''}`, value: custom ?? palette[selected] ?? palette[0], title: 'Outra cor', 'aria-label': `${label}: outra cor` });
-  picker.addEventListener('change', () => { for (const b of buttons) b.classList.remove('on'); picker.classList.add('on'); onCustom(picker.value); });
+  // `input` while the picker is open previews the colour; `change` (picker closed) commits it.
+  const pick = live => { for (const b of buttons) b.classList.remove('on'); picker.classList.add('on'); onCustom(picker.value, { live }); };
+  picker.addEventListener('input', () => pick(true));
+  picker.addEventListener('change', () => pick(false));
   return h('div', { class: 'stack' }, h('div', { class: 'stack-label', text: label }), h('div', { class: 'swatches', role: 'group', 'aria-label': label }, ...extra, buttons, picker));
 }
 

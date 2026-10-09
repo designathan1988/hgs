@@ -7,6 +7,7 @@ import { LoopOnce, LoopRepeat } from 'three';
 import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
 import { buildClips, oneShotClips } from './motion.mjs';
 import { LiveShape } from './live.mjs';
+import { liveLook, bakeLook } from './look.mjs';
 import { SculptSession } from './sculpt.mjs';
 import { HairEditor } from './hair-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
@@ -310,6 +311,17 @@ export class Renderer {
     if (this.action) { this.action.time = time; this.mixer.update(0); }
     human.metrics.height = height;
     this.camera.rescale(before, height);
+  }
+  /** Colours on the character on screen at once (look.mjs); `garments` recolours solid made-to-measure pieces. */
+  liveLook(person, { garments = false } = {}) {
+    if (!this.current) return;
+    liveLook(this.current, studioSpec(person), { garments: garments ? person.garments : null });
+    this.hairColor = studioSpec(person).hairColor;
+  }
+  /** The final colours into the textures, as a build would make them. */
+  bakeLook(person) {
+    if (!this.current) return;
+    bakeLook(this.current, studioSpec(person)).catch(error => console.error(error));
   }
   /** Replay a one-shot clip such as Sit from its first frame. */
   replay() { this.action?.reset().play(); }
