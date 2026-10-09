@@ -910,6 +910,41 @@ function pathFrames(pts, up) {
   return { tan, side, out };
 }
 
+/**
+ * The buns of a hairstyle (hair-accessories.mjs bunLocks): the hair wound past
+ * an elastic into a coil, as hair is wound into a bun. A tube 2½ turns round
+ * the axis out of the head, narrowing and rising into a dome; its size keeps
+ * the wound hair's volume V: a torus of tube radius r round a circle of
+ * radius 1.6 r holds V = 2π²·1.6·r³. `tint(lock)` gives the lock colours
+ * (dyeTints), the bun takes the first gathered lock's.
+ */
+export function bunParts(state, { tint = null, vertex = null, detail = 1 } = {}) {
+  const parts = [];
+  for (const acc of state.accessories ?? []) {
+    if (acc.type !== 'bun' || !(acc.volume > 0)) continue;
+    const points = [];
+    let first = null;
+    for (const lock of state.locks) for (const p of lock.pins.values()) if (p.holder === acc.id) { points.push(p); first ??= lock; }
+    if (!points.length) continue;
+    const base = points.reduce((s, p) => s.add(p), new Vector3()).divideScalar(points.length), hit = {};
+    const n = state.collider?.head?.closest(base.x, base.y, base.z, 0.1, hit) ? new Vector3(hit.nx, hit.ny, hit.nz) : base.clone().sub(state.frame.C).normalize();
+    const r = Math.cbrt(acc.volume / (2 * Math.PI * Math.PI * 1.6)), R = 1.6 * r;
+    const u1 = new Vector3(Math.abs(n.x) < 0.9 ? 1 : 0, Math.abs(n.x) < 0.9 ? 0 : 1, 0); u1.addScaledVector(n, -u1.dot(n)).normalize();
+    const u2 = new Vector3().crossVectors(n, u1);
+    const K = Math.max(40, Math.round(140 * detail)), turns = 2.5, pts = new Float32Array((K + 1) * 3), up = new Float32Array((K + 1) * 3), radius = new Float32Array(K + 1), u = new Float32Array(K + 1);
+    for (let k = 0; k <= K; k++) {
+      const t = k / K, a = t * turns * TAU, rho = R * (1 - 0.62 * t), lift = r * (0.55 + 1.1 * t);
+      const p = base.clone().addScaledVector(n, lift).addScaledVector(u1, Math.cos(a) * rho).addScaledVector(u2, Math.sin(a) * rho);
+      pts.set(p.toArray(), k * 3); up.set(n.toArray(), k * 3);
+      radius[k] = r * (0.95 - 0.35 * t) * smooth(0, 0.06, t) * Math.sqrt(Math.max(0, 1 - Math.max(0, (t - 0.94) / 0.06) ** 2)) + 0.0004;
+      u[k] = t;
+    }
+    const { tan, side, out } = pathFrames(pts, up);
+    parts.push(tubeFromSweep({ M: K + 1, line: pts, tan, side, out, radius, u }, { sides: detail >= 0.5 ? 10 : 6, vertex, tint: tint && first ? tint(first) : null }));
+  }
+  return parts;
+}
+
 /** Merge parts (pos, normal, uv, color, index) into one. */
 export function mergeParts(parts) {
   const vertices = parts.reduce((n, p) => n + p.pos.length / 3, 0), indices = parts.reduce((n, p) => n + p.index.length, 0);
@@ -1281,6 +1316,11 @@ export function locksMesh(context, state, color, rig = buildHairRig(context, sta
     const offsets = kept.map((_, i) => { const n = at; at += sizes[i]; return n; });
     for (const i of order) for (let v = 0; v < sizes[i]; v++) { const o = (offsets[i] + v) * 4; sj.push(joints[o], joints[o + 1], joints[o + 2], joints[o + 3]); sw.push(weights[o], weights[o + 1], weights[o + 2], weights[o + 3]); }
     joints = sj; weights = sw;
+  }
+  // Buns are hair on the head (their weights those of the gathered points under them).
+  for (const part of bunParts(state, { tint: tints, detail })) {
+    for (let i = 0; i < part.pos.length; i += 3) { const [j, w] = rig.weightsAt(point.fromArray(part.pos, i)); joints.push(...j); weights.push(...w); }
+    parts.push(part);
   }
   for (const group of groups) {
     const part = fusedHairSurface(state, group.locks, lockSurface, { group: group.id });

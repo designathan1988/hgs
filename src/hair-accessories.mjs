@@ -10,8 +10,8 @@ import { LOCK_POINTS as N, collisionRadius } from './locks.mjs';
  * The accessory's shape is built from the points it holds, so it follows the
  * hair on any body; a band is placed by its direction from the head centre.
  */
-export const accessoryTypes = ['tie', 'clip', 'barrette', 'band'];
-export const accessoryColors = { tie: 0x262626, clip: 0x3b3330, barrette: 0x8a5a3c, band: 0x1f1f1f, tiara: 0xc9a227 };
+export const accessoryTypes = ['tie', 'clip', 'barrette', 'band', 'bun'];
+export const accessoryColors = { tie: 0x262626, clip: 0x3b3330, barrette: 0x8a5a3c, band: 0x1f1f1f, tiara: 0xc9a227, bun: 0x262626 };
 
 const unit = state => state.frame.R / 0.11;
 const at = (lock, i, out = new Vector3()) => out.fromArray(lock.x, i * 3);
@@ -128,6 +128,50 @@ export function tieGather(state, picks, center = null, { color = accessoryColors
   });
   state.accessories.push({ id, type: 'tie', color });
   return { id, locks: picks.map(p => p.lock) };
+}
+
+/**
+ * Bun (coque, coque samurai): the locks are gathered at `center` as by an
+ * elastic, and what passes the band is wound into a coil there. The hair keeps
+ * its volume: each lock stands for a round clump a fifth of its card width
+ * across, and the wound tails' volume (kept within a real bun's, 0.05–0.6 l)
+ * sizes the coil (hair-cards.mjs bunPart). The tails end just past the band,
+ * inside the bun.
+ */
+export function bunLocks(state, locks, center, { color = accessoryColors.bun } = {}) {
+  const made = tieLocks(state, locks, center, { color });
+  if (!made) return null;
+  const acc = state.accessories.find(a => a.id === made.id);
+  acc.type = 'bun';
+  let volume = 0;
+  const ends = made.locks.map(lock => {
+    const pin = [...lock.pins].filter(([, p]) => p.holder === made.id).map(([i]) => i)[0];
+    const tail = (N - 1 - pin) * lock.seg, r = 0.1 * lock.width;
+    volume += Math.PI * r * r * tail;
+    // The tail goes into the bun: two segments past the band are left (the hair turning into the coil).
+    return Math.min(N - 1, pin + 2);
+  });
+  const k = unit(state) ** 3;
+  acc.volume = Math.max(0.00005 * k, Math.min(0.0006 * k, volume));
+  made.locks.forEach((lock, n) => { if (ends[n] < N - 1) trimLock(lock, ends[n]); });
+  return made;
+}
+
+/** Shorten a lock to end at chain point `index` (pins past it dropped), the points re-spaced to keep N. */
+function trimLock(lock, index) {
+  const length = index * lock.seg, pins = [...lock.pins].map(([i, p]) => [i * lock.seg, p]);
+  const resample = source => {
+    const out = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      const f = i / (N - 1) * index, a = Math.floor(f), b = Math.min(N - 1, a + 1), t = f - a;
+      for (let c = 0; c < 3; c++) out[i * 3 + c] = source[a * 3 + c] * (1 - t) + source[b * 3 + c] * t;
+    }
+    return out;
+  };
+  lock.x.set(resample(lock.x)); lock.rest.set(resample(lock.rest));
+  lock.seg = length / (N - 1);
+  lock.pins.clear();
+  for (const [s, p] of pins) { const i = Math.round(s / lock.seg); if (i >= 2 && i < N) lock.pins.set(i, p); }
 }
 
 /** Bobby pin: the locks passing within 1.5 cm of `point` (counted from their surface: half their width off the centre line) are pressed onto the head there. */
@@ -319,7 +363,8 @@ export function accessoryParts(state) {
     if (acc.type === 'band') { parts.push(...bandParts(state, acc)); continue; }
     const held = accessoryPins(state, acc.id);
     if (!held.length) continue;
-    if (acc.type === 'tie') parts.push(...tieParts(state, acc, held));
+    // A bun is hair (built with the hair, locks.mjs); only its elastic is an accessory.
+    if (acc.type === 'tie' || acc.type === 'bun') parts.push(...tieParts(state, acc, held));
     else if (acc.type === 'clip') parts.push(...clipParts(state, acc, held));
     else if (acc.type === 'barrette') parts.push(...barretteParts(state, acc, held));
   }

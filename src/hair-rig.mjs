@@ -20,7 +20,7 @@ import { anglesOf, hairSkinWeights } from './scalp.mjs';
  *   and neck, chest, clavicles and upper arms (capsules), with radii measured
  *   on the skin so a collider never stands outside the body.
  */
-const TAU = Math.PI * 2, SECTORS = 12, SEGMENTS = 4, MIN_FREE = 0.06;
+const TAU = Math.PI * 2, SECTORS = 12, SEGMENTS = 4, MIN_FREE = 0.06, MAX_CHAINS = 12;
 const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const pad = n => String(n).padStart(2, '0');
 
@@ -68,6 +68,8 @@ export function buildHairRig(context, state, { joints: withJoints = true } = {})
     }
     // Points held by a tie, clip or pin stay with the head; the spring starts past the last one.
     for (const i of lock.pins.keys()) held = Math.max(held, i);
+    // Set with gel, a lock keeps its styled shape: all of it moves with the head.
+    if ((lock.gel ?? 0) >= 0.5) held = n - 1;
     const length = (n - 1) * lock.seg, entry = { held: held * lock.seg, length, free: length - held * lock.seg, chain: -1, leave: held };
     info.set(lock, entry);
     if (withJoints && entry.free >= MIN_FREE * k) free.push(lock);
@@ -85,8 +87,35 @@ export function buildHairRig(context, state, { joints: withJoints = true } = {})
       if (target !== undefined) { sectors[target].push(...sectors[s]); sectors[s] = []; break; }
     }
   }
-  const chains = [];
+  // Within a sector, locks of very different free lengths swing on chains of their own (a fringe
+  // and the long hair behind it): sorted by free length, a new group starts past 1.7× the shortest.
+  let groups = [];
   for (const members of sectors) {
+    if (!members.length) continue;
+    const sorted = [...members].sort((a, b) => info.get(a).free - info.get(b).free);
+    let current = [];
+    for (const lock of sorted) {
+      if (current.length && info.get(lock).free > 1.7 * info.get(current[0]).free) { groups.push(current); current = []; }
+      current.push(lock);
+    }
+    groups.push(current);
+  }
+  // At most MAX_CHAINS chains (the bone budget, docs/PROJETO.md): the smallest groups join the
+  // group of the same sector, else the next one, until they fit.
+  while (groups.length > MAX_CHAINS) {
+    groups.sort((a, b) => a.length - b.length);
+    const small = groups.shift(), at = info.get(small[0]).leave * 3;
+    const theta = anglesOf(frame, small[0].x[at], small[0].x[at + 1], small[0].x[at + 2]).theta;
+    let best = 0, distance = Infinity;
+    groups.forEach((group, g) => {
+      const o = info.get(group[0]).leave * 3, t = anglesOf(frame, group[0].x[o], group[0].x[o + 1], group[0].x[o + 2]).theta;
+      const d = Math.abs(Math.atan2(Math.sin(t - theta), Math.cos(t - theta)));
+      if (d < distance) { distance = d; best = g; }
+    });
+    groups[best].push(...small);
+  }
+  const chains = [];
+  for (const members of groups) {
     if (!members.length) continue;
     const joints = Array.from({ length: SEGMENTS + 1 }, (_, j) => {
       const sum = new Vector3(), p = new Vector3();
@@ -96,7 +125,8 @@ export function buildHairRig(context, state, { joints: withJoints = true } = {})
     if (joints.some((p, j) => j && p.distanceTo(joints[j - 1]) < 1e-4)) continue;
     const id = chains.length;
     for (const lock of members) info.get(lock).chain = id;
-    const firmness = members.reduce((sum, lock) => sum + (lock.stiffness ?? 0.35), 0) / members.length;
+    // Light gel (below ½, which holds the lock whole) firms the spring.
+    const firmness = members.reduce((sum, lock) => sum + Math.min(1, (lock.stiffness ?? 0.35) + 1.2 * (lock.gel ?? 0)), 0) / members.length;
     const radius = members.reduce((sum, lock) => sum + 0.5 * lock.width * lock.volume, 0) / members.length;
     chains.push({ id, members, joints, names: joints.map((_, j) => `hair_${pad(id)}_${j}`), firmness, radius });
   }
@@ -197,7 +227,8 @@ function springDefinition(context, state, chains) {
   const headDistances = [], p = new Vector3();
   for (let v = 0; v < dominant.length; v++) if (frame.used[v] && frame.headWeight[v] > 0.6) headDistances.push(p.fromArray(positions, v * 3).distanceTo(frame.C));
   colliders.push({ bone: 'head', shape: { sphere: { offset: local('head', frame.C), radius: Math.round(insideRadius(headDistances, frame.R * 0.8) * 1e4) / 1e4 } } });
-  for (const name of ['neck_01', 'spine_03', 'clavicle_l', 'clavicle_r', 'upperarm_l', 'upperarm_r']) {
+  // Long hair falls down the back and over the chest: spine_02 and spine_01 too.
+  for (const name of ['neck_01', 'spine_03', 'spine_02', 'spine_01', 'clavicle_l', 'clavicle_r', 'upperarm_l', 'upperarm_r']) {
     const index = names.indexOf(name), a = at(name), b = tail(name), distances = [];
     for (let v = 0; v < dominant.length; v++) if (dominant[v] === index) distances.push(segmentDistance(p.fromArray(positions, v * 3), a, b));
     colliders.push({ bone: name, shape: { capsule: { offset: local(name, a), tail: local(name, b), radius: Math.round(insideRadius(distances, 0.04) * 1e4) / 1e4 } } });
