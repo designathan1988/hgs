@@ -22,9 +22,21 @@ Etapas em andamento: [PLANO.md](PLANO.md).
 - Navegação: roda faz zoom no cursor, botão do meio move, botão direito gira no ponto sob o cursor.
 - Editor de cabelo atual (`hair-editor.mjs`, desde `188601c`): Pincel, Preencher, Retocar, Volume, Cortar, Apagar, Selecionar; peças prontas; cartões com textura de fios.
 
+## Interface (conferido no app em 09/10, 1280×800 e 1920×1080)
+
+- Grade de 8 px (4/8/16/24), alvos de 32 px; todo controle numa linha: rótulo de 96 px, controle, valor de 48 px (medido em todas as abas: nenhum rótulo fora de 96 px nem cortado; a lista de ajustes detalhados e a expressão fina usam 136 px com quebra de linha).
+- Paleta única: 8 colunas fixas de amostras de 20 px, seletor livre na 8ª célula da última linha.
+- Abas: Corpo (Forma | Detalhes | Tatuagens), Rosto (Forma | Olhos | Visual | Expressão), Cabelo (Estilo | Cor | Mechas | Avançado), Roupas (Vestir | Peça | Tecido), Esculpir (Corpo e rosto | Roupa), Animação (Movimento | Pose | Linha do tempo). As opções da ferramenta ficam no topo da aba onde ela trabalha; escolher a ferramenta abre essa aba.
+- Cabelo: um penteado por vez (escolher mechas tira o cabelo pronto, escolher cabelo pronto apaga as mechas); "Careca" só acende sem cabelo pronto; grade-guia do Pincel desligada ao entrar (Avançado › Grade-guia).
+- Animação: categorias com ícone (Parado, Andar e correr, Festa, Gestos, Sentar) e cartões de ícone, um grupo por vez.
+- Rodapé: etapas em português ("Formando o corpo…", "Esqueleto e rosto…", "Montando a cena…"), dicas curtas.
+- Tipo de corpo: nenhum aceso quando o corpo não é um dos tipos.
+- Posar: arrastar a esfera azul por cima dos anéis move só o quadril ($pelvis), não gira o osso escolhido. Linha do tempo: arrastar a chave de 1,0 s para 1,5 s funciona, e clicar na chave leva o tempo até ela. A animação própria salva está sem chaves.
+
 ## Com defeito (a corrigir, ver PLANO.md)
 
-- Animação: Rocketbox não tem pulo nem samba (o Sambar é procedural); sentar fica sem cadeira; clipes capturados não acompanham o rosto além de piscar e sorrir; arrastar a esfera sobre os anéis do gizmo foi corrigido, mas falta conferir no navegador com o painel visível.
+- Animação: Rocketbox não tem pulo nem samba (o Sambar é procedural); sentar fica sem cadeira; clipes capturados não acompanham o rosto além de piscar e sorrir.
+- Interface: Rosto mantém "Ajustes por região" como grupo recolhível na aba Forma (o Corpo tem a aba Detalhes); os ícones de movimento repetem a mesma figura em variações do mesmo clipe (Andar, Passear, Andar confiante; as cinco danças).
 - Boca: dentes e gengiva aparecem entre os lábios fechados.
 - Esculpir: corpo facetado durante o traço; a escultura salva é bem menor que a vista.
 - Moldar: puxar o nariz pega "olhos".
