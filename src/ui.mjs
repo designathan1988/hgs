@@ -627,7 +627,7 @@ export class StudioUI {
   renderShortcutsMenu() {
     const keys = list => h('dl', { class: 'shortcut-list' }, list.flatMap(([combo, text]) => [h('dt', {}, combo.split(' ').map(k => h('kbd', { text: k }))), h('dd', { text })]));
     const general = [['Ctrl Z', 'Desfazer'], ['Ctrl Y', 'Refazer'], ['1–7', 'Trocar de seção'], ['?', 'Esta lista'], ['Esc', 'Fechar menus']];
-    const mouse = [['Direito', 'Girar em volta do ponto sob o cursor'], ['Meio', 'Mover a vista'], ['Roda', 'Zoom no cursor']];
+    const mouse = [['Direito', 'Girar em volta do personagem'], ['Meio', 'Mover a vista (sem perder o personagem)'], ['Roda', 'Zoom no cursor']];
     const tools = (this.toolGroups() ?? []).flatMap(([, list]) => list).filter(([, , , o]) => o?.shortcut).map(([, name, , o]) => [o.shortcut, name]);
     const section = sections.find(s => s.id === this.section);
     const extra = this.section === 'cabelo' ? [['[ ]', 'Diminuir / aumentar o círculo'], ['+ −', 'Alongar / encurtar as mechas escolhidas'], ['Delete', 'Apagar as mechas selecionadas'], ['Shift', 'Somar à seleção'], ['Ctrl', 'Tirar da seleção']]

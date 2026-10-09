@@ -123,6 +123,20 @@ export class Camera {
     this.yaw = 0.12; this.pitch = 0.04; this.distance = 3.35;
     this.currentView = 'body';
     this.target = new Vector3(0, 0.98, 0);
+    this.height = 1.75;
+  }
+  /**
+   * Keep the character in the scene and in focus (three.js OrbitControls: the camera orbits its `target`,
+   * which may move only within a radius of the centre of interest, between a minimum and a maximum
+   * distance): the target stays near the character's axis (12 % of its height across, 10–95 % of it
+   * up) and the distance between 25 cm and four heights. At the corner of its box the target put half
+   * of the character off the screen.
+   */
+  limit() {
+    const h = this.height || 1.75, across = Math.hypot(this.target.x, this.target.z), radius = 0.12 * h;
+    if (across > radius) { this.target.x *= radius / across; this.target.z *= radius / across; }
+    this.target.y = clamp(this.target.y, 0.1 * h, 0.95 * h);
+    if (this.currentView !== 'crowd') this.distance = clamp(this.distance, 0.25, Math.max(3, 4 * h));
   }
   eye() {
     return new Vector3(
@@ -132,19 +146,12 @@ export class Camera {
     );
   }
   /**
-   * Orbit; with a pivot (the surface point under the cursor, as Blender's
-   * Auto Depth), the camera turns around that point, which stays where it is
-   * on screen.
+   * Orbit round the target (OrbitControls), which stays on the character: turning round a point picked
+   * under the cursor carried the target off the body and the character out of the view.
    */
-  orbit(dx, dy, pivot = null) {
-    const before = pivot && this.basis(), eye = pivot && this.eye();
+  orbit(dx, dy) {
     this.yaw += dx * 0.008; this.pitch = clamp(this.pitch + dy * 0.006, -1.2, 1.2);
-    if (!pivot) return;
-    // The pivot in the old camera frame, put back at the same place in the new one.
-    const rel = pivot.clone().sub(eye), local = before.map(axis => rel.dot(axis));
-    const after = this.basis(), newEye = pivot.clone();
-    after.forEach((axis, k) => newEye.addScaledVector(axis, -local[k]));
-    this.target.copy(newEye).addScaledVector(after[2], this.distance);
+    this.limit();
   }
   /** Camera right, up and forward (towards the target). */
   basis() {
@@ -152,25 +159,28 @@ export class Camera {
     const right = new Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
     return [right, new Vector3().crossVectors(right, forward), forward];
   }
-  zoom(delta) { this.distance = clamp(this.distance * Math.exp(delta * 0.001), 0.35, 90); }
+  zoom(delta) { this.distance = clamp(this.distance * Math.exp(delta * 0.001), 0.25, 90); this.limit(); }
   /**
    * Zoom towards a point (the surface under the cursor, Blender's "Zoom to
-   * Mouse Position"): the view scales about it, so it stays under the cursor.
+   * Mouse Position"): the view scales about it, so it stays under the cursor
+   * (the target kept on the character).
    */
   zoomAt(delta, point) {
     const before = this.distance;
     this.zoom(delta);
     const s = this.distance / before;
     this.target.sub(point).multiplyScalar(s).add(point);
+    this.limit();
   }
   pan(dx, dy) {
     const factor = this.distance * 0.0013;
     this.target.x -= Math.cos(this.yaw) * dx * factor;
     this.target.z += Math.sin(this.yaw) * dx * factor;
     this.target.y += dy * factor;
+    this.limit();
   }
   view(name, height = 1.75) {
-    this.currentView = name;
+    this.currentView = name; this.height = height;
     if (name === 'front') { this.yaw = 0; this.pitch = 0; this.distance = Math.max(1.35, height * 1.85); this.target.set(0, height * 0.52, 0); }
     if (name === 'side') { this.yaw = Math.PI / 2; this.pitch = 0; this.distance = Math.max(1.35, height * 1.85); this.target.set(0, height * 0.52, 0); }
     if (name === 'rear') { this.yaw = Math.PI; this.pitch = 0; this.distance = Math.max(1.35, height * 1.85); this.target.set(0, height * 0.52, 0); }
@@ -180,10 +190,12 @@ export class Camera {
   }
   /** Follow a change in body height while keeping the user's orbit and zoom. */
   rescale(from, to) {
+    if (to > 0) this.height = to;
     if (!(from > 0) || Math.abs(to - from) < 0.005) return;
     const ratio = to / from;
     this.target.y *= ratio;
-    if (this.currentView !== 'face') this.distance = clamp(this.distance * ratio, 0.35, 90);
+    if (this.currentView !== 'face') this.distance = clamp(this.distance * ratio, 0.25, 90);
+    this.limit();
   }
 }
 
