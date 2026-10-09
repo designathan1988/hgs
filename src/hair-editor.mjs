@@ -2,7 +2,7 @@ import {
   BufferGeometry, DoubleSide, Float32BufferAttribute, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, Raycaster, SphereGeometry, Vector3,
 } from 'three';
 import {
-  LOCK_POINTS as N, arcLengthAt, bendLock, capGeometry, combLock, geometryFrom, lockCard, lockLength, lockLimits, locksCap, makeLock, normalizeLocks, prepareLocks,
+  LOCK_POINTS as N, arcLengthAt, bendLock, capGeometry, combLock, dyeTints, geometryFrom, lockCard, lockLength, lockLimits, locksCap, makeLock, normalizeLocks, prepareLocks,
   resamplePolyline, rootFrame, rootFromHit, serializeLocks, setLockLength, setLockShape, updateGeometry,
 } from './locks.mjs';
 import { hairCapMaterial, hairCardMaterial } from './hair-cards.mjs';
@@ -116,11 +116,21 @@ export class HairEditor {
   }
   serialize() { return this.state ? serializeLocks(this.state) : null; }
   setColor(color) {
-    this.color = color;
+    this.color = color; this.tone = null;
     for (const [key, material] of Object.entries(this.materials ?? {})) {
       // The cap shares the cards' colour and highlight tint.
       const fresh = hairCardMaterial(color, { highlight: key === 'selected' });
       material.color.copy(fresh.color); material.specularColor.copy(fresh.specularColor); fresh.dispose();
+    }
+    this.dirty = true;
+  }
+  /** The cards' material colour: the hair's, or white when a colour effect puts it in the vertex colours (the cap keeps the hair's). */
+  setTone(tone) {
+    if (!this.materials || tone === this.tone) return;
+    this.tone = tone;
+    for (const key of ['normal', 'selected']) {
+      const fresh = hairCardMaterial(tone, { highlight: key === 'selected' });
+      this.materials[key].color.copy(fresh.color); this.materials[key].specularColor.copy(fresh.specularColor); fresh.dispose();
     }
   }
   /** Kept for the renderer's frame loop and the UI: there is no simulation to run or cancel. */
@@ -154,6 +164,10 @@ export class HairEditor {
   /** Rebuild the cards of locks that changed (or all). */
   syncMeshes(all = false) {
     const locks = this.locks;
+    // A colour effect (ombré, highlights, roots, tips) draws as the game mesh does: the colour in the
+    // vertex colours (glTF COLOR_0, a linear multiplier) over white cards.
+    const tints = dyeTints(this.state, this.color), dye = tints ? `${JSON.stringify(this.state.dye)}:${this.color}` : '';
+    this.setTone(tints ? 0xffffff : this.color);
     while (this.meshes.length > locks.length) { const mesh = this.meshes.pop(); mesh.geometry.dispose(); mesh.removeFromParent(); }
     while (this.meshes.length < locks.length) { const mesh = new Mesh(new BufferGeometry(), this.materials.normal); mesh.frustumCulled = false; this.group.add(mesh); this.meshes.push(mesh); }
     locks.forEach((lock, n) => {
@@ -161,11 +175,11 @@ export class HairEditor {
       mesh.userData.index = n;
       mesh.visible = !lock.erased && !lock.hidden;
       mesh.material = this.selected.has(n) ? this.materials.selected : this.materials.normal;
-      const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1}`;
+      const key = `${lock.width},${lock.volume},${lock.taper},${lock.curl},${lock.turns},${lock.twist},${lock.density ?? 1},${lock.type},${lock.gel},${lock.frizz},${lock.kind},${dye}`;
       if (!all && mesh.userData.lock === lock && lock.built && key === lock.builtKey && !moved(lock.built, lock.x)) return;
       mesh.userData.lock = lock;
       lock.built = Float32Array.from(lock.x); lock.builtKey = key;
-      const part = lockCard(lock, this.state, { detail: 0.6 });
+      const part = lockCard(lock, this.state, { detail: 0.6, tint: tints ? tints(lock) : null });
       if (!updateGeometry(mesh.geometry, part)) { mesh.geometry.dispose(); mesh.geometry = geometryFrom([part]); }
     });
     this.syncAccessories();
