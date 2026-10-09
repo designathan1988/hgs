@@ -483,7 +483,8 @@ export class StudioUI {
       h('div', { class: 'menu-title', text: 'Exportar GLB para jogos' }),
       h('div', { class: 'menu-body' },
         choose('Esqueleto', 'skeleton', [['unreal', 'Unreal'], ['mixamo', 'Mixamo']]),
-        choose('Detalhe', 'lod', [['high', 'Alto'], ['medium', 'Médio'], ['low', 'Baixo']]),
+        choose('Detalhe', 'lod', [['high', 'Alto'], ['medium', 'Médio'], ['low', 'Baixo'], ['all', 'Pacote LOD']]),
+        options.lod === 'all' ? h('p', { class: 'muted', text: 'Um .zip com LOD0, LOD1 e LOD2 (mesmo esqueleto, malhas _LODn): LOD1 com metade dos triângulos e as expressões, LOD2 com um décimo.' }) : null,
         choose('Pelos do rosto', 'groom', [['cards', 'Cartões'], ['strands', 'Fios']]),
         flag('Animações', 'animations', '16 clipes'),
         flag('Expressões faciais', 'blendshapes', '32 blendshapes com nomes ARKit'),
@@ -1109,9 +1110,19 @@ export class StudioUI {
     this.exportController?.abort(); this.exportController = controller;
     try {
       this.store.begin('export', { label: 'Exportando GLB…' });
-      const bytes = await this.renderer.exportGLB({ ...this.state.ui.export, person: this.snapshotPerson(), signal: controller.signal, onProgress: stage => this.store.progress('export', `Exportando · ${stage}`) });
+      const options = { ...this.state.ui.export, person: this.snapshotPerson(), signal: controller.signal, onProgress: stage => this.store.progress('export', `Exportando · ${stage}`) };
+      const file = `${slug(this.person.name)}-${this.person.seed}`;
+      if (options.lod === 'all') {
+        // One GLB per level in a .zip (renderer.exportLODPack).
+        const { zip, levels } = await this.renderer.exportLODPack({ ...options, name: file });
+        controller.signal.throwIfAborted();
+        download(new Blob([zip], { type: 'application/zip' }), `${file}-LOD.zip`);
+        this.toast(`Pacote LOD exportado · ${levels.map(l => `LOD${l.lod}: ${Math.round(l.triangles).toLocaleString('pt-BR')} triângulos${l.error ? ` (desvio ${(l.error * 100).toFixed(1)} cm)` : ''}`).join(' · ')}`);
+        return;
+      }
+      const bytes = await this.renderer.exportGLB(options);
       controller.signal.throwIfAborted();
-      download(new Blob([bytes], { type: 'model/gltf-binary' }), `${slug(this.person.name)}-${this.person.seed}.glb`);
+      download(new Blob([bytes], { type: 'model/gltf-binary' }), `${file}.glb`);
       this.toast('GLB exportado');
     } catch (error) { if (error.name !== 'AbortError') this.toast(`Falha ao exportar: ${error.message}`, 'error'); }
     finally { if (this.exportController === controller) { this.exportController = null; this.store.end('export'); } }

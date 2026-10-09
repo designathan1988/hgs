@@ -396,6 +396,29 @@ export class Renderer {
     const human = await this.buildCharacter({ ...studioSpec(person), lod, groom }, { signal, onProgress });
     try { return await exportHumanGLB(human, options); } finally { human.dispose(); }
   }
+  /**
+   * LOD0, LOD1 and LOD2 as one GLB each in a .zip: no glTF LOD extension is read
+   * by every engine (glTFast ignores MSFT_lod), while separate files with the
+   * same skeleton and `_LODn` mesh names import everywhere (Unity LOD Group by
+   * name, Unreal LOD slots, Godot visibility ranges). Returns { zip, levels }.
+   */
+  async exportLODPack({ person = this.person, name = 'personagem', groom = 'cards', signal, onProgress, ...options } = {}) {
+    if (!person) throw new Error('No human is ready to export');
+    const { zipSync } = await import('three/addons/libs/fflate.module.js');
+    const files = {}, levels = [];
+    for (const [n, lod] of ['high', 'medium', 'low'].entries()) {
+      onProgress?.(`LOD${n}`);
+      const human = await this.buildCharacter({ ...studioSpec(person), lod, groom }, { signal, onProgress: stage => onProgress?.(`LOD${n} · ${stage}`) });
+      try {
+        let triangles = 0;
+        human.group.traverse(object => { if (object.isMesh && object.visible && object.geometry.index) triangles += object.geometry.index.count / 3; });
+        files[`${name}_LOD${n}.glb`] = new Uint8Array(await exportHumanGLB(human, { ...options, suffix: `_LOD${n}` }));
+        levels.push({ lod: n, triangles, error: human.metrics.simplificationError ?? 0 });
+      } finally { human.dispose(); }
+      signal?.throwIfAborted();
+    }
+    return { zip: zipSync(files), levels };
+  }
   /** The point of the character (body, clothes, hair) under the cursor, or null. */
   pivotAt(ndc) {
     const objects = [this.current?.group, this.lockEditor.group].filter(group => group?.parent);

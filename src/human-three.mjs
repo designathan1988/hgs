@@ -6,7 +6,7 @@ import { loadHumanData, shapeHuman } from './parametric.mjs';
 import { dressHuman, tintedSkinTexture } from './appearance.mjs';
 import { reduceGeometry } from './lod.mjs';
 import { buildClips } from './motion.mjs';
-import { addFaceRig } from './face-mesh.mjs';
+import { addFaceRig, applyFaceWeights } from './face-mesh.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { sanitizeSkin } from './skin.mjs';
 export { auditCharacter } from './skin.mjs';
@@ -299,20 +299,25 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   await checkpoint('Aparência');
   await dressHuman(context, spec);
   await checkpoint('Rig');
-  // The facial rig is for the close, editable character; crowd LODs skip it.
-  const faceMeshes = context.lod === 'high' ? await addFaceRig(context, spec.faceWeights ?? {}) : [];
+  // The facial rig goes into LOD0 and LOD1: simplification only rewrites the index list, so the
+  // blendshapes survive it (lod.mjs). The far level (crowds, LOD2) has none.
+  const faceMeshes = context.lod !== 'low' ? await addFaceRig(context, spec.faceWeights ?? {}) : [];
   if (spec.lod === 'medium' || spec.lod === 'low') {
     await checkpoint('Detalhes');
     const meshes = [];
     group.traverse(object => { if (object.isMesh) meshes.push(object); });
+    let error = 0;
     for (const mesh of meshes) {
       signal?.throwIfAborted();
-      const previous = mesh.geometry;
-      mesh.geometry = await reduceGeometry(previous, spec.lod);
-      if (mesh.geometry !== previous) previous.dispose();
-      // Simplification drops material groups; a reduced multi-material mesh keeps its first material.
+      const previous = mesh.geometry, reduced = await reduceGeometry(previous, spec.lod);
+      mesh.geometry = reduced.geometry; error = Math.max(error, reduced.error);
+      if (mesh.geometry !== previous) { previous.dispose(); if (mesh.morphTargetDictionary) mesh.updateMorphTargets(); }
+      // A multi-material mesh keeps its groups (one simplified subset per group); without groups, one material.
       if (Array.isArray(mesh.material) && !mesh.geometry.groups.length) { mesh.material.slice(1).forEach(m => m.dispose()); mesh.material = mesh.material[0]; }
     }
+    // updateMorphTargets cleared the influences: the expression goes back on.
+    applyFaceWeights(faceMeshes, spec.faceWeights ?? {});
+    context.simplificationError = error;
   }
   // Every skinned mesh leaves with glTF-valid weights (one set of four, summing to 1, unused slots 0).
   group.traverse(object => { if (object.isSkinnedMesh) sanitizeSkin(object.geometry, object.name); });
@@ -324,7 +329,8 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   return {
     // What the hair editor needs to rebuild locks on this exact body.
     context: { data, positions, skeleton, outfitSurface: context.outfitSurface ?? null, height: context.height, lod: context.lod },
-    group, body, animations, faceMeshes, metrics: { height, vertices: body.geometry.getAttribute('position').count, triangles: body.geometry.index.count / 3 },
+    group, body, animations, faceMeshes,
+    metrics: { height, vertices: body.geometry.getAttribute('position').count, triangles: body.geometry.index.count / 3, simplificationError: context.simplificationError ?? 0 },
     dispose() {
       disposeHumanGroup(group);
     },
@@ -438,7 +444,7 @@ function mergeSkinned(parts, name, skeleton, bindMatrix) {
  * brows and lashes with the 32 blendshapes). Opaque textures go as JPEG.
  * Returns a function that undoes it.
  */
-function optimizeForExport(human, clips) {
+function optimizeForExport(human, clips, suffix = '') {
   const undo = [], meshes = [], parts = [];
   human.group.traverse(object => { if (object.isSkinnedMesh && object.visible) meshes.push(object); });
   for (const mesh of meshes) {
@@ -473,9 +479,10 @@ function optimizeForExport(human, clips) {
   }
   const skeleton = human.body.skeleton, bindMatrix = human.body.bindMatrix, merged = [];
   const bodies = parts.filter(part => !part.morph), faces = parts.filter(part => part.morph);
-  if (bodies.length) merged.push(mergeSkinned(bodies, 'Body', skeleton, bindMatrix));
+  // `suffix` names the level for engines that build LOD groups from names (Unity: `_LODX`).
+  if (bodies.length) merged.push(mergeSkinned(bodies, `Body${suffix}`, skeleton, bindMatrix));
   if (faces.length) {
-    const head = mergeSkinned(faces, 'Head', skeleton, bindMatrix), source = faces[0].source;
+    const head = mergeSkinned(faces, `Head${suffix}`, skeleton, bindMatrix), source = faces[0].source;
     for (const [shape, i] of Object.entries(head.morphTargetDictionary)) head.morphTargetInfluences[i] = source.morphTargetInfluences[source.morphTargetDictionary[shape]] ?? 0;
     merged.push(head);
   }
@@ -489,7 +496,7 @@ function optimizeForExport(human, clips) {
     clip.tracks = clip.tracks.filter(track => {
       const [node, ...rest] = track.name.split('.');
       if (!faceNodes.has(node) || !rest[0]?.startsWith('morphTargetInfluences')) return true;
-      const renamed = ['Head', ...rest].join('.');
+      const renamed = [`Head${suffix}`, ...rest].join('.');
       if (seen.has(renamed)) return false;
       seen.add(renamed); track.name = renamed; return true;
     });
@@ -531,7 +538,7 @@ function springBonePlugin(definition, boneByName) {
  * `animations` (include clips), `blendshapes` (include facial morph targets),
  * `cosmetic` (keep the transparent corneal layers, which games rarely want).
  */
-export async function exportHumanGLB(human, { skeleton = 'unreal', animations = true, blendshapes = true, cosmetic = true, optimize = true } = {}) {
+export async function exportHumanGLB(human, { skeleton = 'unreal', animations = true, blendshapes = true, cosmetic = true, optimize = true, suffix = '' } = {}) {
   const bones = human.body.skeleton.bones;
   const original = bones.map(bone => bone.name);
   const boneByName = new Map(bones.map((bone, i) => [original[i], bone]));
@@ -568,7 +575,7 @@ export async function exportHumanGLB(human, { skeleton = 'unreal', animations = 
       }
       return copy;
     });
-    if (optimize) restore = optimizeForExport(human, clips);
+    if (optimize) restore = optimizeForExport(human, clips, suffix);
     // The character's parts are the scene's root nodes: a skinned mesh under a
     // parent node gets NODE_SKINNED_MESH_NON_ROOT (its transform is ignored).
     const scene = new Scene();

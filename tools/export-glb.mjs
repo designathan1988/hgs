@@ -47,4 +47,24 @@ console.log(`Validador: ${issues.numErrors ?? '?'} erros, ${issues.numWarnings ?
 for (const message of issues.messages ?? []) console.log(`  [${['erro', 'aviso', 'info', 'dica'][message.severity] ?? message.severity}] ${message.code} ${message.pointer ?? ''} ${message.message}`);
 for (const problem of problems) console.log(`Problema: ${problem}`);
 console.log('Arquivos: exports/personagem.glb e exports/personagem.report.json');
-process.exitCode = (issues.numErrors ?? 1) > 0 || problems.length ? 1 : 0;
+let failed = (issues.numErrors ?? 1) > 0 || problems.length > 0;
+
+// --lods: the LOD pack the app exports (one GLB per level, same skeleton, `_LODn` mesh names), each validated.
+if (process.argv.includes('--lods')) {
+  for (const [n, lod] of ['high', 'medium', 'low'].entries()) {
+    const level = await createHuman({ ...studioSpec(person), groom: 'cards', lod });
+    let triangles = 0, morphs = 0;
+    level.group.traverse(object => { if (object.isMesh && object.visible && object.geometry.index) triangles += object.geometry.index.count / 3; });
+    for (const mesh of level.faceMeshes) morphs = Math.max(morphs, Object.keys(mesh.morphTargetDictionary ?? {}).length);
+    const glb = new Uint8Array(await exportHumanGLB(level, { skeleton: 'unreal', animations: true, blendshapes: true, cosmetic: false, optimize: true, suffix: `_LOD${n}` }));
+    const error = level.metrics.simplificationError ?? 0;
+    level.dispose();
+    const result = await validator.validateBytes(glb, { uri: `personagem_LOD${n}.glb`, maxIssues: 200 });
+    await writeFile(new URL(`../exports/personagem_LOD${n}.glb`, import.meta.url), glb);
+    const found = result.issues ?? {};
+    console.log(`LOD${n}: ${Math.round(triangles)} triângulos, ${morphs} blendshapes, desvio ${(error * 100).toFixed(2)} cm, validador ${found.numErrors ?? '?'} erros / ${found.numWarnings ?? '?'} avisos`);
+    for (const message of found.messages ?? []) if (message.severity <= 1) console.log(`  [${message.severity ? 'aviso' : 'erro'}] ${message.code} ${message.pointer ?? ''} ${message.message}`);
+    if ((found.numErrors ?? 1) > 0) failed = true;
+  }
+}
+process.exitCode = failed ? 1 : 0;
