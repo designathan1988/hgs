@@ -230,7 +230,7 @@ function coverage(garment, v, layout, positions) {
   return s;
 }
 
-/** A path drawn on the skin: points along the segments between `stops`, each snapped to the nearest torso skin vertex. */
+/** A path drawn on the skin: points along the segments between `stops`, each snapped to the nearest skin vertex of the torso or the neck. */
 function skinPath(layout, positions, stops, spacing) {
   const out = [];
   for (let i = 0; i + 1 < stops.length; i++) {
@@ -239,7 +239,8 @@ function skinPath(layout, positions, stops, spacing) {
       const p = a.clone().lerp(b, s / n);
       let best = -1, distance = Infinity;
       for (let v = 0; v < positions.length / 3; v++) {
-        if (!layout.used[v] || layout.armW[v] > 0.35 || layout.headW[v] > 0.35) continue;
+        // The neck is allowed (its skin weighs as "head"); the head itself, above the neck's base, is not.
+        if (!layout.used[v] || layout.armW[v] > 0.35 || positions[v * 3 + 1] > layout.neckY + 0.04 * layout.k) continue;
         const d = (positions[v * 3] - p.x) ** 2 + (positions[v * 3 + 1] - p.y) ** 2 + (positions[v * 3 + 2] - p.z) ** 2;
         if (d < distance) { distance = d; best = v; }
       }
@@ -300,14 +301,20 @@ function costumeCoverage(garment, v, layout, positions) {
       for (const point of [layout.bust.l, layout.bust.r]) if (point) {
         const sign = Math.sign(point.x), top = new Vector3(point.x - sign * 0.01 * k, point.y + 0.06 * k * size, point.z - 0.02 * k);
         const neck = new Vector3(sign * 0.045 * k, layout.neckY - 0.01 * k, layout.frontZ - 0.035 * k);
-        const nape = new Vector3(sign * 0.02 * k, layout.neckY - 0.005 * k, layout.frontZ - 0.12 * k);
+        // Both straps meet behind, in the middle of the nape (where a halter is tied).
+        const nape = new Vector3(0, layout.neckY + 0.01 * k, layout.frontZ - 0.15 * k);
         paths.push(skinPath(layout, positions, [top, top.clone().lerp(neck, 0.5), neck, nape], 0.012 * k));
       }
       layout.paths.set(key, paths);
     }
+    // The halter straps run up the neck and round the nape (a halterneck ties behind the neck): they are
+    // not cut where the neck's skin starts (its weight counts as "head"), only kept off the arms and
+    // below the line just above the neck's base.
     const strap = (0.005 + 0.006 * garment.neckline) * k;
-    for (const path of layout.paths.get(key)) s = Math.max(s, strap - pathDistance(path, x, y, z));
-    return Math.min(s, torso);
+    let straps = -1;
+    for (const path of layout.paths.get(key)) straps = Math.max(straps, strap - pathDistance(path, x, y, z));
+    straps = Math.min(straps, (0.3 - layout.armW[v]) * 0.25, layout.neckY + 0.03 * k - y);
+    return Math.max(Math.min(s, torso), straps);
   }
   if (type === 'bikini_bottom') {
     const band = layout.hipY + (layout.waistY - layout.hipY) * (garment.rise * 0.9 - 0.15);

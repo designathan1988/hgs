@@ -28,7 +28,8 @@ export const fabrics = {
   silk: { roughness: 0.38, sheen: 1, sheenRoughness: 0.32, normal: 'plain', tile: 0.012, normalScale: 0.12 },
   satin: { roughness: 0.22, sheen: 0.8, sheenRoughness: 0.25, normal: null, tile: 0.04, normalScale: 0 },
   leather: { roughness: 0.48, clearcoat: 0.35, clearcoatRoughness: 0.45, normal: 'grain', tile: 0.08, normalScale: 0.5, color: '#4a2f22' },
-  sequin: { roughness: 0.18, metalness: 0.92, iridescence: 0.35, normal: 'sequin', tile: 0.05, normalScale: 1, color: '#d4a63a' },
+  // Sewn flat (Wikipedia, Sequin: stitched flat they do not move): small tilts, ~6 mm discs (8 per 4 cm).
+  sequin: { roughness: 0.18, metalness: 0.92, iridescence: 0.35, normal: 'sequin', tile: 0.04, normalScale: 0.7, color: '#d4a63a' },
   rhinestone: { roughness: 0.3, metalness: 0.15, sheen: 0.6, sheenRoughness: 0.3, normal: 'stones', tile: 0.05, normalScale: 1, gems: true, iridescence: 0.25 },
   lame: { roughness: 0.32, metalness: 0.85, normal: 'plain', tile: 0.01, normalScale: 0.35, color: '#c9b37a' },
   tulle: { roughness: 0.8, sheen: 0.4, sheenRoughness: 0.5, normal: null, tile: 0.02, normalScale: 0, net: true },
@@ -133,12 +134,14 @@ function sequinCanvas() {
   for (let j = -1; j <= n; j++) for (let i = -1; i <= n; i++) {
     const cx = (i + (j % 2 ? 0.5 : 0) + 0.5) * cell, cy = (j + 0.5) * cell * 0.85, r = cell * 0.62;
     const ti = ((i % n) + n) % n, tj = ((j % n) + n) % n;
-    const tx = (hash(ti, tj) - 0.5) * 0.9, ty = (hash(tj + 7, ti + 3) - 0.5) * 0.9 - 0.25;
+    // Sewn flat: each disc tilts only a few degrees (enough to catch the light differently), hanging a
+    // little forward from the row above.
+    const tx = (hash(ti, tj) - 0.5) * 0.24, ty = (hash(tj + 7, ti + 3) - 0.5) * 0.24 - 0.08;
     for (let y = Math.floor(cy - r); y <= cy + r; y++) for (let x = Math.floor(cx - r); x <= cx + r; x++) {
       const d = Math.hypot(x - cx, y - cy) / r;
       if (d > 1) continue;
       const hole = d < 0.12, rim = d > 0.9;
-      let nx = tx + (rim ? (x - cx) / r * 0.6 : 0), ny = -ty - (rim ? (y - cy) / r * 0.6 : 0), nz = 1;
+      let nx = tx + (rim ? (x - cx) / r * 0.35 : 0), ny = -ty - (rim ? (y - cy) / r * 0.35 : 0), nz = 1;
       if (hole) { nx = 0; ny = 0; }
       const length = Math.hypot(nx, ny, nz), px = ((x % SIZE) + SIZE) % SIZE, py = ((y % SIZE) + SIZE) % SIZE, o = (py * SIZE + px) * 4;
       image.data[o] = (nx / length * 0.5 + 0.5) * 255; image.data[o + 1] = (ny / length * 0.5 + 0.5) * 255; image.data[o + 2] = (nz / length * 0.5 + 0.5) * 255;
