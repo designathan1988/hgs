@@ -359,6 +359,8 @@ function springDefinition(context, layout, chains) {
     colliderGroups: groupNames.map(name => ({ name: `figurino_${name}`, colliders: kinds[name] })),
     springs: chains.map(c => ({
       name: c.names[0].replace(/_0$/, ''),
+      // Inertia in the pelvis's space (VRMC_springBone center), as the hair's.
+      center: 'pelvis',
       colliderGroups: c.settings.colliders.map(name => groupNames.indexOf(name)).filter(i => i >= 0),
       joints: c.names.map(node => ({ node, stiffness: c.settings.stiffness, gravityPower: c.settings.gravityPower, gravityDir: [0, -1, 0], dragForce: c.settings.dragForce, hitRadius: c.settings.hitRadius })),
     })),

@@ -37,7 +37,9 @@ export class SpringBones {
           prevTail: new Vector3(), currentTail: new Vector3(),
         });
       }
-      return { pairs, colliders: this.colliders.filter((_, i) => members.has(i)) };
+      // `center` (VRMC_springBone 1.0): inertia is evaluated in this node's space, so the body's own travel
+      // (running, the hips' sway) is not inertia; the tails are kept in its space between frames.
+      return { pairs, colliders: this.colliders.filter((_, i) => members.has(i)), center: spring.center ? find(spring.center) ?? null : null };
     }).filter(Boolean);
     this.reset();
   }
@@ -47,7 +49,9 @@ export class SpringBones {
     for (const chain of this.chains) for (const pair of chain.pairs) pair.head.quaternion.copy(pair.initialLocalRotation);
     this.root.updateMatrixWorld(true);
     for (const chain of this.chains) for (const pair of chain.pairs) {
-      pair.tail.getWorldPosition(pair.currentTail); pair.prevTail.copy(pair.currentTail);
+      pair.tail.getWorldPosition(pair.currentTail);
+      if (chain.center) chain.center.worldToLocal(pair.currentTail);
+      pair.prevTail.copy(pair.currentTail);
     }
   }
   update(delta) {
@@ -57,15 +61,20 @@ export class SpringBones {
     this.root.updateMatrixWorld(true);
     const world = new Vector3(), parentRotation = new Quaternion(), next = new Vector3(), inertia = new Vector3(), stiffness = new Vector3();
     const center = new Vector3(), tailPoint = new Vector3(), segment = new Vector3(), closest = new Vector3(), toLocal = new Quaternion(), to = new Vector3();
+    const currentWorld = new Vector3(), prevWorld = new Vector3();
     for (const chain of this.chains) {
       const colliders = chain.colliders.map(c => ({ radius: c.radius, a: c.offset.clone().applyMatrix4(c.node.matrixWorld), b: c.tail ? c.tail.clone().applyMatrix4(c.node.matrixWorld) : null }));
+      const space = chain.center?.matrixWorld ?? null;
       for (const pair of chain.pairs) {
         const { head, settings } = pair;
         head.getWorldPosition(world);
         head.parent.getWorldQuaternion(parentRotation);
-        inertia.subVectors(pair.currentTail, pair.prevTail).multiplyScalar(1 - (settings.dragForce ?? 0.5));
+        // Both tails taken to the world through the center's current transform: its motion cancels out.
+        currentWorld.copy(pair.currentTail); prevWorld.copy(pair.prevTail);
+        if (space) { currentWorld.applyMatrix4(space); prevWorld.applyMatrix4(space); }
+        inertia.subVectors(currentWorld, prevWorld).multiplyScalar(1 - (settings.dragForce ?? 0.5));
         stiffness.copy(pair.boneAxis).applyQuaternion(pair.initialLocalRotation).applyQuaternion(parentRotation).multiplyScalar(dt * (settings.stiffness ?? 1));
-        next.copy(pair.currentTail).add(inertia).add(stiffness).addScaledVector(pair.gravity, dt * (settings.gravityPower ?? 0));
+        next.copy(currentWorld).add(inertia).add(stiffness).addScaledVector(pair.gravity, dt * (settings.gravityPower ?? 0));
         next.sub(world).setLength(pair.length).add(world);
         const hitRadius = settings.hitRadius ?? 0;
         for (const collider of colliders) {
@@ -82,6 +91,7 @@ export class SpringBones {
           }
         }
         pair.prevTail.copy(pair.currentTail); pair.currentTail.copy(next);
+        if (chain.center) chain.center.worldToLocal(pair.currentTail);
         // Rotate the head so its rest axis points at the new tail.
         toLocal.copy(parentRotation).multiply(pair.initialLocalRotation).invert();
         to.subVectors(next, world).applyQuaternion(toLocal).normalize();

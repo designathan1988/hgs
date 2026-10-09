@@ -595,6 +595,8 @@ function springBonePlugin(definition, boneByName) {
       kept.forEach((collider, i) => { if (collider) { remap.set(i, colliders.length); colliders.push(collider); } });
       const springs = definition.springs.map(spring => ({
         name: spring.name, colliderGroups: spring.colliderGroups,
+        // `center`: a node index (an ancestor of the chain's first joint), when the bone is exported.
+        ...(spring.center && node(spring.center) !== undefined ? { center: node(spring.center) } : {}),
         joints: spring.joints.map(joint => ({ ...joint, node: node(joint.node) })),
       })).filter(spring => spring.joints.every(joint => joint.node !== undefined));
       if (!springs.length) return;

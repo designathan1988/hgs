@@ -237,7 +237,8 @@ function springDefinition(context, state, chains) {
     colliders,
     colliderGroups: [{ name: 'corpo', colliders: colliders.map((_, i) => i) }],
     springs: chains.map(chain => ({
-      name: `hair_${pad(chain.id)}`, colliderGroups: [0],
+      // Inertia in the pelvis's space (VRMC_springBone center): running or walking does not fling the hair.
+      name: `hair_${pad(chain.id)}`, colliderGroups: [0], center: 'pelvis',
       joints: chain.names.map(node => ({
         node,
         // Firm locks return to their styled shape faster and sag less; the
