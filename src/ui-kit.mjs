@@ -48,7 +48,10 @@ export function group(container, { title, open = true, onToggle, advanced = fals
   // `advanced`: the second level of progressive disclosure (NN/g), quieter; `badge`: a count read with the title.
   const details = h('details', { class: `group${advanced ? ' advanced' : ''}` }, h('summary', {}, icon('chevron', 14), h('span', { text: title }), badge ? h('span', { class: 'badge', text: String(badge) }) : null));
   details.open = open;
-  details.addEventListener('toggle', () => onToggle?.(details.open));
+  // Only the user's own click (or Enter/Space, which click the summary) reports a change: the
+  // toggle event of the initial `open` and of programmatic closing arrives later and is not one.
+  details.querySelector('summary').addEventListener('click', () => { details.dataset.user = '1'; });
+  details.addEventListener('toggle', () => { if (!details.dataset.user) return; delete details.dataset.user; onToggle?.(details.open); });
   const body = h('div', { class: 'group-body' });
   details.append(body); container.append(details);
   return body;

@@ -80,6 +80,17 @@ const paths = {
   mirrorToRight: '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M4 12h5M14.5 12h6M17.5 9l3 3-3 3"/><circle cx="6.5" cy="12" r="2.5"/>',
   mirrorToLeft: '<path d="M12 3v18" stroke-dasharray="2 2"/><path d="M20 12h-5M9.5 12h-6M6.5 9l-3 3 3 3"/><circle cx="17.5" cy="12" r="2.5"/>',
   key: '<path d="m12 4 7 8-7 8-7-8z"/>',
+  // Body types (Corpo › Tipo): one silhouette, wider or more muscular.
+  bodyThin: '<circle cx="12" cy="4" r="2"/><path d="M10.6 7.5h2.8l.6 6.5h-4zM10.8 14l-.3 7M13.2 14l.3 7M10.6 8l-1.6 5.5M13.4 8l1.6 5.5"/>',
+  bodyAverage: '<circle cx="12" cy="4" r="2"/><path d="M9.8 7.5h4.4l.8 6.5H9zM10.3 14l-.5 7M13.7 14l.5 7M9.8 8 7.8 13.5M14.2 8l2 5.5"/>',
+  bodyAthletic: '<circle cx="12" cy="4" r="2"/><path d="M8 7.5h8l-1.6 6.5H9.6zM10.4 14l-.7 7M13.6 14l.7 7M8 8l-2 5.5M16 8l2 5.5"/>',
+  bodyStrong: '<circle cx="12" cy="4" r="2"/><path d="M7.5 7.5h9l-.8 6.5H8.3zM9.6 14l-.8 7M14.4 14l.8 7M7.5 8 5.2 13.5M16.5 8l2.3 5.5"/>',
+  bodyHeavy: '<circle cx="12" cy="4" r="2"/><path d="M9 7.5h6c1.8 1.6 2.4 4.2 1.4 6.5H7.6C6.6 11.7 7.2 9.1 9 7.5zM9.8 14l-.6 7M14.2 14l.6 7M8.6 8.3 6.4 13.5M15.4 8.3l2.2 5.2"/>',
+  // Ages (Pessoa › Idade): a figure from small to stooped.
+  ageChild: '<circle cx="12" cy="10" r="2"/><path d="M10.5 13h3l.4 4h-3.8zM11 17l-.3 4M13 17l.3 4M10.6 13.5 9.4 16.5M13.4 13.5l1.2 3"/>',
+  ageTeen: '<circle cx="12" cy="6" r="2"/><path d="M10.4 9h3.2l.5 5.5h-4.2zM10.8 14.5l-.4 6.5M13.2 14.5l.4 6.5M10.4 9.5 9 14M13.6 9.5l1.4 4.5"/>',
+  ageAdult: '<circle cx="12" cy="4" r="2"/><path d="M10 7.5h4l.7 6.5H9.3zM10.6 14l-.5 7M13.4 14l.5 7M10 8 8.3 13.5M14 8l1.7 5.5"/>',
+  ageElder: '<circle cx="11" cy="5" r="2"/><path d="M9.6 8.5h3.6l1.2 6H9.2zM10 14.5 9.5 21M13.4 14.5l.9 6.5M13.6 9.5l2.4 4M17.5 13v8"/>',
   // Expressions (Rosto › Expressão), in the order of expressionNames: a face with brows, eyes and mouth.
   exNeutral: '<circle cx="12" cy="12" r="9"/><path d="M8.5 10h.01M15.5 10h.01M9 15.5h6"/>',
   exRelaxed: '<circle cx="12" cy="12" r="9"/><path d="M7.5 10.2c.7-.5 1.6-.5 2.2 0M14.3 10.2c.7-.5 1.6-.5 2.2 0M9 15c1.8 1 4.2 1 6 0"/>',

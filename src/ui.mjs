@@ -3,11 +3,14 @@ import { HairEditor, hairTools } from './hair-editor.mjs';
 import { hairParts, partName } from './hair-parts.mjs';
 import { lockLength } from './locks.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
-import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment } from './tailor.mjs';
+import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment, costumeTypes, footwearTypes, MAX_GARMENTS } from './tailor.mjs';
+import { fabricIds, fabricNames, fabrics } from './fabrics.mjs';
+import { costumePresets, garmentPalette } from './costume.mjs';
+import { garmentPictogram, fabricPictogram } from './garment-icons.mjs';
 import { PatternEditor } from './pattern-editor.mjs';
-import { createPatternTemplate } from './patterns.mjs';
+import { createPatternTemplate, patternTypes } from './patterns.mjs';
 import { icon, hairPictogram } from './icons.mjs';
-import { h, group, row, iconButton, slider, segmented, chips, toggleChips, searchField, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
+import { h, group, row, iconButton, slider, sliderPair, segmented, chips, iconChoices, toggleChips, searchField, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
 import { libraryPose, poseLibrary } from './motion.mjs';
@@ -16,6 +19,7 @@ import { categoryLabel, regionNames } from './shape-handles.mjs';
 import { namedFeatures } from './renderer-three.mjs';
 import { faceWeights, mixamoName } from './human-three.mjs';
 import { beardStyles, makeupNames, tattooDesigns } from './skin-layers.mjs';
+import { accessoryNames, accessoryStyles, metals } from './accessories.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames, hairBases,
@@ -179,8 +183,22 @@ export class StudioUI {
   get tailoring() { return this.mode === 'cloth:edges'; }
   get pinning() { return this.mode === 'cloth:clothPin' || this.mode === 'cloth:clothUnpin'; }
 
+  /**
+   * The cards float over the stage: the renderer centres its projection in the
+   * free area between them (renderer.centerShift, px), so the character is
+   * framed in the middle of what the user sees, not behind the panel.
+   */
+  updateCenter() {
+    if (!this.renderer) return;
+    const view = this.app.querySelector('.viewport').getBoundingClientRect();
+    const right = (box => box.width ? view.right - box.left : 0)(this.app.querySelector('.inspector').getBoundingClientRect());
+    const left = Math.max(...[this.nav, this.toolRail].map(node => { const box = node.getBoundingClientRect(); return box.width ? box.right - view.left : 0; }));
+    this.renderer.centerShift = (right - left) / 2;
+  }
   attachRenderer(renderer) {
     this.renderer = renderer;
+    window.addEventListener('resize', () => this.updateCenter());
+    queueMicrotask(() => this.updateCenter());
     const editor = renderer.lockEditor;
     // The editor's callbacks are set once and feed the store's operations and status.
     // The hair editor has no background work (no live gravity): it only reports changes.
@@ -497,7 +515,7 @@ export class StudioUI {
   buildNav() {
     sections.forEach((section, i) => {
       if (section.divider) this.nav.append(h('div', { class: 'rail-divider', role: 'separator' }));
-      this.nav.append(h('button', { class: 'nav-item', type: 'button', 'data-section': section.id, title: `${section.title ?? section.name} (${i + 1})`, 'aria-keyshortcuts': String(i + 1), onclick: () => this.setSection(section.id) },
+      this.nav.append(h('button', { class: 'nav-item', type: 'button', 'data-section': section.id, title: `${section.title ?? section.name} (${i + 1}): ${section.lead}`, 'aria-keyshortcuts': String(i + 1), onclick: () => this.setSection(section.id) },
         icon(section.icon, 22), h('span', { class: 'nav-label', text: section.name })));
     });
   }
@@ -556,7 +574,7 @@ export class StudioUI {
     const list = h('div', { class: 'menu-list' }, names.length ? names.map(name => h('div', { class: 'menu-row' },
       h('button', { type: 'button', class: 'menu-item', onclick: () => { this.loadPreset(name); this.charactersMenu.close(true); } }, icon('person', 16), h('span', { text: name })),
       iconButton('trash', `Excluir "${name}"`, () => { if (confirm(`Excluir o personagem "${name}"?`)) { storage.remove(PRESET_PREFIX + name); this.renderCharactersMenu(); } }, { danger: true, size: 16 }),
-    )) : h('p', { class: 'menu-empty', text: 'Nenhum personagem salvo ainda. Salve o atual para voltar a ele depois; o trabalho em andamento já fica guardado sozinho neste navegador.' }));
+    )) : h('p', { class: 'menu-empty', text: 'Nenhum personagem salvo.' }));
     menu.replaceChildren(
       h('div', { class: 'menu-title', text: 'Personagens salvos' }), list,
       h('div', { class: 'menu-actions' },
@@ -604,7 +622,13 @@ export class StudioUI {
   renderExportMenu() {
     const menu = document.getElementById('exportMenu'), options = this.state.ui.export;
     const set = changes => this.store.dispatch({ type: 'ui/export', changes, live: true });
-    const choose = (label, key, entries) => segmented({ label, items: entries.map(e => e[1]), selected: entries.findIndex(e => e[0] === options[key]), onPick: i => set({ [key]: entries[i][0] }) });
+    // Short names on the buttons; what each one means in its tooltip (no explanatory text in the menu).
+    const choose = (label, key, entries, title) => {
+      const node = segmented({ label, items: entries.map(e => e[1]), selected: entries.findIndex(e => e[0] === options[key]), onPick: i => set({ [key]: entries[i][0] }) });
+      node.querySelectorAll('button').forEach((button, i) => { if (entries[i][2]) button.title = entries[i][2]; });
+      if (title) node.title = title;
+      return node;
+    };
     const flag = (label, key, title) => toggle({ label, checked: options[key], title, onChange: on => set({ [key]: on }) });
     let triangles = 0, meshes = 0;
     this.renderer?.current?.group?.traverse(object => { if (object.isMesh && object.visible && object.geometry.index) { triangles += object.geometry.index.count / 3; meshes++; } });
@@ -612,15 +636,14 @@ export class StudioUI {
     menu.replaceChildren(
       h('div', { class: 'menu-title', text: 'Exportar GLB para jogos' }),
       h('div', { class: 'menu-body' },
-        choose('Esqueleto', 'skeleton', [['unreal', 'Unreal'], ['mixamo', 'Mixamo']]),
-        choose('Detalhe', 'lod', [['high', 'Alto'], ['medium', 'Médio'], ['low', 'Baixo'], ['all', 'Pacote LOD']]),
-        options.lod === 'all' ? h('p', { class: 'muted', text: 'Um .zip com LOD0, LOD1 e LOD2 (mesmo esqueleto, malhas _LODn): LOD1 com metade dos triângulos e as expressões, LOD2 com um décimo.' }) : null,
-        choose('Pelos do rosto', 'groom', [['cards', 'Cartões'], ['strands', 'Fios']]),
+        choose('Esqueleto', 'skeleton', [['unreal', 'Unreal', 'Nomes do UE4 Mannequin (Unreal)'], ['mixamo', 'Mixamo', 'Nomes do Mixamo (Unity Humanoid, Godot, bibliotecas de animação)']]),
+        choose('Detalhe', 'lod', [['high', 'Alto', 'LOD0: detalhe máximo'], ['medium', 'Médio', 'LOD1: metade dos triângulos, com expressões'], ['low', 'Baixo', 'LOD2: um décimo dos triângulos'], ['all', 'Pacote', 'Pacote LOD: LOD0, LOD1 e LOD2 num .zip, mesmo esqueleto, malhas _LODn']]),
+        choose('Pelos', 'groom', [['cards', 'Cartões', 'Sobrancelhas e cílios em faixas com textura (leve)'], ['strands', 'Fios', 'Sobrancelhas e cílios em fios (mais detalhe)']], 'Sobrancelhas e cílios'),
         flag('Animações', 'animations', '16 clipes'),
         flag('Expressões faciais', 'blendshapes', '52 blendshapes ARKit (olhar, boca, língua…)'),
         flag('Otimizar', 'optimize', 'Solda vértices, junta as malhas em Body e Head e usa JPEG'),
         flag('Brilho dos olhos', 'cosmetic', 'Camadas extras de brilho dos olhos'),
-        h('div', { class: 'metric-list' }, [['Triângulos', triangles.toLocaleString('pt-BR')], ['Malhas', meshes], ['Ossos', this.renderer?.current?.body.skeleton.bones.length ?? '—'], ['Blendshapes', face ? Object.keys(face.morphTargetDictionary).length : 0]]
+        h('div', { class: 'metric-list', title: 'Medidas do personagem na tela; com Otimizar, o GLB junta as malhas em Body e Head' }, [['Triângulos', triangles.toLocaleString('pt-BR')], ['Malhas na tela', meshes], ['Ossos', this.renderer?.current?.body.skeleton.bones.length ?? '—'], ['Blendshapes', face ? Object.keys(face.morphTargetDictionary).length : 0]]
           .flatMap(([label, value]) => [h('span', { text: label }), h('b', { text: String(value) })]))),
       h('button', { type: 'button', class: 'button primary wide big', disabled: !this.renderer?.current, onclick: () => this.exportGLB() }, icon('export', 18), 'Exportar GLB'),
     );
@@ -658,11 +681,11 @@ export class StudioUI {
     const fresh = this.lastSection !== this.section, scroll = fresh ? 0 : this.body.scrollTop;
     this.lastSection = this.section;
     this.patternEditor?.destroy(); this.patternEditor = null;
-    this.heightField = null;
+    this.heightField = null; this.openInRender = false;
     this.body.replaceChildren();
     const section = sections.find(s => s.id === this.section);
     document.getElementById('sectionTitle').textContent = section.title ?? section.name;
-    document.getElementById('sectionLead').textContent = section.lead ?? '';
+    // No descriptive line under the title (the user: no explanatory text in the panel); the section's purpose is in the rail tooltip.
     for (const button of this.nav.querySelectorAll('.nav-item')) {
       const active = button.dataset.section === this.section;
       button.classList.toggle('active', active);
@@ -680,6 +703,7 @@ export class StudioUI {
     this.body.scrollTop = scroll;
     this.updateMeta(); this.updateHistoryButtons(); this.renderViewButtons();
     restoreFocus(this.app, focus);
+    this.updateCenter();
   }
   /** The section's tools in the rail beside the sections, and the active tool's options over the viewport. */
   renderTools() {
@@ -688,8 +712,10 @@ export class StudioUI {
     this.toolRail.hidden = !groups; this.toolCard.hidden = !groups;
     if (!groups) { this.toolRail.replaceChildren(); this.toolCard.replaceChildren(); return; }
     const active = this.activeTool(), section = sections.find(s => s.id === this.section);
-    toolbar(this.toolRail, { groups, active, label: `Ferramentas: ${section.title ?? section.name}`, onPick: id => this.pickTool(id), note: this.toolNote() });
-    const [name, glyph] = groups.flatMap(([, list]) => list).find(([id]) => id === active)?.slice(1) ?? ['', null];
+    toolbar(this.toolRail, { groups, active, label: `Ferramentas: ${section.title ?? section.name}`, onPick: id => this.pickTool(id) });
+    this.toolRail.title = this.toolNote() ?? '';
+    const [name, glyph, extra] = groups.flatMap(([, list]) => list).find(([id]) => id === active)?.slice(1) ?? ['', null];
+    const shortcut = extra?.shortcut;
     const options = h('div', { class: 'tool-card-body', id: 'toolCardBody' });
     if (this.section === 'cabelo') this.renderHairToolOptions(options, active);
     if (this.section === 'esculpir') this.renderSculptToolOptions(options);
@@ -698,7 +724,7 @@ export class StudioUI {
     this.toolCard.classList.toggle('collapsed', !open || !hasOptions);
     // replaceChildren turns null into the text "null": only real nodes are passed.
     this.toolCard.replaceChildren(...[
-      h('div', { class: 'tool-card-head' }, glyph ? icon(glyph, 18) : null, h('span', { class: 'tool-card-title', text: name }),
+      h('div', { class: 'tool-card-head', title: extra?.title ?? name }, glyph ? icon(glyph, 18) : null, h('span', { class: 'tool-card-title', text: name }), shortcut ? h('kbd', { text: shortcut, title: `Tecla ${shortcut}` }) : null,
         hasOptions ? h('button', {
           type: 'button', class: 'icon-button small', title: open ? 'Recolher as opções' : 'Mostrar as opções', 'aria-label': open ? 'Recolher as opções' : 'Mostrar as opções',
           'aria-expanded': String(open), 'aria-controls': 'toolCardBody', onclick: () => this.store.dispatch({ type: 'ui/set', changes: { toolPanel: !open } }),
@@ -732,8 +758,23 @@ export class StudioUI {
   hairTool() { const tool = this.state.ui.tools.cabelo; return hairTools.includes(tool) ? tool : 'brush'; }
   // Controls bound to this UI: groups remember their state; sliders mark a drag in progress.
   group(title, { open = true, advanced = false, badge, key: id } = {}) {
-    const key = `${this.section}:${id ?? title}`, saved = this.state.ui.groups[key];
-    return group(this.body, { title, open: saved ?? open, advanced, badge, onToggle: value => this.store.dispatch({ type: 'ui/group', key, open: value, live: true }) });
+    const key = `${this.section}:${id ?? title}`;
+    // One group open per panel: the first one that asks to be open (saved or by default) wins.
+    let saved = this.state.ui.groups[key] ?? open;
+    if (saved && this.openInRender) saved = false;
+    if (saved) this.openInRender = true;
+    // An accordion: opening a group closes the others, so one section's controls are on screen at a time.
+    const body = group(this.body, { title, open: saved, advanced, badge, onToggle: value => {
+      this.store.dispatch({ type: 'ui/group', key, open: value, live: true });
+      if (!value) return;
+      for (const other of this.body.querySelectorAll(':scope > details.group[open]')) {
+        if (other === body.parentElement) continue;
+        other.open = false;
+        this.store.dispatch({ type: 'ui/group', key: other.dataset.key, open: false, live: true });
+      }
+    } });
+    body.parentElement.dataset.key = key;
+    return body;
   }
   slide(parent, { onStart, onEnd, ...options }) {
     const node = slider({
@@ -753,6 +794,13 @@ export class StudioUI {
     const percent = Boolean(ends) && !unit;
     return this.slide(parent, { label, title, ends, value: this.person[key], min, max, step, unit: percent ? '%' : unit, scale: percent ? 100 : 1, key, onInput: v => this.update(key, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
   }
+  /** A row of picture presets with short names (body types, ages): items are [name, glyph, apply]. */
+  presetCards(parent, items, selected) {
+    parent.append(h('div', { class: 'preset-row', role: 'group' }, items.map(([name, glyph, apply], i) => h('button', {
+      type: 'button', class: `preset${i === selected ? ' on' : ''}`, 'aria-pressed': String(i === selected), title: name,
+      onclick: () => { apply(); this.scheduleRender(); },
+    }, icon(glyph, 26), h('span', { text: name })))));
+  }
   /** Sliders between two named qualities: [key, label, [less, more], min = −1, max = 1]. */
   ranges(parent, list) { for (const [key, label, ends, min = -1, max = 1] of list) this.range(parent, key, label, min, max, 0.01, '', { ends }); }
   segmented(parent, label, items, selected, onPick) { parent.append(segmented({ label, items, selected, onPick: i => { onPick(i); this.scheduleRender(); } })); }
@@ -770,15 +818,18 @@ export class StudioUI {
   renderCharacter() {
     const id = this.group('Quem é');
     this.segmented(id, 'Sexo', ['Feminino', 'Masculino'], this.person.gender, v => this.update('gender', v));
+    // Age as pictures first (The Sims' life stages), the exact age in the slider under them.
+    const ages = [['Criança', 'ageChild', 8], ['Jovem', 'ageTeen', 17], ['Adulto', 'ageAdult', 35], ['Idoso', 'ageElder', 72]];
+    const stage = this.person.ageYears < 13 ? 0 : this.person.ageYears < 25 ? 1 : this.person.ageYears < 60 ? 2 : 3;
+    this.presetCards(id, ages.map(([name, glyph, years]) => [name, glyph, () => this.update('ageYears', years)]), stage);
     this.range(id, 'ageYears', 'Idade', 1, 90, 1, ' anos');
     const [min, max] = this.heightBounds();
     this.heightField = this.range(id, 'heightMeters', 'Altura', min, max, 0.01, ' m', { title: 'Altura (a idade sugere uma altura típica)' });
-    id.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.randomMenu.open() }, icon('dice', 16), 'Sortear outra pessoa…'));
     const skin = this.group('Pele');
     this.colorSwatches(skin, 'skin', 'Tom', skinPalette, 'skin', ['Muito clara', 'Clara', 'Clara média', 'Média', 'Morena', 'Morena escura', 'Escura', 'Muito escura']);
     this.range(skin, 'skinRoughness', 'Acabamento', 0, 1, 0.01, '', { ends: ['Brilhante', 'Fosca'] });
+    // Ancestry: traits of face and body; what counts is the proportion among the three (macro.mjs normalises them).
     const ancestry = this.group('Origem', { open: false });
-    ancestry.append(h('p', { class: 'muted', text: 'Mistura de traços de rosto e corpo. Vale a proporção entre os três: os três iguais é uma mistura equilibrada.' }));
     this.ranges(ancestry, [['african', 'Africana', ['Pouco', 'Muito'], 0, 1], ['asian', 'Asiática', ['Pouco', 'Muito'], 0, 1], ['caucasian', 'Europeia', ['Pouco', 'Muito'], 0, 1]]);
   }
   /** Value of a MakeHuman regional adjustment: its own field when it has one, else `morphs`. */
@@ -796,27 +847,26 @@ export class StudioUI {
    * symmetry under it while it is on.
    */
   renderMoldCard(part) {
+    // One line at the top of the panel: the switch and, beside it, symmetry (instructions go to the footer hint and the tooltip).
     const on = Boolean(this.state.ui.molding), handles = this.renderer?.shapeHandles;
-    const card = this.group('Moldar', { key: 'mold' });
-    card.append(h('button', { type: 'button', class: `mode-card${on ? ' on' : ''}`, 'aria-pressed': String(on), onclick: () => this.store.dispatch({ type: 'ui/set', changes: { molding: !on } }) },
-      icon('grab', 22), h('span', {}, h('b', { text: on ? 'Moldando: puxe no 3D' : `Moldar ${part} com o mouse` }),
-        h('small', { text: on ? 'Clique de novo para parar. Alt muda só um lado.' : `Ligue e arraste ${part === 'o rosto' ? 'o nariz, o queixo, as bochechas…' : 'ombros, cintura, quadril, pernas…'} direto no personagem.` }))));
-    if (on && handles) {
-      this.setHint('Arraste a parte para mudá-la · Alt: só um lado · botão direito: girar');
-      this.toggle(card, 'Simetria (os dois lados juntos)', handles.symmetry, value => { handles.symmetry = value; }, 'Muda os dois lados juntos (como no MetaHuman Creator)');
-    }
+    const mirror = h('button', { type: 'button', class: `icon-button${handles?.symmetry ? ' on' : ''}`, 'aria-pressed': String(Boolean(handles?.symmetry)), title: 'Simetria: os dois lados juntos', 'aria-label': 'Simetria',
+      onclick: event => { if (!handles) return; handles.symmetry = !handles.symmetry; event.currentTarget.classList.toggle('on', handles.symmetry); event.currentTarget.setAttribute('aria-pressed', String(handles.symmetry)); } }, icon('mirror', 18));
+    this.body.append(h('div', { class: 'group' }, h('div', { class: 'mode-row' },
+      h('button', { type: 'button', class: `mode-card${on ? ' on' : ''}`, 'aria-pressed': String(on), title: `Moldar ${part}: arraste a parte no 3D (Alt: só um lado)`, onclick: () => this.store.dispatch({ type: 'ui/set', changes: { molding: !on } }) },
+        icon('grab', 18), h('span', { text: on ? 'Moldando no 3D' : 'Moldar no 3D' })),
+      on ? mirror : null)));
+    if (on) this.setHint('Arraste a parte para mudá-la · Alt: só um lado · botão direito: girar');
   }
   /**
    * Every MakeHuman regional adjustment of `regions`, behind one advanced
    * group: a search by name across the regions and "only the changed ones"
    * (Character Creator's Morphs tab: search, Currently Used), else one region.
    */
-  renderDetailed(regions) {
+  renderDetailed(regions, body) {
     const morpher = this.renderer?.current?.context.data.morpher;
-    if (!morpher) return;
+    if (!morpher) { body.append(h('p', { class: 'empty-note', text: 'Carregando…' })); return; }
     const all = [...morpher.sliders].filter(([, { group }]) => regions.includes(group));
     const changed = all.filter(([name]) => this.morphValue(name)).length;
-    const body = this.group('Ajustes detalhados', { open: false, advanced: true, badge: changed ? `${changed} alterado${changed > 1 ? 's' : ''}` : null });
     const region = regions.includes(this.state.ui.morphRegion) ? this.state.ui.morphRegion : regions[0];
     const list = h('div', { class: 'morph-list' });
     // Typing filters the list in place (no panel rebuild, the caret stays where it is).
@@ -824,8 +874,16 @@ export class StudioUI {
       const query = (this.morphQuery ?? '').trim().toLowerCase(), only = Boolean(this.morphChanged);
       const words = query.normalize('NFD').replace(/[̀-ͯ]/g, '').split(/\s+/).filter(Boolean);
       // categoryLabel drops the side prefix (l-/r-): put it back, or left and right read the same.
-      const named = name => { const text = categoryLabel(name), side = name.startsWith('l-') ? ' (esq.)' : name.startsWith('r-') ? ' (dir.)' : ''; return `${text.charAt(0).toUpperCase()}${text.slice(1)}${side}`; };
-      const label = (name, group) => `${query || only ? `${regionNames[group] ?? group} · ` : ''}${named(name)}`;
+      // Short names: the region is already chosen (or shown before the name), so its word is not repeated; "measure" reads "medida".
+      const bare = (name, group) => {
+        const fold = text => text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+        const words = categoryLabel(name).replace(/^measure\s+/i, 'medida ').split(' '), region = fold(regionNames[group] ?? group);
+        const kept = words.length > 1 && fold(words[0]) === region ? words.slice(1) : words;
+        const text = kept.join(' ');
+        return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+      };
+      const named = (name, group) => `${bare(name, group)}${name.startsWith('l-') ? ' (esq.)' : name.startsWith('r-') ? ' (dir.)' : ''}`;
+      const label = (name, group) => `${query || only ? `${regionNames[group] ?? group} · ` : ''}${named(name, group)}`;
       const matches = all.filter(([name, { group }]) => {
         if (only && !this.morphValue(name)) return false;
         if (!words.length) return only || group === region;
@@ -833,9 +891,18 @@ export class StudioUI {
         return words.every(word => text.includes(word));
       });
       list.replaceChildren();
+      // Left and right of one adjustment share a line (two tracks, E and D).
+      const shown = new Set(matches.map(([name]) => name));
       for (const [name, { group, category }] of matches.slice(0, 60)) {
-        this.slide(list, { label: label(name, group), title: `${regionNames[group] ?? group} · ${named(name)} (${name})`, value: this.morphValue(name), min: category.opposites ? -1 : 0, max: 1, center: true,
-          onInput: v => this.setMorph(name, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
+        const min = category.opposites ? -1 : 0, end = () => { this.commitLive(); this.scheduleRender(); };
+        if (name.startsWith('r-') && shown.has(`l-${name.slice(2)}`)) continue;
+        if (name.startsWith('l-') && shown.has(`r-${name.slice(2)}`)) {
+          const both = [name, `r-${name.slice(2)}`], pairLabel = `${query || only ? `${regionNames[group] ?? group} · ` : ''}${bare(name, group)}`;
+          list.append(sliderPair({ label: pairLabel, title: `${regionNames[group] ?? group} · ${pairLabel} (${both.join(' / ')})`, min, onEnd: end, sides: both.map(n => ({ value: this.morphValue(n), onInput: v => this.setMorph(n, v, { live: true }) })) }));
+          continue;
+        }
+        this.slide(list, { label: label(name, group), title: `${regionNames[group] ?? group} · ${named(name, group)} (${name})`, value: this.morphValue(name), min, max: 1, center: true,
+          onInput: v => this.setMorph(name, v, { live: true }), onEnd: end });
       }
       if (!matches.length) list.append(h('p', { class: 'empty-note', text: only ? 'Nenhum ajuste alterado ainda.' : 'Nenhum ajuste com esse nome.' }));
       if (matches.length > 60) list.append(h('p', { class: 'empty-note', text: `Mostrando 60 de ${matches.length}. Refine a busca.` }));
@@ -848,36 +915,55 @@ export class StudioUI {
       regionChips, list);
     fill();
   }
+  /**
+   * The section's one "Avançado" group, last (NN/g progressive disclosure: two
+   * levels, the second clearly named). Several parts take turns behind a
+   * segmented switch instead of nesting further. `parts` is [[name, render(body)]].
+   */
+  renderAdvanced(parts) {
+    const body = this.group('Avançado', { open: false, advanced: true });
+    const at = Math.max(0, parts.findIndex(([name]) => name === this.advancedPart?.[this.section]));
+    if (parts.length > 1) body.append(segmented({ items: parts.map(([name]) => name), selected: at, onPick: i => { this.advancedPart = { ...this.advancedPart, [this.section]: parts[i][0] }; this.scheduleRender(); } }));
+    const holder = h('div', { class: 'advanced-part' });
+    body.append(holder);
+    parts[at][1](holder);
+  }
   /** Corpo: pull it (Moldar), the main proportions with named ends, the bust, tattoos, then every regional adjustment. */
   renderBody() {
     this.renderMoldCard('o corpo');
+    // Body type as pictures (one click sets weight, muscle and shoulders), then the fine proportions.
     const shape = this.group('Proporções');
+    const types = [['Magro', 'bodyThin', { build: -0.6, muscle: 0.3, shoulders: -0.2 }], ['Médio', 'bodyAverage', { build: 0, muscle: 0.5, shoulders: 0 }],
+      ['Atlético', 'bodyAthletic', { build: -0.1, muscle: 0.9, shoulders: 0.35 }], ['Forte', 'bodyStrong', { build: 0.45, muscle: 0.85, shoulders: 0.45 }], ['Pesado', 'bodyHeavy', { build: 0.85, muscle: 0.4, shoulders: 0.1 }]];
+    const near = types.map(([, , t]) => Math.abs(t.build - this.person.build) + Math.abs(t.muscle - this.person.muscle) + Math.abs(t.shoulders - this.person.shoulders));
+    const best = near.indexOf(Math.min(...near));
+    this.presetCards(shape, types.map(([name, glyph, changes]) => [name, glyph, () => this.patch(changes, { history: 'bodyType' })]), near[best] < 0.25 ? best : -1);
     // The ends say what each named MakeHuman target does (renderer-three.mjs namedFeatures): `waist` widens the torso, `headSize` stretches the head.
     this.ranges(shape, [['build', 'Peso', ['Magro', 'Pesado']], ['muscle', 'Músculos', ['Pouco', 'Muito'], 0, 1], ['shoulders', 'Ombros', ['Estreitos', 'Largos']],
       ['waist', 'Tronco', ['Estreito', 'Largo']], ['hips', 'Quadril', ['Estreito', 'Largo']], ['legLength', 'Coxas', ['Curtas', 'Longas']], ['headSize', 'Cabeça', ['Curta', 'Alongada']],
       ['proportions', 'Proporções', ['Comuns', 'Idealizadas'], 0, 1]]);
-    shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => { this.randomBody(); this.toast('Corpo sorteado', 'info', this.undoAction()); } }, icon('dice', 16), 'Sortear o corpo'));
+    shape.append(h('div', { class: 'icon-bar' }, iconButton('dice', 'Sortear o corpo', () => { this.randomBody(); this.toast('Corpo sorteado', 'info', this.undoAction()); })));
     const bust = this.group('Busto', { open: false });
     this.ranges(bust, [['cupsize', 'Tamanho', ['Pequeno', 'Grande'], 0, 1], ['firmness', 'Firmeza', ['Menos', 'Mais'], 0, 1]]);
     this.renderTattoos();
-    this.renderDetailed(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet']);
+    this.renderAdvanced([['Ajustes detalhados', body => this.renderDetailed(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet'], body)]]);
   }
   /** Rosto: pull it (Moldar), shape, eyes, expression, brows, lashes, makeup, then every regional adjustment. */
   renderFace() {
     this.renderMoldCard('o rosto');
     const shape = this.group('Formato');
     this.ranges(shape, [['faceWidth', 'Largura', ['Estreito', 'Largo']], ['jaw', 'Queixo', ['Estreito', 'Largo']], ['cheek', 'Bochechas', ['Magras', 'Cheias']], ['nose', 'Nariz', ['Rente', 'Saliente']]]);
-    shape.append(h('button', { type: 'button', class: 'button wide', onclick: () => { this.randomFace(); this.toast('Rosto sorteado', 'info', this.undoAction()); } }, icon('dice', 16), 'Sortear o rosto'));
+    shape.append(h('div', { class: 'icon-bar' }, iconButton('dice', 'Sortear o rosto', () => { this.randomFace(); this.toast('Rosto sorteado', 'info', this.undoAction()); })));
     const eyes = this.group('Olhos');
     this.ranges(eyes, [['eyeSize', 'Tamanho', ['Menores', 'Maiores']], ['eyeSpacing', 'Distância', ['Juntos', 'Afastados']]]);
     this.colorSwatches(eyes, 'eyeColor', 'Cor', eyePalette, 'eyes', ['Castanho escuro', 'Castanho claro', 'Cinza', 'Verde', 'Azul', 'Cinza claro']);
     this.renderExpression();
     const brows = this.group('Sobrancelhas', { open: false });
-    this.segmented(brows, 'Formato', ['Natural', 'Reta', 'Arqueada', 'Angulosa'], this.person.browShape, v => this.update('browShape', v));
+    this.segmented(brows, 'Formato', [['Natural', 'browNatural'], ['Reta', 'browStraight'], ['Arqueada', 'browArched'], ['Angulosa', 'browAngled']], this.person.browShape, v => this.update('browShape', v));
     this.range(brows, 'browAngle', 'Inclinação', -25, 25, 1, '°');
     this.ranges(brows, [['browArch', 'Arco', ['Menos', 'Mais']], ['browThickness', 'Espessura', ['Fina', 'Grossa'], 0.35, 2.1], ['browWidth', 'Comprimento', ['Curta', 'Longa'], 0.7, 1.4],
       ['browHeight', 'Altura', ['Mais baixa', 'Mais alta']], ['browDensity', 'Densidade', ['Rala', 'Cheia'], 0, 1]]);
-    this.colorSwatches(brows, null, 'Cor (sem escolha: a do cabelo)', hairPalette, 'brows');
+    this.colorSwatches(brows, null, 'Cor', hairPalette, 'brows', ['Preto', 'Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Castanho claro', 'Loiro', 'Ruivo', 'Cinza escuro', 'Platinado']);
     const lashes = this.group('Cílios', { open: false });
     this.ranges(lashes, [['lashLength', 'Comprimento', ['Curtos', 'Longos'], 0.4, 1.8], ['lashCurl', 'Curvatura', ['Retos', 'Curvados'], 0, 1], ['lashDensity', 'Densidade', ['Ralos', 'Cheios'], 0, 1]]);
     this.colorSwatches(lashes, null, 'Cor', ['#201915', '#3a2a22', '#5b4636', '#11131a'], 'lashes', ['Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Preto azulado']);
@@ -885,8 +971,9 @@ export class StudioUI {
     const makeup = this.group('Maquiagem', { open: false });
     for (const [region, name] of Object.entries(makeupNames)) {
       const set = (changes, options) => this.patch({ makeup: { ...this.person.makeup, [region]: { ...this.person.makeup[region], ...changes } } }, { history: `makeup:${region}`, ...options });
-      this.slide(makeup, { label: name, value: this.person.makeup[region].amount, min: 0, max: 1, onInput: v => set({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
-      makeup.append(row(`Cor: ${name.toLowerCase()}`, h('input', { type: 'color', value: this.person.makeup[region].color, 'aria-label': `Cor: ${name.toLowerCase()}`, onchange: event => set({ color: event.target.value }) })));
+      // Amount and colour of one region on one line.
+      const well = h('input', { type: 'color', class: 'color-well', value: this.person.makeup[region].color, 'aria-label': `Cor: ${name.toLowerCase()}`, title: `Cor: ${name.toLowerCase()}`, onchange: event => set({ color: event.target.value }) });
+      this.slide(makeup, { label: name, title: `${name}: quantidade e cor`, value: this.person.makeup[region].amount, min: 0, max: 1, trailing: well, onInput: v => set({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
     }
     // Beard painted on the skin (skin-layers.mjs): a style, how strong, how dense; the hair's colour unless one is chosen.
     const beard = this.group('Barba', { open: this.person.beard.style !== 'nenhuma' });
@@ -894,29 +981,57 @@ export class StudioUI {
     const styles = Object.keys(beardStyles);
     beard.append(chips({ label: 'Estilo', items: styles.map(id => beardStyles[id].name), selected: styles.indexOf(this.person.beard.style), onPick: i => { setBeard({ style: styles[i] }); this.scheduleRender(); } }));
     if (this.person.beard.style !== 'nenhuma') {
-      this.slide(beard, { label: 'Intensidade', value: this.person.beard.amount, min: 0, max: 1, onInput: v => setBeard({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
-      this.slide(beard, { label: 'Densidade', value: this.person.beard.density, min: 0, max: 1, onInput: v => setBeard({ density: v }, { live: true }), onEnd: () => this.commitLive() });
-      beard.append(row('Cor', h('input', { type: 'color', value: this.person.beard.color ?? this.person.colors.hair ?? hairPalette[this.person.hairColor], 'aria-label': 'Cor da barba', onchange: event => setBeard({ color: event.target.value }) })));
+      const well = h('input', { type: 'color', class: 'color-well', value: this.person.beard.color ?? this.person.colors.hair ?? hairPalette[this.person.hairColor], 'aria-label': 'Cor da barba', title: 'Cor da barba', onchange: event => setBeard({ color: event.target.value }) });
+      this.slide(beard, { label: 'Intensidade', title: 'Intensidade e cor da barba', value: this.person.beard.amount, min: 0, max: 1, trailing: well, onInput: v => setBeard({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
+      this.slide(beard, { label: 'Densidade', value: this.person.beard.density, min: 0, max: 1, ends: ['Rala', 'Cheia'], onInput: v => setBeard({ density: v }, { live: true }), onEnd: () => this.commitLive() });
     }
-    this.renderDetailed(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears']);
+    // Glasses, earrings, hat and necklace (accessories.mjs): a style each, then its colour or metal on the same line.
+    const worn = this.person.accessories, gear = this.group('Acessórios', { open: Object.values(worn).some(item => item.style !== 'nenhum') });
+    const setGear = (kind, changes) => { this.patch({ accessories: { ...worn, [kind]: { ...worn[kind], ...changes } } }, { history: `accessory:${kind}` }); this.scheduleRender(); };
+    // One line per accessory: its name, the style, then its colour or metal (and dark lenses for glasses).
+    for (const [kind, name] of Object.entries(accessoryNames)) {
+      const ids = Object.keys(accessoryStyles[kind]), item = worn[kind], on = item.style !== 'nenhum';
+      const style = h('select', { 'aria-label': name, title: name }, ids.map(id => h('option', { value: id, text: accessoryStyles[kind][id] })));
+      style.value = item.style;
+      style.addEventListener('change', () => setGear(kind, { style: style.value }));
+      const extra = !on ? [] : 'metal' in item
+        ? [h('div', { class: 'swatches mini', role: 'group', 'aria-label': `${name}: metal` }, Object.entries(metals).map(([id, hexValue]) => h('button', { type: 'button', class: `swatch${item.metal === id ? ' on' : ''}`, style: `--swatch:${hexValue}`, title: id === 'rose' ? 'Rosé' : id[0].toUpperCase() + id.slice(1), 'aria-label': `Metal: ${id}`, 'aria-pressed': String(item.metal === id), onclick: () => setGear(kind, { metal: id }) })))]
+        : [h('input', { type: 'color', class: 'color-well', value: item.color, 'aria-label': `Cor: ${name.toLowerCase()}`, title: `Cor: ${name.toLowerCase()}`, onchange: event => setGear(kind, { color: event.target.value }) }),
+          ...('lens' in item ? [h('button', { type: 'button', class: `icon-button${item.lens === 'escura' ? ' on' : ''}`, title: 'Lentes escuras', 'aria-label': 'Lentes escuras', 'aria-pressed': String(item.lens === 'escura'), onclick: () => setGear(kind, { lens: item.lens === 'escura' ? 'clara' : 'escura' }) }, icon('sun', 16))] : [])];
+      gear.append(h('div', { class: 'gear-row' }, h('span', { class: 'gear-name', text: name }), style, ...extra));
+    }
+    this.renderAdvanced([
+      ['Formas do rosto', body => this.renderDetailed(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears'], body)],
+      ['Expressão fina', body => this.renderExpressionFine(body)],
+    ]);
   }
-  /** Expression (a preview on the face, also what a timeline key records), with the 52 ARKit shapes as fine adjustments under it. */
+  /** Expression: a preview on the face, also what a timeline key records. */
   renderExpression() {
     const face = this.group('Expressão');
-    face.append(chips({ label: 'Expressão', items: expressionNames, selected: this.person.expression, onPick: i => this.update('expression', i) }));
+    // Faces, not words (the user: icons where the choice is visual); the names are in the tooltips.
+    const glyphs = ['exNeutral', 'exRelaxed', 'exHappy', 'exSmile', 'exLaugh', 'exSad', 'exAngry', 'exAnnoyed', 'exSurprised', 'exWorried', 'exTired', 'exTalking'];
+    face.append(iconChoices({ label: 'Expressão', items: expressionNames.map((name, i) => [name, glyphs[i] ?? 'face']), selected: this.person.expression, onPick: i => this.update('expression', i) }));
     this.range(face, 'expressionIntensity', 'Intensidade', 0, 1, 0.01, '', { ends: ['Leve', 'Forte'] });
+  }
+  /** The 52 ARKit face shapes added to the expression (Rosto › Avançado); E and D are left and right. */
+  renderExpressionFine(fine) {
     const touched = Object.values(this.person.faceShapes).filter(Boolean).length;
-    const fine = this.group('Expressão: ajuste fino', { open: false, advanced: true, badge: touched || null });
-    fine.classList.add('long-labels');
-    fine.append(h('p', { class: 'muted', text: 'Os 52 movimentos do rosto (padrão ARKit, o nome original aparece ao passar o mouse). Somam-se à expressão escolhida.' }));
     const regions = [['Olhos e olhar', /^eye/], ['Sobrancelhas', /^brow/], ['Mandíbula', /^jaw/], ['Boca', /^mouth/], ['Bochechas e nariz', /^(cheek|nose)/], ['Língua', /^tongue/]];
+    const setShape = name => v => this.patch({ faceShapes: { ...this.person.faceShapes, [name]: v } }, { history: `faceShapes:${name}`, live: true });
     for (const [title, test] of regions) {
       fine.append(h('div', { class: 'step-label', text: title }));
-      for (const name of blendshapeNames.filter(shape => test.test(shape))) {
-        this.slide(fine, { label: arkitLabel(name), title: `${arkitLabel(name)} (${name})`, value: this.person.faceShapes[name] ?? 0, min: -1, max: 1, center: true, onInput: v => this.patch({ faceShapes: { ...this.person.faceShapes, [name]: v } }, { history: `faceShapes:${name}`, live: true }) });
+      const names = blendshapeNames.filter(shape => test.test(shape));
+      // A Left/Right pair is one line with two tracks (the user: less height, label beside the control).
+      for (const name of names) {
+        if (name.endsWith('Right') && names.includes(name.replace(/Right$/, 'Left'))) continue;
+        const right = name.replace(/Left$/, 'Right');
+        if (name.endsWith('Left') && names.includes(right)) {
+          const base = name.replace(/Left$/, '');
+          fine.append(sliderPair({ label: arkitWords[base] ?? base, title: `${arkitWords[base] ?? base} (${name} / ${right})`, sides: [name, right].map(n => ({ value: this.person.faceShapes[n] ?? 0, onInput: setShape(n) })) }));
+        } else this.slide(fine, { label: arkitLabel(name), title: `${arkitLabel(name)} (${name})`, value: this.person.faceShapes[name] ?? 0, min: -1, max: 1, center: true, onInput: setShape(name) });
       }
     }
-    fine.append(h('button', { type: 'button', class: 'button wide', disabled: !touched, onclick: () => this.patch({ faceShapes: {} }) }, icon('reset', 16), 'Zerar o ajuste fino'));
+    fine.append(h('div', { class: 'icon-bar' }, iconButton('reset', 'Zerar a expressão fina', () => this.patch({ faceShapes: {} }), { disabled: !touched })));
   }
   /** Tattoos: pick a design (or load an image), then click the skin where it goes; each placed one can be resized, turned, recoloured or removed. */
   renderTattoos() {
@@ -926,17 +1041,22 @@ export class StudioUI {
     group.append(chips({ label: 'Desenho', items: [...keys.map(key => tattooDesigns[key].name), 'Imagem'], selected: this.tattooImage ? keys.length : keys.indexOf(this.tattooDesign),
       onPick: i => { if (i < keys.length) { this.tattooDesign = keys[i]; this.tattooImage = null; } else this.chooseTattooImage(); this.scheduleRender(); } }));
     if (this.tattooDesign === 'texto' && !this.tattooImage) group.append(row('Texto', h('input', { type: 'text', maxlength: 14, value: this.tattooText ?? 'amor', oninput: event => { this.tattooText = event.target.value; } })));
-    group.append(h('button', { type: 'button', class: `button wide${this.tattooing ? ' primary' : ''}`, onclick: () => { this.tattooing = !this.tattooing; this.setHint(this.tattooing ? 'Clique na pele onde a tatuagem vai' : ''); this.scheduleRender(); } },
-      this.tattooing ? 'Clique na pele… (clique aqui para parar)' : 'Colocar no corpo'));
-    this.person.tattoos.forEach((tattoo, index) => {
-      const item = this.group(`Tatuagem ${index + 1} · ${tattoo.image ? 'imagem' : tattooDesigns[tattoo.design]?.name ?? ''}`, { open: false });
-      const set = (changes, options) => this.patch({ tattoos: this.person.tattoos.map((t, i) => i === index ? { ...t, ...changes } : t) }, { history: `tattoo:${index}`, ...options });
-      this.slide(item, { label: 'Tamanho', value: tattoo.size, min: 0.01, max: 0.3, step: 0.005, onInput: v => set({ size: v }, { live: true }), onEnd: () => this.commitLive() });
-      this.slide(item, { label: 'Giro', value: tattoo.angle, min: -3.14, max: 3.14, step: 0.01, onInput: v => set({ angle: v }, { live: true }), onEnd: () => this.commitLive() });
-      this.slide(item, { label: 'Opacidade', value: tattoo.opacity, min: 0, max: 1, onInput: v => set({ opacity: v }, { live: true }), onEnd: () => this.commitLive() });
-      item.append(row('Tinta', h('input', { type: 'color', value: tattoo.color, 'aria-label': 'Cor da tinta', onchange: event => set({ color: event.target.value }) })));
-      item.append(h('button', { type: 'button', class: 'button danger wide', onclick: () => this.patch({ tattoos: this.person.tattoos.filter((_, i) => i !== index) }, { history: true }) }, icon('trash', 16), 'Remover tatuagem'));
-    });
+    // Placing is a mode of the 3D view: one line, lit while on (the click on the skin is in main.mjs).
+    group.append(h('div', { class: 'mode-row' }, h('button', { type: 'button', class: `mode-card${this.tattooing ? ' on' : ''}`, 'aria-pressed': String(Boolean(this.tattooing)), title: 'Clique na pele onde a tatuagem vai',
+      onclick: () => { this.tattooing = !this.tattooing; this.setHint(this.tattooing ? 'Clique na pele onde a tatuagem vai' : hints.default); this.scheduleRender(); } }, icon('plus', 18), h('span', { text: this.tattooing ? 'Clique na pele…' : 'Colocar no corpo' }))));
+    // The placed tattoos: one row each (pick, remove); the chosen one's size, turn and ink below.
+    const tattoos = this.person.tattoos;
+    if (!tattoos.length) return;
+    const chosen = Math.min(this.tattooChosen ?? tattoos.length - 1, tattoos.length - 1);
+    group.append(h('div', { class: 'piece-list' }, tattoos.map((tattoo, index) => h('div', { class: `piece${index === chosen ? ' on' : ''}` },
+      h('button', { type: 'button', class: 'piece-pick', 'aria-pressed': String(index === chosen), onclick: () => { this.tattooChosen = index; this.scheduleRender(); } }, `${index + 1}. ${tattoo.image ? 'Imagem' : tattooDesigns[tattoo.design]?.name ?? ''}`),
+      iconButton('close', 'Remover esta tatuagem', () => { this.patch({ tattoos: this.person.tattoos.filter((_, i) => i !== index) }, { history: true }); this.toast('Tatuagem removida', 'info', this.undoAction()); }, { danger: true, size: 16 })))));
+    const tattoo = tattoos[chosen];
+    const set = (changes, options) => this.patch({ tattoos: this.person.tattoos.map((t, i) => i === chosen ? { ...t, ...changes } : t) }, { history: `tattoo:${chosen}`, ...options });
+    this.slide(group, { label: 'Tamanho', value: tattoo.size, min: 0.01, max: 0.3, step: 0.005, onInput: v => set({ size: v }, { live: true }), onEnd: () => this.commitLive() });
+    this.slide(group, { label: 'Giro', value: tattoo.angle, min: -3.14, max: 3.14, step: 0.01, center: true, onInput: v => set({ angle: v }, { live: true }), onEnd: () => this.commitLive() });
+    const ink = h('input', { type: 'color', class: 'color-well', value: tattoo.color, 'aria-label': 'Cor da tinta', title: 'Cor da tinta', onchange: event => set({ color: event.target.value }) });
+    this.slide(group, { label: 'Tinta', title: 'Opacidade e cor da tinta', value: tattoo.opacity, min: 0, max: 1, trailing: ink, onInput: v => set({ opacity: v }, { live: true }), onEnd: () => this.commitLive() });
   }
   /** Load an image for a tattoo: scaled to 256 px (PNG with transparency is kept), stored with the character. */
   chooseTattooImage() {
@@ -971,8 +1091,11 @@ export class StudioUI {
     const editor = this.renderer.lockEditor;
     this.hairEntry = { person: this.person, revision: editor.revision ?? 0 };
     this.hairDirty = false;
+    const distance = this.renderer.camera.distance;
     this.renderer.setLocksMode(true);
     this.store.setHistoryTarget(this.editorHistory);
+    // The editor frames the head: no framing button stays lit for a view the camera left.
+    if (this.renderer.camera.distance !== distance) queueMicrotask(() => this.viewMoved());
   }
   /** Leaving: the locks are stored with the character (the whole visit is one undo step) and built as one game mesh. */
   finishLocks() {
@@ -1027,23 +1150,24 @@ export class StudioUI {
     const settings = editor.settings;
     this.lockPanelKey = this.lockPanelState();
 
-    // 1. The hairstyle to start from and its colour.
-    const style = this.group('Penteado');
+    // 1. What is used every time: the hairstyle (a ready-made mesh by an artist, one line; the editable
+    // locks as a picture gallery laid over it) and the colour. No explanatory text: names and tooltips.
     const tint = this.person.colors.hair ?? hairPalette[this.person.hairColor];
-    // 1a. A ready-made hair mesh as the base (the locks below are laid over it); it rebuilds the character.
-    const baseIds = [null, ...hairBases.map(base => base.id)];
-    style.append(chips({ label: 'Base pronta', items: ['Nenhuma', ...hairBases.map(base => base.name)], selected: baseIds.indexOf(this.person.hairBase ?? null),
-      onPick: i => { this.hairDirty = true; this.patch({ hairBase: baseIds[i] }); } }));
-    style.append(h('p', { class: 'muted', text: 'Base pronta: cabelo inteiro feito por artista. Mechas: escolha um estilo abaixo ou desenhe por cima da base.' }));
-    style.append(h('div', { class: 'style-grid', style: `--hair-tint:${tint}` }, hairPresets.map(p => h('button', {
-      type: 'button', class: `style-card${this.person.hairPreset === p.id ? ' on' : ''}`, title: p.name, 'aria-pressed': String(this.person.hairPreset === p.id), onclick: () => this.applyHairPreset(p.id),
+    const style = this.group('Penteado');
+    const baseIds = [null, ...hairBases.map(b => b.id)];
+    const baseSelect = h('select', { 'aria-label': 'Cabelo pronto', title: 'Cabelo pronto feito por artista (as mechas entram por cima)' }, ['Nenhum', ...hairBases.map(b => b.name)].map((name, i) => h('option', { value: String(i), text: name })));
+    baseSelect.value = String(Math.max(0, baseIds.indexOf(this.person.hairBase ?? null)));
+    baseSelect.addEventListener('change', () => { this.hairDirty = true; this.patch({ hairBase: baseIds[Number(baseSelect.value)] }); });
+    style.append(row('Pronto', baseSelect));
+    style.append(h('div', { class: 'style-grid', style: `--hair-tint:${tint}`, role: 'group', 'aria-label': 'Mechas editáveis' }, hairPresets.map(p => h('button', {
+      type: 'button', class: `style-card${this.person.hairPreset === p.id ? ' on' : ''}`, title: `Mechas: ${p.name}`, 'aria-pressed': String(this.person.hairPreset === p.id), onclick: () => this.applyHairPreset(p.id),
     }, hairPictogram(p.id), h('span', { text: p.name })))));
-    style.append(swatches({ label: 'Cor', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
-    this.toggle(style, 'Fundo escuro no couro cabeludo', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Pinta o couro entre as mechas com fios da cor do cabelo. Desligado, aparece a pele. Vale para qualquer penteado escolhido.');
+    style.append(swatches({ label: 'Cor', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, names: ['Preto', 'Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Castanho claro', 'Loiro', 'Ruivo', 'Cinza escuro', 'Platinado'],
+      onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
+    this.toggle(style, 'Couro escuro', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Pinta o couro entre as mechas com fios da cor do cabelo; desligado, aparece a pele');
 
-    // 1b. Parts: build a hairstyle from pieces (base, bangs, sides, back, tails), each added over the hair there.
-    const parts = this.group('Montar com peças');
-    parts.append(h('p', { class: 'muted', text: 'Comece por Careca e some peças: cada uma entra por cima das anteriores.' }));
+    // Parts: build a hairstyle from pieces (base, bangs, sides, back, tails), each added over the hair there.
+    const parts = this.group('Montar com peças', { open: false });
     this.partLength ??= {};
     parts.append(h('div', { class: 'part-grid' }, hairParts.map(part => h('button', {
       type: 'button', class: 'part-card', title: `Adicionar ${part.name.toLowerCase()}`,
@@ -1078,38 +1202,41 @@ export class StudioUI {
     const adjust = this.group('Ajustar mechas');
     adjust.append(h('p', { class: 'status-line', id: 'lockStatus' }));
     if (lock) {
-      adjust.append(h('p', { class: 'muted', text: count ? 'Os ajustes valem para as mechas selecionadas' : 'Sem seleção: os ajustes valem para todas (S seleciona)' }));
       this.slide(adjust, { label: 'Comprimento', value: lockLength(lock), min: 0.015, max: 1.1, step: 0.005, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setLength(v) });
       this.slide(adjust, { label: 'Largura', value: lock.width, min: 0.004, max: 0.09, step: 0.001, scale: 100, unit: 'cm', onStart: record, onInput: v => editor.setParam('width', v) });
-      this.slide(adjust, { label: 'Volume', value: lock.volume, min: 0.12, max: 0.6, onStart: record, onInput: v => editor.setParam('volume', v), title: 'Quanto a mecha se arredonda (arco do cartão)' });
-      this.slide(adjust, { label: 'Afunilar', value: lock.taper, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('taper', v), title: 'Quanto a mecha afina até a ponta' });
       this.segmented(adjust, 'Forma', choices(shapes.forms), formOf(lock.curl), i => { record(); editor.setForm(shapes.forms[i][0]); });
-      if (lock.curl > 0) this.slide(adjust, { label: 'Ondas', value: lock.turns, min: 0.5, max: 10, step: 0.1, onStart: record, onInput: v => editor.setParam('turns', v), title: 'Quantas voltas ao longo da mecha' });
-      this.slide(adjust, { label: 'Firmeza', value: lock.stiffness, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('stiffness', v), title: 'Quanto a mecha balança no movimento (0 solta, 1 firme)' });
-      this.slide(adjust, { label: 'Torcer', value: lock.twist ?? 0, min: -3.14, max: 3.14, step: 0.01, onStart: () => { this.hairDirty = true; record(); }, onInput: v => editor.setParam('twist', v), title: 'Gira a mecha em volta do próprio eixo, da raiz à ponta' });
       // Curvar works from the shape the locks have when the slider is taken; it rests at 0 again afterwards.
-      this.slide(adjust, { label: 'Curvar', value: 0, min: -1, max: 1, step: 0.01, onStart: () => { this.hairDirty = true; editor.beginBend(); }, onInput: v => editor.bendTo(v), onEnd: () => { editor.endBend(); this.scheduleRender(); }, title: 'Dobra as pontas para dentro (+) ou para fora (−) a partir da forma atual' });
-      adjust.append(h('button', { type: 'button', class: 'button wide', title: 'As mechas escolhidas (ou todas) caem e assentam sobre a cabeça, os ombros, a roupa e o cabelo de baixo, e ficam nessa forma', onclick: () => { this.hairDirty = true; editor.settle(); } }, 'Assentar com gravidade'));
-      adjust.append(h('div', { class: 'actions' },
-        count ? iconButton('close', 'Limpar seleção', () => editor.clearSelection()) : iconButton('select', 'Selecionar todas', () => editor.selectAll()),
+      this.slide(adjust, { label: 'Curvar', value: 0, min: -1, max: 1, step: 0.01, ends: ['Para fora', 'Para dentro'], onStart: () => { this.hairDirty = true; editor.beginBend(); }, onInput: v => editor.bendTo(v), onEnd: () => { editor.endBend(); this.scheduleRender(); }, title: 'Dobra as pontas para dentro ou para fora a partir da forma atual' });
+      // Actions of the selection (or all): icons with their names in the tooltip, in one bar.
+      adjust.append(h('div', { class: 'icon-bar' },
+        iconButton('settle', 'Assentar com gravidade: as mechas caem sobre a cabeça, os ombros e a roupa e ficam assim', () => { this.hairDirty = true; editor.settle(); }),
+        count ? iconButton('close', 'Limpar a seleção', () => editor.clearSelection()) : iconButton('select', 'Selecionar todas', () => editor.selectAll()),
+        iconButton('play', 'Ver o cabelo andando (em Animação)', () => { this.update('animation', 1); this.setSection('animacao'); }),
+        h('span', { class: 'spacer' }),
         count ? iconButton('trash', 'Apagar as selecionadas (Delete)', () => editor.deleteSelected(), { danger: true }) : null,
-        iconButton('reset', 'Começar do zero (sem cabelo)', () => { if (confirm('Apagar todo o cabelo?')) editor.clearAll(); }, { danger: true })));
-    } else adjust.append(h('p', { class: 'muted', text: 'Sem cabelo. Escolha um penteado acima ou desenhe com o Pincel (B).' }));
+        iconButton('reset', 'Começar do zero: apaga todas as mechas (o cabelo pronto continua)', () => { if (confirm('Apagar todas as mechas deste penteado? O cabelo pronto continua.')) editor.clearAll(); }, { danger: true })));
+    } else adjust.append(h('p', { class: 'empty-note', text: 'Sem mechas: escolha um estilo ou use o Pincel (B).' }));
 
-    // 4. The guide the brush draws on: how far from the head and how far down.
-    const guide = this.group('Guia do pincel', { open: false });
-    guide.append(h('p', { class: 'muted', text: 'A grade em volta da cabeça onde o Pincel desenha: mais volume afasta o cabelo da cabeça.' }));
-    this.slide(guide, { label: 'Volume', value: settings.guideVolume, min: 0.002, max: 0.05, step: 0.001, scale: 100, unit: 'cm', onInput: v => editor.setGuide({ volume: v }) });
-    this.slide(guide, { label: 'Comprimento', value: settings.guideLength, min: 0.1, max: 1, step: 0.01, scale: 100, unit: 'cm', onInput: v => editor.setGuide({ length: v }) });
-    this.toggle(guide, 'Mostrar a grade', settings.showGuide, on => { settings.showGuide = on; editor.updateHelpers(); });
-
-    // 5. Movement: the hair sways with spring bones in the game; see it walking.
-    const motion = this.group('Movimento', { open: false });
-    motion.append(h('p', { class: 'muted', text: 'No jogo o cabelo balança por ossos com mola. "Firmeza" em Ajustar mechas controla quanto.' }),
-      h('button', { type: 'button', class: 'button wide', onclick: () => { this.update('animation', 1); this.setSection('animacao'); } }, icon('play', 16), 'Ver o cabelo andando'));
-
-    // 7. Files.
-    const files = this.group('Arquivo', { open: false });
+    // 4. Technical settings, last and folded (one "Avançado"): the rarer lock shape values, the brush guide, files.
+    this.renderAdvanced([
+      ...(lock ? [['Mechas', more => {
+        this.slide(more, { label: 'Volume', value: lock.volume, min: 0.12, max: 0.6, ends: ['Chata', 'Arredondada'], onStart: record, onInput: v => editor.setParam('volume', v), title: 'Volume: quanto a mecha se arredonda (arco do cartão)' });
+        this.slide(more, { label: 'Afunilar', value: lock.taper, min: 0, max: 1, ends: ['Ponta larga', 'Ponta fina'], onStart: record, onInput: v => editor.setParam('taper', v), title: 'Afunilar: quanto a mecha afina até a ponta' });
+        if (lock.curl > 0) this.slide(more, { label: 'Ondas', value: lock.turns, min: 0.5, max: 10, step: 0.1, ends: ['Poucas', 'Muitas'], onStart: record, onInput: v => editor.setParam('turns', v), title: 'Ondas: voltas ao longo da mecha' });
+        this.slide(more, { label: 'Firmeza', value: lock.stiffness, min: 0, max: 1, ends: ['Solta', 'Firme'], onStart: record, onInput: v => editor.setParam('stiffness', v), title: 'Firmeza: quanto a mecha balança no movimento (ossos com mola no jogo)' });
+        this.slide(more, { label: 'Torcer', value: lock.twist ?? 0, min: -3.14, max: 3.14, step: 0.01, center: true, onStart: () => { this.hairDirty = true; record(); }, onInput: v => editor.setParam('twist', v), title: 'Torcer: gira a mecha em volta do próprio eixo' });
+      }]] : []),
+      ['Guia', guide => {
+        this.slide(guide, { label: 'Afastamento', value: settings.guideVolume, min: 0.002, max: 0.05, step: 0.001, scale: 100, unit: 'cm', onInput: v => editor.setGuide({ volume: v }), title: 'Distância entre a grade do Pincel e a cabeça' });
+        this.slide(guide, { label: 'Comprimento', value: settings.guideLength, min: 0.1, max: 1, step: 0.01, scale: 100, unit: 'cm', onInput: v => editor.setGuide({ length: v }), title: 'Até onde a grade do Pincel desce' });
+        this.toggle(guide, 'Mostrar a grade', settings.showGuide, on => { settings.showGuide = on; editor.updateHelpers(); });
+      }],
+      ['Arquivo', files => this.renderHairFiles(files, editor)],
+    ]);
+    this.updateLockStatus();
+  }
+  /** Save, load, export and import hairstyles (Cabelo › Avançado › Arquivo). */
+  renderHairFiles(files, editor) {
     const nameInput = h('input', { type: 'text', id: 'lockSlotName', value: this.lockSlot ?? 'Meu penteado', maxlength: 40, 'aria-label': 'Nome do penteado' });
     const slots = HairEditor.slots();
     const slotSelect = h('select', { id: 'lockSlots', 'aria-label': 'Penteados salvos' }, slots.map(name => h('option', { value: name, text: name })));
@@ -1123,14 +1250,14 @@ export class StudioUI {
     files.append(
       row('Nome', nameInput),
       slots.length ? row('Salvos', slotSelect) : null,
-      h('div', { class: 'actions' },
-        iconButton('save', 'Salvar com este nome', () => { const name = nameInput.value.trim() || 'Meu penteado'; this.lockSlot = name; if (editor.saveSlot(name)) this.toast(`Penteado "${name}" salvo`); else this.toast('Armazenamento indisponível', 'error'); this.scheduleRender(); }, { id: 'lockSave' }),
+      h('div', { class: 'icon-bar' },
+        iconButton('save', 'Salvar o penteado com este nome', () => { const name = nameInput.value.trim() || 'Meu penteado'; this.lockSlot = name; if (editor.saveSlot(name)) this.toast(`Penteado "${name}" salvo`); else this.toast('Armazenamento indisponível', 'error'); this.scheduleRender(); }, { id: 'lockSave' }),
         iconButton('folder', 'Carregar o salvo escolhido', () => { const name = slotSelect.value; if (!name) return; this.lockSlot = name; if (editor.loadSlot(name)) this.notify(`Penteado "${name}" carregado`); else this.toast('Penteado não encontrado', 'error'); }, { id: 'lockLoad', disabled: !slots.length }),
-        iconButton('export', 'Exportar arquivo .json', () => download(new Blob([JSON.stringify(editor.serialize())], { type: 'application/json' }), `${slug(nameInput.value || 'penteado')}.mechas.json`)),
-        iconButton('file', 'Importar arquivo .json', () => fileInput.click()),
-        slots.length ? iconButton('trash', 'Excluir o salvo escolhido', () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { editor.deleteSlot(name); this.scheduleRender(); } }, { danger: true }) : null),
+        iconButton('export', 'Baixar como arquivo .json', () => download(new Blob([JSON.stringify(editor.serialize())], { type: 'application/json' }), `${slug(nameInput.value || 'penteado')}.mechas.json`)),
+        iconButton('file', 'Abrir um arquivo .json', () => fileInput.click()),
+        h('span', { class: 'spacer' }),
+        slots.length ? iconButton('trash', 'Excluir o salvo escolhido', () => { const name = slotSelect.value; if (name && confirm(`Excluir o penteado salvo "${name}"?`)) { editor.deleteSlot(name); this.scheduleRender(); } }, { danger: true }) : null),
       fileInput);
-    this.updateLockStatus();
   }
   /** The active hair tool's options (the card over the viewport): only what that tool uses. */
   renderHairToolOptions(options, activeTool) {
@@ -1206,14 +1333,13 @@ export class StudioUI {
     let data;
     try { data = JSON.parse(json); } catch { return false; }
     if (!data || data.format !== 'hgs-outfit' || !Array.isArray(data.garments)) return false;
-    const changes = { garments: data.garments.slice(0, 8).map(normalizeGarment) };
+    const changes = { garments: data.garments.slice(0, MAX_GARMENTS).map(normalizeGarment) };
     if (data.sculpt) changes.sculpt = { ...this.person.sculpt, outfit: data.sculpt };
     this.patch(changes, { history: true });
     this.store.dispatch({ type: 'ui/set', changes: { garment: 0 } });
     return true;
   }
-  renderOutfitFiles() {
-    const files = this.group('Arquivo', { open: false });
+  renderOutfitFiles(files) {
     const nameInput = h('input', { type: 'text', id: 'outfitSlotName', value: this.outfitSlot ?? 'Minha roupa', maxlength: 40, 'aria-label': 'Nome da roupa' });
     const slots = StudioUI.outfitSlots();
     const slotSelect = h('select', { id: 'outfitSlots', 'aria-label': 'Roupas salvas' }, slots.map(name => h('option', { value: name, text: name })));
@@ -1227,50 +1353,58 @@ export class StudioUI {
     files.append(
       row('Nome', nameInput),
       slots.length ? row('Salvas', slotSelect) : null,
-      h('div', { class: 'actions' },
-        iconButton('save', 'Salvar com este nome', () => { const name = nameInput.value.trim() || 'Minha roupa'; this.outfitSlot = name; if (storage.set(OUTFIT_PREFIX + name, JSON.stringify(this.outfitData()))) this.toast(`Roupa "${name}" salva`); else this.toast('Armazenamento indisponível', 'error'); this.scheduleRender(); }, { id: 'outfitSave' }),
+      h('div', { class: 'icon-bar' },
+        iconButton('save', 'Salvar a roupa com este nome', () => { const name = nameInput.value.trim() || 'Minha roupa'; this.outfitSlot = name; if (storage.set(OUTFIT_PREFIX + name, JSON.stringify(this.outfitData()))) this.toast(`Roupa "${name}" salva`); else this.toast('Armazenamento indisponível', 'error'); this.scheduleRender(); }, { id: 'outfitSave' }),
         iconButton('folder', 'Carregar a salva escolhida', () => { const name = slotSelect.value; if (!name) return; this.outfitSlot = name; const json = storage.get(OUTFIT_PREFIX + name); if (json && this.loadOutfit(json)) this.notify(`Roupa "${name}" carregada`); else this.toast('Roupa não encontrada', 'error'); }, { id: 'outfitLoad', disabled: !slots.length }),
-        iconButton('export', 'Exportar arquivo .json', () => download(new Blob([JSON.stringify(this.outfitData())], { type: 'application/json' }), `${slug(nameInput.value || 'roupa')}.roupa.json`)),
-        iconButton('file', 'Importar arquivo .json', () => fileInput.click()),
-        slots.length ? iconButton('trash', 'Excluir a salva escolhida', () => { const name = slotSelect.value; if (name && confirm(`Excluir "${name}"?`)) { storage.remove(OUTFIT_PREFIX + name); this.scheduleRender(); } }, { danger: true }) : null),
+        iconButton('export', 'Baixar como arquivo .json', () => download(new Blob([JSON.stringify(this.outfitData())], { type: 'application/json' }), `${slug(nameInput.value || 'roupa')}.roupa.json`)),
+        iconButton('file', 'Abrir um arquivo .json', () => fileInput.click()),
+        h('span', { class: 'spacer' }),
+        slots.length ? iconButton('trash', 'Excluir a salva escolhida', () => { const name = slotSelect.value; if (name && confirm(`Excluir a roupa salva "${name}"?`)) { storage.remove(OUTFIT_PREFIX + name); this.scheduleRender(); } }, { danger: true }) : null),
       fileInput);
   }
+  /**
+   * Roupas: the outfit first; made to measure lists the pieces (inner first, each
+   * a row with its order and remove buttons), then the selected piece's cut and
+   * fabric; how it is built (on the body or by 2D patterns), painting and files
+   * are folded in one Avançado at the end.
+   */
   renderClothes() {
     const outfit = this.group('Roupa');
     outfit.append(chips({ label: 'Roupa', items: outfitNames, selected: this.person.outfit, onPick: i => this.update('outfit', i) }));
     if (this.person.outfit !== 4) {
-      const colors = this.group('Cores');
-      this.colorSwatches(colors, 'topColor', 'Parte de cima', topPalette, 'top');
-      this.colorSwatches(colors, 'bottomColor', 'Parte de baixo', bottomPalette, 'bottom');
+      this.colorSwatches(outfit, 'topColor', 'Em cima', topPalette, 'top');
+      this.colorSwatches(outfit, 'bottomColor', 'Embaixo', bottomPalette, 'bottom');
       return;
     }
     const garments = this.person.garments, index = this.garmentIndex(), garment = garments[index];
     const drafted = this.isDrafted();
     this.setHint(clothHints[this.clothTool() ?? 'look']);
-    if (garment) {
-      const method = this.group('Construção');
-      this.segmented(method, 'Criar por', ['Corte no corpo', 'Moldes 2D'], drafted ? 1 : 0, i => {
-        this.updateGarment({ authoringMode: i ? 'pattern' : 'surface', ...(i && !garment.patternData ? { patternData: createPatternTemplate(garment.type, garment) } : {}) }, { delay: 0, history: true });
-      });
-    }
-    const pieces = this.group('Peças');
-    pieces.append(chips({ label: 'Peças', items: garments.map((g, i) => `${i + 1}. ${garmentLabels[g.type]}`), selected: index, onPick: i => this.pickGarment(i) }));
-    const addSelect = h('select', { 'aria-label': 'Nova peça' }, garmentTypes.map(type => h('option', { value: type, text: garmentLabels[type] })));
-    pieces.append(row('Nova peça', addSelect), h('div', { class: 'actions' },
-      iconButton('plus', 'Adicionar a peça escolhida', () => this.setGarments([...garments, newGarment(addSelect.value)], garments.length), { disabled: garments.length >= 8 }),
-      iconButton('trash', 'Remover a peça atual', () => this.setGarments(garments.filter((_, i) => i !== index), index - 1), { disabled: !garments.length, danger: true }),
-      iconButton('inward', 'Para dentro (mais perto da pele)', () => { const g = [...garments]; [g[index - 1], g[index]] = [g[index], g[index - 1]]; this.setGarments(g, index - 1); }, { disabled: index < 1 }),
-      iconButton('outward', 'Para fora (mais por fora)', () => { const g = [...garments]; [g[index + 1], g[index]] = [g[index], g[index + 1]]; this.setGarments(g, index + 1); }, { disabled: index >= garments.length - 1 })));
+    const pieces = this.group('Peças', { badge: garments.length || null });
+    const swap = (a, b) => { const g = [...garments]; [g[a], g[b]] = [g[b], g[a]]; this.setGarments(g, b); };
+    pieces.append(h('div', { class: 'piece-list', role: 'list', 'aria-label': 'Peças, da mais perto da pele para a mais por fora' }, garments.map((g, i) => h('div', { class: `piece${i === index ? ' on' : ''}`, role: 'listitem' },
+      h('button', { type: 'button', class: 'piece-pick', 'aria-pressed': String(i === index), title: 'Escolher esta peça (ou clique nela no 3D)', onclick: () => this.pickGarment(i) }, garmentLabels[g.type]),
+      iconButton('inward', 'Para dentro (mais perto da pele)', () => swap(i, i - 1), { disabled: i < 1, size: 16 }),
+      iconButton('outward', 'Para fora', () => swap(i, i + 1), { disabled: i >= garments.length - 1, size: 16 }),
+      iconButton('close', `Remover ${garmentLabels[g.type].toLowerCase()}`, () => { this.setGarments(garments.filter((_, k) => k !== i), Math.max(0, index - (i <= index ? 1 : 0))); this.toast(`${garmentLabels[g.type]} removida`, 'info', this.undoAction()); }, { danger: true, size: 16 })))));
+    if (!garments.length) pieces.append(h('p', { class: 'empty-note', text: 'Nenhuma peça: escolha uma na galeria abaixo.' }));
+    // Gallery: one click dresses the piece over the others (everyday clothes, then carnival pieces),
+    // or a whole carnival costume at once.
+    const full = garments.length >= MAX_GARMENTS;
+    const gallery = this.group('Adicionar peça', { open: garments.length < 3, key: 'galeria' });
+    const card = type => h('button', { type: 'button', class: 'style-card', title: full ? `Limite de ${MAX_GARMENTS} peças` : `Vestir: ${garmentLabels[type]}`, disabled: full,
+      onclick: () => { this.setGarments([...garments, newGarment(type)], garments.length); this.toast(`${garmentLabels[type]} vestida: ajuste no 3D com Bordas ou Pintar`, 'info'); } }, garmentPictogram(type), h('span', { text: garmentLabels[type] }));
+    gallery.append(h('p', { class: 'empty-note', text: 'Dia a dia' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Roupas do dia a dia' }, garmentTypes.filter(type => !costumeTypes.includes(type) && !footwearTypes.includes(type)).map(card)));
+    gallery.append(h('p', { class: 'empty-note', text: 'Calçados' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Calçados' }, footwearTypes.map(card)));
+    gallery.append(h('p', { class: 'empty-note', text: 'Carnaval' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Peças de carnaval' }, costumeTypes.map(card)));
+    gallery.append(h('div', { class: 'button-row two' }, ...Object.entries(costumePresets).map(([id, preset]) => h('button', { type: 'button', class: 'button', title: preset.title,
+      onclick: () => { this.setGarments(preset.garments(), 0); this.toast(`Fantasia "${preset.name}" vestida`, 'info', this.undoAction()); } }, preset.name))));
     if (!garment) return;
-    const pattern = this.group('Moldes 2D e costura');
-    const canvas = h('div', { class: 'pattern-host' }); pattern.append(canvas);
-    this.patternEditor = new PatternEditor(canvas, { garment, onChange: value => this.updateGarment({ ...value, authoringMode: 'pattern' }, { delay: 0, history: true }) });
-    const cut = this.group('Modelagem');
+    const cut = this.group('Corte');
     const typeSelect = h('select', { 'aria-label': 'Tipo' }, garmentTypes.map(type => h('option', { value: type, text: garmentLabels[type] })));
     typeSelect.value = garment.type;
     typeSelect.addEventListener('change', () => {
       const value = { ...newGarment(typeSelect.value), paint: garment.paint, color: garment.color, color2: garment.color2, pattern: garment.pattern };
-      if (drafted) { value.authoringMode = 'pattern'; value.patternData = createPatternTemplate(value.type, value); }
+      if (drafted && patternTypes.includes(value.type)) { value.authoringMode = 'pattern'; value.patternData = createPatternTemplate(value.type, value); }
       this.updateGarment(value, { history: true });
     });
     cut.append(row('Tipo', typeSelect));
@@ -1281,23 +1415,53 @@ export class StudioUI {
     if (['pants', 'shorts', 'socks'].includes(t)) field('leg', t === 'socks' ? 'Altura' : 'Perna');
     if (['pants', 'shorts', 'skirt'].includes(t)) field('rise', 'Cintura');
     if (['skirt', 'dress'].includes(t)) field('flare', 'Rodado');
-    field('fit', 'Folga');
-    if (drafted) { this.renderOutfitFiles(); return; }
-    const fabric = this.group('Tecido');
-    const patternSelect = h('select', { 'aria-label': 'Padrão' }, garmentPatterns.map(name => h('option', { value: name, text: patternNames[name] ?? name })));
-    patternSelect.value = garment.pattern;
-    patternSelect.addEventListener('change', () => this.updateGarment({ pattern: patternSelect.value }, { history: true }));
-    fabric.append(row('Padrão', patternSelect));
-    const colorInput = key => { const input = h('input', { type: 'color', value: garment[key] }); input.addEventListener('input', () => this.updateGarment({ [key]: input.value }, { delay: 200, live: true })); return input; };
-    fabric.append(row('Cor', colorInput('color')));
-    if (garment.pattern !== 'solid') {
-      fabric.append(row('Segunda cor', colorInput('color2')));
-      this.slide(fabric, { label: 'Escala', value: garment.scale, min: 0, max: 1, onInput: v => this.updateGarment({ scale: v }, { delay: 250, live: true }) });
+    // Carnival pieces: their own measures (bands, cups, cut of the legs, plumes and fringe).
+    if (t === 'bikini_top') { field('length', 'Bojo'); field('neckline', 'Alças'); }
+    if (t === 'bikini_bottom') { field('rise', 'Cintura'); field('leg', 'Cava'); }
+    if (t === 'swimsuit') { field('neckline', 'Decote'); field('leg', 'Cava'); }
+    if (t === 'armband') { field('sleeve', 'Posição no braço'); field('length', 'Largura'); }
+    if (t === 'anklet') { field('leg', 'Posição na perna'); field('length', 'Largura'); }
+    if (t === 'fringe') { field('rise', 'Altura da faixa'); field('length', 'Comprimento das franjas'); field('flare', 'Volume'); }
+    if (t === 'backpiece' || t === 'headdress') { field('length', 'Tamanho das plumas'); field('flare', 'Abertura do leque'); }
+    if (t === 'crown') field('length', 'Altura das pontas');
+    if (t === 'boots') field('leg', 'Cano');
+    if (!costumeTypes.includes(t) && t !== 'sandals') field('fit', 'Folga');
+    if (!drafted) {
+      const fabric = this.group('Tecido');
+      // The fabric decides how the piece reflects light (sheen, metal, sequins, stones, a net) and its texture in the GLB.
+      fabric.append(h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Tecido' }, fabricIds.map(id => h('button', {
+        type: 'button', class: `style-card${garment.fabric === id ? ' on' : ''}`, 'aria-pressed': String(garment.fabric === id), title: fabricNames[id],
+        onclick: () => this.updateGarment({ fabric: id, roughness: fabrics[id].roughness }, { delay: 0, history: true }),
+      }, fabricPictogram(id, garment.color), h('span', { text: fabricNames[id] })))));
+      const tint = key => h('div', {}, swatches({ label: key === 'color' ? 'Cor' : ['backpiece', 'headdress', 'fringe'].includes(t) ? 'Cor das pontas' : footwearTypes.includes(t) ? 'Cor da sola' : 'Segunda cor', palette: garmentPalette, selected: garmentPalette.indexOf(garment[key]), custom: garmentPalette.includes(garment[key]) ? null : garment[key],
+        onPick: i => this.updateGarment({ [key]: garmentPalette[i] }, { delay: 120, history: true }), onCustom: (hex, { live = false } = {}) => this.updateGarment({ [key]: hex }, { delay: 200, live }) }));
+      fabric.append(tint('color'));
+      const patternSelect = h('select', { 'aria-label': 'Padrão' }, garmentPatterns.map(name => h('option', { value: name, text: patternNames[name] ?? name })));
+      patternSelect.value = garment.pattern;
+      patternSelect.addEventListener('change', () => this.updateGarment({ pattern: patternSelect.value }, { history: true }));
+      fabric.append(row('Padrão', patternSelect));
+      if (['backpiece', 'headdress', 'fringe', ...footwearTypes].includes(t) || garment.pattern !== 'solid') fabric.append(tint('color2'));
+      if (garment.pattern !== 'solid') this.slide(fabric, { label: 'Escala', value: garment.scale, min: 0, max: 1, ends: ['Miúdo', 'Graúdo'], onInput: v => this.updateGarment({ scale: v }, { delay: 250, live: true }) });
+      this.slide(fabric, { label: 'Aspereza', value: garment.roughness, min: 0, max: 1, ends: ['Lisa', 'Áspera'], onInput: v => this.updateGarment({ roughness: v }, { delay: 250, live: true }) });
     }
-    this.slide(fabric, { label: 'Aspereza', value: garment.roughness, min: 0, max: 1, onInput: v => this.updateGarment({ roughness: v }, { delay: 250, live: true }) });
-    const paint = this.group('Pintura', { open: false });
-    paint.append(h('button', { type: 'button', class: 'button wide', disabled: !Object.keys(garment.paint).length, onclick: () => this.updateGarment({ paint: {} }, { delay: 0, history: true }) }, `Limpar pintura (${Object.keys(garment.paint).length})`));
-    this.renderOutfitFiles();
+    // How the piece is built, its 2D patterns, the painting and the files: technical, folded at the end.
+    const method = parent => {
+      parent.append(segmented({ label: 'Feita', items: ['No corpo', 'Por moldes'], selected: drafted ? 1 : 0, onPick: i => {
+        this.updateGarment({ authoringMode: i ? 'pattern' : 'surface', ...(i && !garment.patternData ? { patternData: createPatternTemplate(garment.type, garment) } : {}) }, { delay: 0, history: true });
+      } }));
+    };
+    const painted = Object.keys(garment.paint).length;
+    this.renderAdvanced([
+      // Carnival pieces and shoes are cut on the body (or built as plumes and fringe): no 2D pattern.
+      ...(patternTypes.includes(garment.type) ? [] : [['Moldes', body => body.append(h('p', { class: 'empty-note', text: 'Esta peça é feita direto no corpo: ajuste no 3D com Bordas e Pintar.' }))]]),
+      ...(!patternTypes.includes(garment.type) ? [] : [['Moldes', body => {
+        method(body);
+        const canvas = h('div', { class: 'pattern-host' }); body.append(canvas);
+        this.patternEditor = new PatternEditor(canvas, { garment, onChange: value => this.updateGarment({ ...value, authoringMode: 'pattern' }, { delay: 0, history: true }) });
+      }]]),
+      ...(drafted ? [] : [['Pintura', body => body.append(h('div', { class: 'icon-bar' }, iconButton('reset', `Limpar a pintura de cobertura (${painted} pontos)`, () => this.updateGarment({ paint: {} }, { delay: 0, history: true }), { disabled: !painted })))]]),
+      ['Arquivo', body => this.renderOutfitFiles(body)],
+    ]);
   }
   renderClothToolOptions(options, tool) {
     this.setHint(clothHints[tool] ?? hints.default);
@@ -1344,21 +1508,27 @@ export class StudioUI {
   }
   renderSculpt() {
     if (!this.renderer) { this.group('Esculpir').append(h('p', { class: 'muted', text: 'Iniciando o 3D…' })); return; }
+    // What to sculpt, one line each; the count of edits in the group's badge; undoing in an icon bar.
     const ui = this.state.ui;
-    const target = this.group('Alvo');
-    this.segmented(target, 'Esculpir', ['Corpo e rosto', 'Roupas'], ui.sculptTarget === 'outfit' ? 1 : 0, i => this.store.dispatch({ type: 'ui/set', changes: { sculptTarget: ['body', 'outfit'][i] } }));
-    this.toggle(target, 'Esconder roupas', ui.undress, on => this.store.dispatch({ type: 'ui/set', changes: { undress: on } }), 'Esculpe o corpo sem as roupas por cima');
     const { body, outfit } = this.person.sculpt;
     const count = Object.keys(body).length + Object.values(outfit).reduce((m, edits) => m + Object.keys(edits).length, 0) + this.person.garments.reduce((total, garment) => total + (garment.patternData?.edits.length ?? 0), 0);
-    const reset = this.group('Redefinir', { open: count > 0 });
+    const target = this.group('Esculpir', { badge: count ? `${count.toLocaleString('pt-BR')} edições` : null });
+    this.segmented(target, 'Em', [['Corpo e rosto', 'body'], ['Roupa', 'shirt']], ui.sculptTarget === 'outfit' ? 1 : 0, i => this.store.dispatch({ type: 'ui/set', changes: { sculptTarget: ['body', 'outfit'][i] } }));
+    this.toggle(target, 'Sem roupa', ui.undress, on => this.store.dispatch({ type: 'ui/set', changes: { undress: on } }), 'Esculpe o corpo sem as roupas por cima');
     const clearPatterns = () => this.person.garments.map(garment => garment.patternData ? { ...garment, patternData: { ...garment.patternData, edits: [] } } : garment);
-    reset.append(h('p', { class: 'muted', text: `${count.toLocaleString('pt-BR')} edições de escultura` }), h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button', onclick: () => {
+    target.append(h('div', { class: 'icon-bar' },
+      iconButton('reset', ui.sculptTarget === 'body' ? 'Desfazer a escultura do corpo' : 'Desfazer a escultura desta roupa', () => {
         const sculpt = structuredClone(this.person.sculpt);
         if (ui.sculptTarget === 'body') sculpt.body = {}; else { const style = this.renderer.sculpt.target?.style; if (style) delete sculpt[ui.sculptTarget][style]; }
         this.patch({ sculpt, garments: ui.sculptTarget === 'outfit' ? clearPatterns() : this.person.garments }, { history: true });
-      } }, 'Esta parte'),
-      h('button', { type: 'button', class: 'button danger', onclick: () => this.patch({ sculpt: {}, garments: clearPatterns() }, { history: true }) }, 'Tudo')));
+        this.toast('Escultura desfeita', 'info', this.undoAction());
+      }, { disabled: !count }),
+      h('span', { class: 'spacer' }),
+      iconButton('trash', 'Apagar toda a escultura (corpo e roupas)', () => {
+        if (!confirm(`Apagar as ${count.toLocaleString('pt-BR')} edições de escultura do corpo e das roupas?`)) return;
+        this.patch({ sculpt: {}, garments: clearPatterns() }, { history: true });
+        this.toast('Escultura apagada', 'info', this.undoAction());
+      }, { danger: true, disabled: !count })));
   }
   renderSculptToolOptions(options) {
     const settings = this.renderer?.sculpt.settings;
@@ -1384,21 +1554,27 @@ export class StudioUI {
     this.slide(group, { label: 'Duração', value: clip.duration, min: 0.5, max: 20, step: 0.1, unit: ' s', onInput: v => setClip({ duration: Math.max(v, clip.keys.at(-1)?.t ?? 0) }, 'clip:duration'), onEnd: () => this.scheduleRender() });
     this.slide(group, { label: 'Tempo', value: this.timeAt, min: 0, max: clip.duration, step: 0.05, unit: ' s', onInput: v => { this.timeAt = v; r?.scrubUserClip(v); } });
     const near = key => Math.abs(key.t - this.timeAt) < 0.026;
-    group.append(h('div', { class: 'button-grid' },
-      h('button', { type: 'button', class: 'button primary', title: 'Grava a pose (Posar) e a expressão atuais no tempo do cursor', onclick: () => {
+    // The keys on a track (diamonds; click one to go to it), the cursor at the time above.
+    const goTo = i => {
+      this.timeAt = this.person.clip.keys[i].t;
+      if (r?.poseEditor.active) { r.poseEditor.apply(this.person.clip.keys[i].pose); r.poseEditor.commit(); } else r?.scrubUserClip(this.timeAt);
+      this.scheduleRender();
+    };
+    group.append(h('div', { class: 'timeline', role: 'group', 'aria-label': `Chaves (${clip.keys.length})` },
+      h('span', { class: 'cursor', style: `left:${(this.timeAt / clip.duration) * 100}%` }),
+      clip.keys.map((key, i) => h('button', { type: 'button', class: `key${near(key) ? ' on' : ''}`, style: `left:${(key.t / clip.duration) * 100}%`, title: `Chave em ${key.t.toFixed(2).replace('.', ',')} s`, 'aria-label': `Chave em ${key.t.toFixed(2)} segundos`, onclick: () => goTo(i) }))));
+    group.append(h('div', { class: 'icon-bar' },
+      iconButton('key', 'Gravar chave: a pose (Posar) e a expressão atuais neste tempo', () => {
         const pose = r?.poseEditor.active ? r.poseEditor.read() : this.person.posing;
         const face = faceWeights(this.person.expression, this.person.expressionIntensity ?? 0.5, this.person.faceShapes);
         const keys = [...this.person.clip.keys.filter(key => !near(key)), { t: Math.round(this.timeAt * 1000) / 1000, pose, face }];
         setClip({ keys, duration: Math.max(this.person.clip.duration, this.timeAt) }, true);
-      } }, icon('save', 16), 'Inserir chave'),
-      h('button', { type: 'button', class: 'button', disabled: !clip.keys.some(near), onclick: () => setClip({ keys: this.person.clip.keys.filter(key => !near(key)) }, true) }, icon('trash', 16), 'Apagar chave'),
-      h('button', { type: 'button', class: 'button', disabled: !clip.keys.length, onclick: () => { this.store.dispatch({ type: 'ui/set', changes: { posing: false } }); this.update('animation', custom); } }, icon('play', 16), 'Tocar'),
-      h('button', { type: 'button', class: 'button danger', disabled: !clip.keys.length, onclick: () => { if (confirm('Apagar todas as chaves?')) setClip({ keys: [] }, true); } }, 'Limpar')));
-    if (clip.keys.length) group.append(chips({ label: `Chaves (${clip.keys.length})`, items: clip.keys.slice(0, 40).map(key => `${key.t.toFixed(2)} s`), selected: clip.keys.findIndex(near), onPick: i => {
-      this.timeAt = this.person.clip.keys[i].t;
-      if (r?.poseEditor.active) { r.poseEditor.apply(this.person.clip.keys[i].pose); r.poseEditor.commit(); } else r?.scrubUserClip(this.timeAt);
-      this.scheduleRender();
-    } }));
+      }),
+      iconButton('close', 'Apagar a chave deste tempo', () => setClip({ keys: this.person.clip.keys.filter(key => !near(key)) }, true), { disabled: !clip.keys.some(near) }),
+      iconButton('play', 'Tocar a sua animação', () => { this.store.dispatch({ type: 'ui/set', changes: { posing: false } }); this.update('animation', custom); }, { disabled: !clip.keys.length }),
+      iconButton('file', 'Importar animação (.glb do Mixamo)', () => file.click()),
+      h('span', { class: 'spacer' }),
+      iconButton('trash', 'Apagar todas as chaves', () => { if (confirm(`Apagar as ${clip.keys.length} chaves da sua animação?`)) setClip({ keys: [] }, true); }, { danger: true, disabled: !clip.keys.length })));
     // An animation from a file (Mixamo or this app's rig) becomes editable keys.
     const file = h('input', { type: 'file', accept: '.glb,.gltf', hidden: true });
     file.addEventListener('change', async () => {
@@ -1414,39 +1590,54 @@ export class StudioUI {
       } catch (error) { this.toast(`Não foi possível importar: ${error.message}`, 'error'); }
       finally { this.store.end('import'); r.setPresentation(this.person); }
     });
-    group.append(file, h('button', { type: 'button', class: 'button wide', onclick: () => file.click() }, icon('export', 16), 'Importar animação (.glb Mixamo)'));
+    group.append(file);
   }
-  /** Pose: click a bone to turn it with the gizmo; drag the orange handles to place hands and feet (IK). */
+  /** Pose: click a bone to turn it with the gizmo; drag the orange handles to place hands and feet (IK). One line to switch it on. */
   renderPosing() {
     const r = this.renderer, editor = r?.poseEditor, on = Boolean(this.state.ui.posing);
-    const group = this.group('Pose', { open: on });
-    group.append(h('button', {
-      type: 'button', class: `button wide${on ? ' primary' : ''}`, 'aria-pressed': String(on),
-      onclick: () => this.store.dispatch({ type: 'ui/set', changes: { posing: !on } }),
-    }, icon('person', 16), 'Posar'));
-    if (!on || !editor) return;
-    editor.onCommit = posing => this.patch({ posing }, { history: 'posing' });
-    this.setHint('Clique num osso e gire pelo anel · arraste as esferas laranja para levar mãos e pés (IK) · botão direito gira a vista');
-    this.toggle(group, 'Simetria', editor.symmetry, value => { editor.symmetry = value; }, 'Espelha no outro lado o que você gira ou puxa');
-    group.append(h('div', { class: 'actions' },
-      iconButton('reset', 'Zerar o osso escolhido', () => editor.reset(false)),
-      iconButton('trash', 'Voltar à pose de repouso (A)', () => editor.reset(true), { danger: true })),
-      h('div', { class: 'button-grid' },
-        h('button', { type: 'button', class: 'button', onclick: () => editor.mirrorSide('l') }, 'Esquerda → direita'),
-        h('button', { type: 'button', class: 'button', onclick: () => editor.mirrorSide('r') }, 'Direita → esquerda')));
+    const group = this.group('Pose');
+    const mirror = editor ? h('button', { type: 'button', class: `icon-button${editor.symmetry ? ' on' : ''}`, 'aria-pressed': String(editor.symmetry), title: 'Simetria: espelha o que você gira ou puxa', 'aria-label': 'Simetria',
+      onclick: event => { editor.symmetry = !editor.symmetry; event.currentTarget.classList.toggle('on', editor.symmetry); event.currentTarget.setAttribute('aria-pressed', String(editor.symmetry)); } }, icon('mirror', 18)) : null;
+    group.append(h('div', { class: 'mode-row' },
+      h('button', { type: 'button', class: `mode-card${on ? ' on' : ''}`, 'aria-pressed': String(on), title: 'Posar: clique num osso e gire pelo anel; arraste as esferas laranja para levar mãos e pés',
+        onclick: () => this.store.dispatch({ type: 'ui/set', changes: { posing: !on } }) }, icon('figure', 18), h('span', { text: on ? 'Posando no 3D' : 'Posar no 3D' })),
+      on ? mirror : null));
     const names = { A: 'Repouso (A)', T: 'T', natural: 'Em pé', hips: 'Mãos na cintura', sit: 'Sentado', wave: 'Acenando', run: 'Correndo' };
     group.append(chips({ label: 'Poses prontas', items: poseLibrary.map(id => names[id]), selected: -1, onPick: i => {
+      if (!r?.current) return;
+      if (!on) this.store.dispatch({ type: 'ui/set', changes: { posing: true } });
       const posing = libraryPose(r.current.context.skeleton, poseLibrary[i]);
-      editor.apply(posing); this.patch({ posing }, { history: true });
+      r.poseEditor.apply(posing); this.patch({ posing }, { history: true });
     } }));
+    if (!on || !editor) return;
+    editor.onCommit = posing => this.patch({ posing }, { history: 'posing' });
+    this.setHint('Clique num osso e gire pelo anel · arraste as esferas laranja: mãos e pés · botão direito: girar');
+    group.append(h('div', { class: 'icon-bar' },
+      iconButton('reset', 'Zerar o osso escolhido', () => editor.reset(false)),
+      iconButton('mirrorToRight', 'Copiar o lado esquerdo para o direito', () => editor.mirrorSide('l')),
+      iconButton('mirrorToLeft', 'Copiar o lado direito para o esquerdo', () => editor.mirrorSide('r')),
+      h('span', { class: 'spacer' }),
+      iconButton('figure', 'Voltar à pose de repouso (A)', () => { editor.reset(true); this.toast('Pose de repouso', 'info', this.undoAction()); }, { danger: true })));
   }
+  /** Animação: what plays (with play/pause), how the body stands, posing, and the user's own clip. */
   renderAnimation() {
     const motion = this.group('Movimento');
-    motion.append(chips({ label: 'Movimento', items: animationNames, selected: this.person.animation, onPick: i => this.update('animation', i) }));
+    const action = () => this.renderer?.action;
+    const playing = action() ? !action().paused : true;
+    motion.append(h('div', { class: 'icon-bar' },
+      iconButton(playing ? 'pause' : 'resume', playing ? 'Pausar' : 'Tocar', event => {
+        const a = action(); if (!a) return;
+        a.paused = !a.paused;
+        const button = event.currentTarget;
+        button.replaceChildren(icon(a.paused ? 'resume' : 'pause', 18)); button.title = a.paused ? 'Tocar' : 'Pausar'; button.setAttribute('aria-label', button.title);
+      }),
+      iconButton('reset', 'Repetir do início', () => this.renderer?.replay())));
+    // While posing the movement is stopped: no movement is shown as playing (picking one leaves Posar).
+    const posing = Boolean(this.state.ui.posing);
+    motion.append(chips({ label: 'Movimento', items: animationNames, selected: posing ? -1 : this.person.animation, onPick: i => { if (posing) this.store.dispatch({ type: 'ui/set', changes: { posing: false } }); this.update('animation', i); } }));
     this.range(motion, 'animationSpeed', 'Velocidade', 0.4, 1.8, 0.01, '×');
-    motion.append(h('button', { type: 'button', class: 'button wide', onclick: () => this.renderer?.replay() }, icon('reset', 16), 'Repetir do início'));
-    const pose = this.group('Postura');
-    this.segmented(pose, null, ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], this.person.pose, v => this.update('pose', v));
+    const pose = this.group('Postura', { open: false });
+    pose.append(chips({ label: 'Postura parada', items: ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], selected: this.person.pose, onPick: v => this.update('pose', v) }));
     this.renderPosing();
     this.renderTimeline();
   }

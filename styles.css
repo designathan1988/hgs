@@ -253,6 +253,14 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .value:hover { border-color: var(--control-line); background: var(--surface); }
 .value:focus { border-color: var(--accent); background: var(--bg); color: var(--text); outline: none; }
 .unit { flex: none; font-size: 10.5px; }
+/* Accessories: name, style and colour or metal on one line. */
+.gear-row { display: flex; align-items: center; gap: 6px; min-height: 34px; margin-bottom: 4px; }
+.gear-name { width: 24%; flex: none; color: var(--text-2); font-size: 12.5px; }
+.gear-row .color-well { width: 30px; flex: none; }
+.gear-row select { flex: 1; min-width: 0; height: 30px; padding: 0 4px 0 8px; border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); }
+.gear-row .icon-button { width: 30px; height: 30px; }
+.swatches.mini { gap: 4px; flex-wrap: nowrap; }
+.swatches.mini .swatch { width: 20px; height: 20px; }
 .color-well { justify-self: end; width: 40px; height: 24px; padding: 0; border: 1px solid var(--control-line); border-radius: 6px; background: none; cursor: pointer; }
 .color-well::-webkit-color-swatch-wrapper { padding: 2px; }
 .color-well::-webkit-color-swatch { border: 0; border-radius: 4px; }
@@ -302,6 +310,12 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 .segmented.stacked button { height: auto; min-height: 34px; padding: 6px 10px; text-align: left; white-space: normal; }
 .segmented.stacked button small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
 
+/* Picture presets with a short name (body types, ages). */
+.preset-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; margin: 2px 0 10px; }
+.preset { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 2px 5px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text-2); font-size: 11px; }
+.preset:hover { background: var(--surface-2); color: var(--text); }
+.preset.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.preset.on .icon { color: var(--accent); }
 /* Icon choices (expressions): a wrapping grid of square buttons. */
 .icon-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 4px; margin-bottom: 8px; }
 .icon-choice { display: grid; place-items: center; height: 36px; padding: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text-2); }
