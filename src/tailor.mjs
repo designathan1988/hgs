@@ -397,7 +397,7 @@ export function garmentEdgeAt(context, garment, v) {
   if (t === 'pants' || t === 'shorts') return y < layout.hipY - 0.03 * k ? { key: 'leg', label: 'Perna', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
   if (t === 'skirt') return y < layout.hipY ? { key: 'length', label: 'Barra', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
   if (t === 'socks') return { key: 'leg', label: 'Altura', sign: 1 };
-  if (t === 'bikini_top') return { key: 'length', label: 'Bojo', sign: -1 };
+  if (t === 'bikini_top') return { key: 'length', label: 'Bojo', sign: 1 };
   if (t === 'bikini_bottom') return y < layout.hipY - 0.01 * k ? { key: 'leg', label: 'Cava', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
   if (t === 'swimsuit') return y > (layout.chestY + layout.neckY) / 2 ? { key: 'neckline', label: 'Decote', sign: 1 } : { key: 'leg', label: 'Cava', sign: 1 };
   if (t === 'armband') return { key: 'sleeve', label: 'Posição', sign: 1 };
