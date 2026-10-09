@@ -1273,7 +1273,11 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new Float32BufferAttribute(points, 3)); geometry.setIndex(panel.index); geometry.computeVertexNormals();
       panel.normal = Array.from(geometry.getAttribute('normal').array);
-      if(panel.pattern&&!fabrics[garment.fabric].net)for(const face of coveredPatternFaces(context,panel,points,geometry.attributes.normal.array,skin,layout))covered.add(face);
+      if (panel.pattern) {
+        // The body faces this sewn piece encloses: they hide the skin (unless it is a net) and the layers beneath.
+        panel.coveredFaces = coveredPatternFaces(context, panel, points, geometry.attributes.normal.array, skin, layout);
+        if (!fabrics[garment.fabric].net) for (const face of panel.coveredFaces) covered.add(face);
+      }
       // Normals turned away from the skin, so "outside" this garment means away from the body.
       collider.add(points, geometry.getAttribute('normal').array, panel.index, { orient: true });
       geometry.dispose();
@@ -1284,9 +1288,21 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   // Parts of an inner layer fully covered by an outer one are tucked in, so
   // they are removed like covered skin: never visible, and nothing can show
   // through. A skirt or dress tube covers what lies between its band and hem.
+  // A sewn outer piece covers a skin point when every body face round it lies under the piece
+  // (MakeClothes' delete groups: a vertex only when all faces containing it are hidden, or holes
+  // show). Skipping sewn pieces left an inner shirt whole, and it showed through a sewn hoodie in motion.
+  let facesOf = null;
+  const sewnCovers = (j, v) => {
+    if (!facesOf) {
+      facesOf = new Map();
+      layout.faces.forEach((face, f) => { for (let c = 0; c < 4; c++) { const id = context.data.faces[face * 4 + c]; if (!facesOf.has(id)) facesOf.set(id, []); facesOf.get(id).push(f); } });
+    }
+    const around = facesOf.get(v);
+    return Boolean(around?.length) && finished.some(item => item.layer === j && item.panel.coveredFaces && around.every(f => item.panel.coveredFaces.has(f)));
+  };
   const outerCovers = (layer, v) => garments.some((outer, j) => {
     if (j <= layer || v < 0) return false;
-    if (outer.authoringMode!=='surface'&&outer.patternData?.panels.length) return false;
+    if (outer.authoringMode!=='surface'&&outer.patternData?.panels.length) return sewnCovers(j, v);
     const y = context.positions[v * 3 + 1];
     if (outer.type === 'skirt' || outer.type === 'dress') {
       const tube = finished.find(item => item.layer === j && item.panel.skirt)?.panel.skirt;
