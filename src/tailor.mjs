@@ -774,6 +774,61 @@ function fitShell(points, index, bodyNormals, beneath, { base, room, iterations,
   for (let iteration = 0; iteration < settle; iteration++) { relax(0.5); relax(-0.53); }
 }
 
+/** Convex hull of 2D points (Andrew's monotone chain), counter-clockwise. */
+function convexHull2D(list) {
+  const p = list.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of p) { while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), q) <= 0) lower.pop(); lower.push(q); }
+  for (const q of p.reverse()) { while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+/** Distance from (x, y) along the unit direction (dx, dy) to where it leaves a convex polygon containing it. */
+function rayToPolygon(x, y, dx, dy, polygon) {
+  let best = 0;
+  for (let i = 0; i < polygon.length; i++) {
+    const [ax, ay] = polygon[i], [bx, by] = polygon[(i + 1) % polygon.length], ex = bx - ax, ey = by - ay;
+    const denominator = dx * ey - dy * ex;
+    if (Math.abs(denominator) < 1e-12) continue;
+    const t = ((ax - x) * ey - (ay - y) * ex) / denominator, s = ((ax - x) * dy - (ay - y) * dx) / denominator;
+    if (t > 0 && s >= 0 && s <= 1) best = Math.max(best, t);
+  }
+  return best;
+}
+/**
+ * A shoe is a rigid last-shaped shell: in slices across each foot (along its length), every point of the
+ * shell comes out to the convex outline of its slice, so the upper spans the toes and their clefts and
+ * the instep, as a shoe's upper is lasted, instead of tracing each toe.
+ */
+function lastShoe(points, k, ankleY = Infinity) {
+  // Slices across the length (x, y), along the length seen from above (x, z) and from the side (z, y):
+  // the toes' different lengths are spanned at the front too. Twice, as each pass changes the others' slices.
+  const planes = [[2, 0, 1], [1, 0, 2], [0, 2, 1]];
+  for (const side of [1, -1]) {
+    const ids = [];
+    // The foot only: a boot's shaft above the ankle joint is a tube round the leg, not part of the last.
+    for (let v = 0; v < points.length / 3; v++) if (Math.sign(points[v * 3]) === side && points[v * 3 + 1] < ankleY) ids.push(v);
+    if (ids.length < 10) continue;
+    for (let pass = 0; pass < 2; pass++) for (const [axis, a, b] of planes) {
+      let min = Infinity, max = -Infinity;
+      for (const v of ids) { min = Math.min(min, points[v * 3 + axis]); max = Math.max(max, points[v * 3 + axis]); }
+      for (let s0 = min; s0 < max; s0 += 0.008 * k) {
+        const slice = ids.filter(v => points[v * 3 + axis] >= s0 && points[v * 3 + axis] < s0 + 0.008 * k);
+        if (slice.length < 4) continue;
+        const hull = convexHull2D(slice.map(v => [points[v * 3 + a], points[v * 3 + b]]));
+        if (hull.length < 3) continue;
+        const ca = hull.reduce((s, q) => s + q[0], 0) / hull.length, cb = hull.reduce((s, q) => s + q[1], 0) / hull.length;
+        for (const v of slice) {
+          const da = points[v * 3 + a] - ca, db = points[v * 3 + b] - cb, r = Math.hypot(da, db);
+          if (r < 1e-6) continue;
+          const reach = rayToPolygon(ca, cb, da / r, db / r, hull);
+          if (reach > r) { points[v * 3 + a] = ca + da / r * reach; points[v * 3 + b] = cb + db / r * reach; }
+        }
+      }
+    }
+  }
+}
+
 /** The upper convex chain of 2D points (Andrew's monotone chain), left to right: the outline a stretched cover takes. */
 function outerChain(list) {
   const p = list.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]), upper = [];
@@ -1130,6 +1185,9 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
           points[v * 3 + 1] = -0.012 * k;
           if (side > 0.2) { points[v * 3] += nx / side * 0.005 * k; points[v * 3 + 2] += nz / side * 0.005 * k; }
         }
+        // Trainers and boots are lasted: convex across the foot, the toes and the instep spanned.
+        // Many points land on one edge of a slice's outline: Taubin steps (no shrinking) even them out.
+        if (garment.type !== 'sandals') { lastShoe(points, k, layout.legs.l.C.y); taubinSmooth(points, panel.index, 12); smoothRims(points, panel.index, 3); }
       }
       const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
       resolvePenetration(points, panel.index, beneath, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });

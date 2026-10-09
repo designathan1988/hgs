@@ -164,7 +164,9 @@ export function buildCostume(context, garments) {
         const angle = c / columns * Math.PI * 2, dir = new Vector3(Math.sin(angle), 0, Math.cos(angle));
         // Close on the bare forehead, room for the hair at the sides and back.
         const facing = Math.abs(Math.atan2(Math.sin(angle), Math.cos(angle))), off = (0.006 + 0.014 * smooth(0.6, 1.3, facing)) * k;
-        const rBottom = head.radius(angle, head.centre.y) + off, rTop = head.radius(angle, head.centre.y + tall) + off;
+        // The widest the head is across the band's height, so the forehead's curve never comes through it.
+        const widest = Math.max(head.radius(angle, head.centre.y), head.radius(angle, head.centre.y + tall / 2), head.radius(angle, head.centre.y + tall));
+        const rBottom = widest + off, rTop = widest + off;
         const bottom = head.centre.clone().addScaledVector(dir, rBottom), top = head.centre.clone().add(new Vector3(0, tall, 0)).addScaledVector(dir, Math.min(rTop, rBottom));
         const middle = bottom.clone().lerp(top, 0.5).addScaledVector(dir, 0.004 * k);
         ring.push({ angle, dir, bottom, top, r: rBottom });
@@ -203,7 +205,9 @@ export function buildCostume(context, garments) {
           const c = chain('head', group, `costume_${layer}_head_${s}`, { stiffness: 1.8, gravityPower: 0.04, dragForce: 0.35, hitRadius: round(0.015 * k), colliders: ['head'] });
           for (const m of group) {
             feather(parts.feather, m.at, m.side, m.width, colorA, colorB, 'head', c, m.swing, layer);
-            feather(parts.feather, m.at, m.cross, m.width * 0.8, colorA, colorB, 'head', c, m.swing, layer);
+            // The crossing card starts a quarter of the way out (at its root it would cut into the head);
+            // its swing is re-based so each point gets the same weights as the main card's point there.
+            feather(parts.feather, t => m.at(0.25 + 0.75 * t), m.cross, m.width * 0.8, colorA, colorB, 'head', c, 1 - (1 - m.swing) / 0.75, layer);
           }
         }
       }
