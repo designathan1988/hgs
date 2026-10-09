@@ -4,6 +4,7 @@ import { normalizeLocks } from './locks.mjs';
 import { hairPresetIds } from './hair-presets.mjs';
 import { beardStyles, defaultBeard, defaultMakeup, tattooDesigns } from './skin-layers.mjs';
 import { accessoryStyles, defaultAccessories, metals } from './accessories.mjs';
+import { clipLabels } from './motion.mjs';
 
 const hexColor = (value, fallback) => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
 const bounded = (value, min, max, fallback) => Number.isFinite(value) ? Math.round(Math.max(min, Math.min(max, value)) * 1e4) / 1e4 : fallback;
@@ -66,9 +67,8 @@ const hairBaseIds = hairBases.map(base => base.id);
 // Old presets stored a CC0 hair mesh index; each maps to the nearest mesh-lock style.
 const legacyHair = ['curto', 'curto', 'longo', 'chanel', 'chanel', 'chanel', 'franja', 'longo', 'franja', 'franja', 'cacheado', 'curto', 'careca', 'longo', 'longo'];
 export const expressionNames = ['Neutra', 'Relaxada', 'Feliz', 'Sorriso', 'Rindo', 'Triste', 'Brava', 'Irritada', 'Surpresa', 'Preocupada', 'Cansada', 'Falando'];
-// The last one is the character's own keyed clip (timeline.mjs).
 // Order of clipNames in motion.mjs, then the character's own keyed clip ('Personalizada', always last).
-export const animationNames = ['Parado', 'Andar', 'Andar rápido', 'Trote', 'Correr', 'Parar', 'Virar', 'Sentar', 'Levantar', 'Olhar em volta', 'Falar', 'Gesticular', 'Acenar', 'Usar celular', 'Carregar', 'Interagir', 'Sambar', 'Desfilar', 'Personalizada'];
+export const animationNames = [...clipLabels, 'Personalizada'];
 export const lightingNames = ['Neutra', 'Luz do dia', 'Estúdio', 'Dramática', 'Externa'];
 
 export const defaultCharacter = Object.freeze({
@@ -120,7 +120,7 @@ const ranges = {
   browWidth: [0.7, 1.4], browHeight: [-1, 1], browDensity: [0, 1],
   lashLength: [0.4, 1.8], lashCurl: [0, 1], lashDensity: [0, 1],
   bottomColor: [0, 5, true], expression: [0, 11, true], expressionIntensity: [0, 1],
-  animation: [0, 18, true], animationSpeed: [0.4, 1.8], lighting: [0, 4, true], pose: [0, 3, true],
+  animation: [0, animationNames.length - 1, true], animationSpeed: [0.4, 1.8], lighting: [0, 4, true], pose: [0, 3, true],
   proportions: [0, 1], african: [0, 1], asian: [0, 1], caucasian: [0, 1], cupsize: [0, 1], firmness: [0, 1],
 };
 
@@ -161,9 +161,11 @@ export function normalizeClip(value) {
 
 export function normalizeCharacter(value = {}) {
   const result = { ...defaultCharacter };
-  result.version = 3;
-  // Version 3 added two clips (Sambar, Desfilar) before 'Personalizada': an older character's own clip (16) moves to 18.
-  if ((value.version ?? 0) < 3 && value.animation === 16) value = { ...value, animation: animationNames.length - 1 };
+  result.version = 4;
+  // New clips go before 'Personalizada': an older character's own clip moves to the last index
+  // (version < 3: index 16; version 3, with Sambar and Desfilar: 18; version 4: the captured library).
+  const ownClip = { 3: 18 }[value.version ?? 0] ?? ((value.version ?? 0) < 3 ? 16 : null);
+  if (ownClip !== null && value.animation === ownClip) value = { ...value, animation: animationNames.length - 1 };
   result.creation = { locks: Object.fromEntries(['body', 'face', 'hair', 'clothes'].map(key => [key, value.creation?.locks?.[key] === true])) };
   if (typeof value.name === 'string') result.name = value.name.trim().slice(0, 42) || defaultCharacter.name;
   if (Number.isFinite(value.seed)) result.seed = Math.floor(value.seed) >>> 0;

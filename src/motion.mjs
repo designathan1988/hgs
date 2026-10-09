@@ -1,10 +1,24 @@
 import { AnimationClip, Euler, NumberKeyframeTrack, Quaternion, QuaternionKeyframeTrack, Vector3, VectorKeyframeTrack } from 'three';
 
-// Clip order matches animationNames in state.mjs.
+// Clip order matches animationNames in state.mjs (clipLabels, then the user's own clip). New clips go at
+// the end: a saved character keeps its clip by index.
 export const clipNames = ['idle', 'walk', 'fast_walk', 'jog', 'run', 'stop', 'turn', 'sit', 'stand_up',
-  'look_around', 'talk', 'gesture', 'wave', 'use_phone', 'carry', 'interact'];
+  'look_around', 'talk', 'gesture', 'wave', 'use_phone', 'carry', 'interact', 'samba', 'runway_walk',
+  'breathe', 'sit_idle', 'stroll', 'walk_cool', 'catwalk', 'dance', 'dance_cool', 'dance_silly', 'dance_energetic',
+  'dance_happy', 'cheer', 'clap', 'laugh', 'shrug', 'crouch'];
+export const clipLabels = ['Parado', 'Andar', 'Andar rápido', 'Trote', 'Correr', 'Parar', 'Virar', 'Sentar', 'Levantar',
+  'Olhar em volta', 'Falar', 'Apresentar', 'Acenar', 'Usar celular', 'Segurar bolsa', 'Bater na porta', 'Sambar', 'Desfilar',
+  'Respirar', 'Sentado', 'Passear', 'Andar confiante', 'Passarela', 'Dançar', 'Dança descolada', 'Dança divertida', 'Dança agitada',
+  'Dança animada', 'Comemorar', 'Bater palmas', 'Rir', 'Dar de ombros', 'Agachado'];
+/** Groups of the library in the Animação panel. */
+export const clipGroups = [
+  ['Parado', ['idle', 'breathe', 'look_around', 'talk', 'gesture', 'laugh', 'shrug', 'wave', 'use_phone', 'carry', 'interact']],
+  ['Andar e correr', ['walk', 'stroll', 'walk_cool', 'fast_walk', 'jog', 'run', 'stop', 'turn', 'catwalk', 'runway_walk']],
+  ['Sentar', ['sit', 'sit_idle', 'stand_up', 'crouch']],
+  ['Festa', ['samba', 'dance', 'dance_cool', 'dance_silly', 'dance_energetic', 'dance_happy', 'cheer', 'clap']],
+];
 // These play once and hold their last frame instead of looping.
-export const oneShotClips = new Set(['stop', 'sit', 'stand_up']);
+export const oneShotClips = new Set(['stop', 'turn', 'sit', 'stand_up']);
 
 // Left-arm directions in the torso frame (+x to the character's left, +y up,
 // +z forward): [shoulder → elbow, elbow → wrist]. The right arm mirrors x.
@@ -15,7 +29,7 @@ const stances = [
   [[0.85, -1, -0.32], [-0.9, -0.5, 0.25]], // hands on hips
 ];
 
-const animatedBones = ['spine_01', 'spine_02', 'spine_03', 'neck_01', 'head', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r',
+const animatedBones = ['pelvis', 'spine_01', 'spine_02', 'spine_03', 'neck_01', 'head', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r',
   'foot_l', 'foot_r', 'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r'];
 const TAU = Math.PI * 2;
 const X = new Vector3(1, 0, 0);
@@ -61,6 +75,90 @@ const gaits = {
   jog: { seconds: 0.72, stride: 0.55, knee: 1.15, arm: 0.5, lean: 0.12, bob: 0.03, bent: true },
   run: { seconds: 0.6, stride: 0.75, knee: 1.5, arm: 0.7, lean: 0.2, bob: 0.04, bent: true },
 };
+
+/** Smooth piecewise value through keys [[u, value], ...] (u ascending over 0..1). */
+function keyed(u, keys) {
+  for (let i = 1; i < keys.length; i++) {
+    const [u1, v1] = keys[i];
+    if (u > u1 && i < keys.length - 1) continue;
+    const [u0, v0] = keys[i - 1];
+    return v0 + (v1 - v0) * smooth((u - u0) / Math.max(1e-6, u1 - u0));
+  }
+  return keys.at(-1)[1];
+}
+
+/**
+ * Samba no pé, the solo samba of the passista: 2/4, three steps per measure (step-ball-change,
+ * "and-a-one, and-a-two"), one measure on each side. The torso stays upright and the knees do the
+ * work: on 1 the weight is on the outside foot, straight; on "a" it passes briefly to the ball of
+ * the other foot, whose knee bends and drops that side of the hips; on 2 it is back on the
+ * outside foot; on "and" the other foot lifts to start the next measure. The hips swing to the
+ * side bearing the weight (pelvis roll and sideways shift, the legs counter-rotated so the feet
+ * stay under the body), the knees bounce twice per measure, and the arms, out to the sides with
+ * the elbows bent, rise and fall against the hips.
+ */
+function samba(t, c) {
+  const u = (t * 2) % 1, first = t < 0.5, size = c.thigh / 0.42;
+  // Weight on the right foot (1) or the left (0) through the measure that starts on the right.
+  const measure = keyed(u, [[0, 1], [0.28, 1], [0.375, 0.2], [0.47, 1], [0.72, 1], [1, 0]]);
+  const w = first ? measure : 1 - measure;
+  const roll = -(w - 0.5) * 2 * 0.15, shift = -(w - 0.5) * 2 * 0.035 * size, yaw = (w - 0.5) * 2 * 0.07;
+  const bounce = 0.5 + 0.5 * Math.cos(TAU * 4 * t);
+  // The unweighted leg is bent, a little forward and up on its ball; the weighted one nearly straight.
+  const calfR = 0.1 + 0.42 * (1 - w) + 0.3 * bounce, calfL = 0.1 + 0.42 * w + 0.3 * bounce;
+  const thighR = -0.5 * calfR - 0.1 * (1 - w), thighL = -0.5 * calfL - 0.1 * w;
+  const lift = (1 - w) - 0.5;
+  return {
+    rot: {
+      pelvis: [0, yaw, roll],
+      thigh_r: [thighR, 0, -roll - 0.04], thigh_l: [thighL, 0, -roll + 0.04],
+      calf_r: [calfR, 0, 0], calf_l: [calfL, 0, 0],
+      foot_r: [-(thighR + calfR) * 0.7 + 0.28 * (1 - w), 0, 0], foot_l: [-(thighL + calfL) * 0.7 + 0.28 * w, 0, 0],
+      // The torso stays upright over the moving hips; the shoulders shimmy in time.
+      spine_01: [0.03, -yaw * 0.8, -roll * 0.9], spine_02: [0, 0, 0.015 * Math.sin(TAU * 8 * t)],
+      spine_03: [-0.03, 0.025 * Math.sin(TAU * 8 * t), 0], head: [0.02, 0, -0.04 * Math.sin(TAU * 2 * t)],
+    },
+    arms: {
+      l: [[0.78, -0.42 + 0.3 * lift, 0.3], [0.3, 0.45 + 0.35 * lift, 0.85]],
+      r: [[0.78, -0.42 - 0.3 * lift, 0.3], [0.3, 0.45 - 0.35 * lift, 0.85]],
+    },
+    // The feet stay on the floor: the pelvis comes down by what the weighted leg shortens (thigh
+    // forward half the knee's bend, so hip–ankle is (thigh + shin)·cos(bend/2)) and by the height its
+    // hip rises over the pelvis centre with the roll (half the hip width, about 9 cm at 1.7 m).
+    pelvis: [shift, -2 * c.thigh * (1 - Math.cos(0.5 * (w * calfR + (1 - w) * calfL))) - 0.09 * size * Math.abs(Math.sin(roll)), 0],
+  };
+}
+
+/**
+ * Runway walk (desfile): heel first, each foot placed in front of the other on one line (the legs
+ * turn in towards the middle in stance and swing round the other leg), long even strides at a
+ * steady pace, the hips swaying with the stride (pelvis roll and sideways shift over the stance
+ * leg, and more pelvis rotation than an everyday walk), shoulders back and level against the hips,
+ * head straight, arms loose and close with a small swing.
+ */
+function runwayWalk(t, c) {
+  const phase = TAU * t, size = c.thigh / 0.42, stride = 0.34;
+  const thighL = -stride * Math.sin(phase), thighR = -thighL;
+  const swingL = Math.max(0, Math.cos(phase)), swingR = Math.max(0, -Math.cos(phase));
+  const calfL = 0.04 + 0.5 * swingL, calfR = 0.04 + 0.5 * swingR;
+  // Left stance while cos(phase) < 0: the weight and the hip go to the left.
+  const roll = -0.1 * Math.cos(phase), yaw = -0.15 * Math.sin(phase);
+  const across = 0.1, inL = across * (0.55 - 0.45 * Math.cos(phase)), inR = across * (0.55 + 0.45 * Math.cos(phase));
+  return {
+    rot: {
+      pelvis: [0, yaw, roll],
+      thigh_l: [thighL, 0, -roll - inL], thigh_r: [thighR, 0, -roll + inR],
+      calf_l: [calfL, 0, 0], calf_r: [calfR, 0, 0],
+      foot_l: [-(thighL + calfL) * 0.6, 0, 0], foot_r: [-(thighR + calfR) * 0.6, 0, 0],
+      spine_01: [0.01, -yaw * 0.75, -roll * 0.85], spine_03: [-0.07, 0, 0], neck_01: [0.02, 0, 0], head: [0.04, 0, 0],
+    },
+    arms: {
+      l: [swung([0.12, -1, -0.1], 0.16 * Math.sin(phase)), swung([0.04, -1, 0.12], 0.2 * Math.sin(phase))],
+      r: [swung([0.12, -1, -0.1], -0.16 * Math.sin(phase)), swung([0.04, -1, 0.12], -0.2 * Math.sin(phase))],
+    },
+    pelvis: [-0.022 * size * Math.cos(phase), -0.01 * size * (0.5 - 0.5 * Math.cos(2 * phase)), 0],
+  };
+}
 
 function seated(u, thigh) {
   return {
@@ -132,6 +230,9 @@ const clips = {
     rot: { spine_01: [-0.05, 0, 0], spine_02: [0.01 * Math.sin(TAU * t), 0, 0] },
     arms: { l: [[0.14, -1, 0.22], [-0.3, 0.05, 1]], r: [[0.14, -1, 0.22], [-0.3, 0.05, 1]] },
   }) },
+  // Two measures of 2/4 (one on each side) at about 150 beats a minute.
+  samba: { seconds: 1.6, sample: samba },
+  runway_walk: { seconds: 1.1, sample: runwayWalk },
   interact: { seconds: 2.4, sample: (t, c) => {
     const pose = stancePose(c.stance);
     const reach = 0.5 - 0.5 * Math.cos(TAU * t);
@@ -160,6 +261,8 @@ function faceCurves(name, seconds) {
     curves.mouthFunnel = t => 0.15 * Math.max(0, Math.sin(TAU * t * 1.3 / seconds * 3 + 1));
   }
   if (name === 'run' || name === 'jog') curves.jawOpen = () => 0.12;
+  // A passista smiles through the samba.
+  if (name === 'samba') { curves.mouthSmileLeft = () => 0.55; curves.mouthSmileRight = () => 0.55; curves.jawOpen = () => 0.06; }
   return curves;
 }
 
@@ -242,15 +345,168 @@ export function libraryPose(skeleton, name) {
   return out;
 }
 
-/** Procedural clips for the editor preview and GLB export, in clipNames order. */
-export function buildClips(skeleton, stance = 0, faceMeshes = []) {
+// ------------------------------------------------------------ captured clips (Rocketbox library)
+
+const asset = name => new URL(`../assets/animations/${name}`, import.meta.url);
+async function readAsset(name, binary) {
+  const url = asset(name);
+  if (url.protocol === 'file:') {
+    const { readFile } = await import('node:fs/promises');
+    const bytes = await readFile(url);
+    return binary ? bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) : JSON.parse(bytes.toString('utf8'));
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not load animations/${name}: HTTP ${response.status}`);
+  return binary ? response.arrayBuffer() : response.json();
+}
+
+let libraryLoading = null;
+/**
+ * The motion-capture library made by tools/import-rocketbox.mjs (Microsoft Rocketbox, MIT): per clip
+ * and sex, D rotations per bone (motion.mjs convention) at the kept frames, and the pelvis offset in
+ * hip heights. Resolves to { clips: { id: { m, f } }, credit } or null when the files are missing.
+ */
+export function loadMotionLibrary() {
+  libraryLoading ??= (async () => {
+    const [index, bin] = await Promise.all([readAsset('rocketbox.json'), readAsset('rocketbox.bin', true)]);
+    const decode = variant => {
+      const time = frames => Float32Array.from(frames, f => f / index.fps);
+      const tracks = new Map(variant.tracks.map(([bone, count, framesAt, valuesAt]) => {
+        const values = Float32Array.from(new Int16Array(bin, valuesAt, count * 4), v => v / index.quaternionScale);
+        // int16 rounding: back to unit length.
+        for (let k = 0; k < values.length; k += 4) {
+          const n = Math.hypot(values[k], values[k + 1], values[k + 2], values[k + 3]) || 1;
+          for (let c = 0; c < 4; c++) values[k + c] /= n;
+        }
+        return [index.bones[bone], { times: time(new Uint16Array(bin, framesAt, count)), values }];
+      }));
+      const [count, framesAt, valuesAt] = variant.pelvis;
+      const pelvis = { times: time(new Uint16Array(bin, framesAt, count)), values: Float32Array.from(new Int16Array(bin, valuesAt, count * 3), v => v / index.pelvisScale) };
+      return { duration: variant.duration, loop: variant.loop, file: variant.file, tracks, pelvis };
+    };
+    const clipsById = {};
+    for (const [id, variants] of Object.entries(index.clips)) clipsById[id] = Object.fromEntries(Object.entries(variants).map(([sex, v]) => [sex, decode(v)]));
+    return { clips: clipsById, credit: { source: index.source, license: index.license, copyright: index.copyright } };
+  })().catch(error => { console.warn('Motion library unavailable', error); libraryLoading = null; return null; });
+  return libraryLoading;
+}
+
+/** The library clip `id` for a body of this sex (gender < 0.5 is female, state.mjs), or null. */
+export function libraryVariant(library, id, gender = 0.5) {
+  const variants = library?.clips?.[id];
+  if (!variants) return null;
+  return (gender < 0.5 ? variants.f ?? variants.m : variants.m ?? variants.f) ?? null;
+}
+
+/** Local rest position of bone `index` (as makeSkeleton places it). */
+export function restPosition(skeleton, index) {
+  const parent = skeleton.bones[index].parent, p = parent?.isBone ? skeleton.bones.indexOf(parent) : -1;
+  if (p < 0) return skeleton.heads[index].clone();
+  return skeleton.heads[index].clone().sub(skeleton.heads[p]).applyQuaternion(skeleton.rest[p].clone().invert());
+}
+/** Height of the pelvis above the floor at rest: library offsets are in these units. */
+const hipHeight = skeleton => skeleton.heads[skeleton.byName.get('pelvis')].y;
+
+/** Blinks as sparse keys: closed at each blink's middle, open 90 ms either side. */
+function blinkTrack(seconds) {
+  const times = [0], values = [0], blinks = Math.max(1, Math.round(seconds / 2.6));
+  for (let i = 0; i < blinks; i++) {
+    const at = seconds * (i + 0.62) / blinks;
+    for (const [dt, v] of [[-0.09, 0], [-0.045, 0.75], [0, 1], [0.045, 0.75], [0.09, 0]]) {
+      const t = at + dt;
+      if (t > times.at(-1) + 1e-4 && t < seconds) { times.push(t); values.push(v); }
+    }
+  }
+  if (seconds > times.at(-1) + 1e-4) { times.push(seconds); values.push(0); }
+  return { times, values };
+}
+// Faces that go with a captured clip (blendshape weights; constant over the clip).
+const libraryFaces = {
+  laugh: { mouthSmileLeft: 0.7, mouthSmileRight: 0.7, jawOpen: 0.25, cheekSquintLeft: 0.35, cheekSquintRight: 0.35 },
+  cheer: { mouthSmileLeft: 0.6, mouthSmileRight: 0.6, jawOpen: 0.15 },
+  dance: { mouthSmileLeft: 0.4, mouthSmileRight: 0.4 }, dance_cool: { mouthSmileLeft: 0.3, mouthSmileRight: 0.3 },
+  dance_silly: { mouthSmileLeft: 0.55, mouthSmileRight: 0.55, jawOpen: 0.08 }, dance_energetic: { mouthSmileLeft: 0.35, mouthSmileRight: 0.35 },
+  dance_happy: { mouthSmileLeft: 0.5, mouthSmileRight: 0.5 }, clap: { mouthSmileLeft: 0.45, mouthSmileRight: 0.45 },
+  wave: { mouthSmileLeft: 0.35, mouthSmileRight: 0.35 },
+};
+
+/** A captured clip on this skeleton: local rotations from the D keys, the pelvis at this body's hip height. */
+function libraryClip(skeleton, name, variant, faceMeshes) {
+  const tracks = [], local = new Quaternion(), D = new Quaternion();
+  for (const [bone, { times, values }] of variant.tracks) {
+    const index = skeleton.byName.get(bone);
+    if (index === undefined) continue;
+    const out = new Float32Array(values.length);
+    for (let k = 0; k < values.length; k += 4) {
+      toLocal(skeleton, index, D.fromArray(values, k), local);
+      out[k] = local.x; out[k + 1] = local.y; out[k + 2] = local.z; out[k + 3] = local.w;
+    }
+    tracks.push(new QuaternionKeyframeTrack(`${bone}.quaternion`, times, out));
+  }
+  const p = skeleton.byName.get('pelvis');
+  if (p !== undefined) {
+    const rest = restPosition(skeleton, p), H = hipHeight(skeleton), { times, values } = variant.pelvis;
+    const out = new Float32Array(values.length);
+    for (let k = 0; k < values.length; k += 3) { out[k] = rest.x + values[k] * H; out[k + 1] = rest.y + values[k + 1] * H; out[k + 2] = rest.z + values[k + 2] * H; }
+    tracks.push(new VectorKeyframeTrack('pelvis.position', times, out));
+  }
+  const seconds = variant.duration, blink = blinkTrack(seconds);
+  const shapes = { eyeBlinkLeft: blink, eyeBlinkRight: blink };
+  if (name === 'talk') {
+    const curves = faceCurves('talk', seconds), times = Array.from({ length: Math.ceil(seconds * 12) + 1 }, (_, i) => Math.min(seconds, i / 12));
+    for (const shape of ['jawOpen', 'mouthFunnel']) shapes[shape] = { times, values: times.map(curves[shape]) };
+  }
+  for (const [shape, value] of Object.entries(libraryFaces[name] ?? {})) shapes[shape] = { times: [0, seconds], values: [value, value] };
+  for (const [shape, { times, values }] of Object.entries(shapes)) {
+    for (const mesh of faceMeshes) tracks.push(new NumberKeyframeTrack(`${mesh}.morphTargetInfluences[${shape}]`, times, values));
+  }
+  return new AnimationClip(name, seconds, tracks);
+}
+
+/**
+ * A library clip as timeline keys ({ t, pose: { bone: D, $pelvis }, face }, timeline.mjs), sampled at
+ * `fps` (at most `limit` keys), starting at `start` seconds; for mixing captured motion into the user's clip.
+ */
+export function libraryKeys(skeleton, variant, { fps = 15, start = 0, limit = 600, from = 0, to = variant.duration } = {}) {
+  const span = Math.max(0, Math.min(variant.duration, to) - from);
+  const count = Math.min(limit, Math.max(2, Math.round(span * fps) + 1)), keys = [];
+  const sample = (times, values, size, t, out) => {
+    let i = 0;
+    while (i < times.length - 1 && times[i + 1] <= t) i++;
+    const j = Math.min(times.length - 1, i + 1), u = j === i ? 0 : Math.max(0, Math.min(1, (t - times[i]) / (times[j] - times[i])));
+    if (size === 4) return out.fromArray(values, i * 4).slerp(new Quaternion().fromArray(values, j * 4), u);
+    return [0, 1, 2].map(c => values[i * 3 + c] + (values[j * 3 + c] - values[i * 3 + c]) * u);
+  };
+  const H = hipHeight(skeleton), q = new Quaternion();
+  for (let k = 0; k < count; k++) {
+    const t = from + span * k / (count - 1), pose = {};
+    for (const [bone, track] of variant.tracks) {
+      if (!skeleton.byName.has(bone)) continue;
+      sample(track.times, track.values, 4, t, q);
+      if (1 - Math.abs(q.w) > 1e-6) pose[bone] = q.toArray().map(v => Math.round(v * 1e5) / 1e5);
+    }
+    pose.$pelvis = sample(variant.pelvis.times, variant.pelvis.values, 3, t).map(v => Math.round(v * H * 1e4) / 1e4);
+    keys.push({ t: Math.round((start + t - from) * 1000) / 1000, pose, face: {} });
+  }
+  return keys;
+}
+
+/**
+ * Clips for the editor preview and GLB export, in clipNames order: captured ones from `library`
+ * (loadMotionLibrary; the variant of the body's sex) and procedural ones for the rest (and for
+ * every clip when the library is not given, e.g. inside the generation worker).
+ */
+export function buildClips(skeleton, stance = 0, faceMeshes = [], { library = null, gender = 0.5 } = {}) {
   const has = name => skeleton.byName.has(name);
   const rest = armRest(skeleton);
   const context = { stance, thigh: skeleton.heads[skeleton.byName.get('calf_l')].distanceTo(skeleton.heads[skeleton.byName.get('thigh_l')]) };
   const pelvis = skeleton.bones[skeleton.byName.get('pelvis')];
   const rootName = skeleton.roots[0]?.name;
-  return clipNames.map(name => {
-    const { seconds, sample } = clips[name];
+  const built = clipNames.map(name => {
+    const captured = name === 'idle' ? null : libraryVariant(library, name, gender);
+    if (captured) return libraryClip(skeleton, name, captured, faceMeshes);
+    // Without the library, a captured-only clip stands still (procedural idle under its own name).
+    const { seconds, sample } = clips[name] ?? clips.idle;
     const frames = 32, times = [], poses = [];
     for (let i = 0; i <= frames; i++) { times.push(seconds * i / frames); poses.push(sample(i / frames, context)); }
     // Every clip keys the same bones so switching clips never leaves a limb
@@ -290,4 +546,24 @@ export function buildClips(skeleton, stance = 0, faceMeshes = []) {
     }
     return new AnimationClip(name, seconds, tracks);
   });
+  // Every clip keys the same bones and shapes (a bone a clip leaves out holds its rest pose there),
+  // so switching clips never leaves a limb in the previous clip's pose, in the app or in an engine.
+  const everyTrack = new Map();
+  for (const clip of built) for (const track of clip.tracks) if (!everyTrack.has(track.name)) everyTrack.set(track.name, track);
+  for (const clip of built) {
+    const present = new Set(clip.tracks.map(track => track.name));
+    for (const [trackName, sample] of everyTrack) {
+      if (present.has(trackName)) continue;
+      const [node, property] = trackName.split('.');
+      const times = [0, clip.duration];
+      if (property === 'quaternion') {
+        const index = skeleton.byName.get(node), q = skeleton.rest ? toLocal(skeleton, index, new Quaternion()) : skeleton.bones[index].quaternion;
+        clip.tracks.push(new QuaternionKeyframeTrack(trackName, times, [...q.toArray(), ...q.toArray()]));
+      } else if (property === 'position') {
+        const p = restPosition(skeleton, skeleton.byName.get(node)).toArray();
+        clip.tracks.push(new VectorKeyframeTrack(trackName, times, [...p, ...p]));
+      } else if (sample.ValueTypeName === 'number') clip.tracks.push(new NumberKeyframeTrack(trackName, times, [0, 0]));
+    }
+  }
+  return built;
 }
