@@ -1,4 +1,4 @@
-import { BufferGeometry, Float32BufferAttribute, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three';
+import { BufferGeometry, DoubleSide, Float32BufferAttribute, Mesh, MeshBasicMaterial, MeshStandardMaterial, Raycaster, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three';
 import { blendshapeNames, buildFaceShapes, expressionWeights, eyeLookDegrees, legacyShapes } from './face-rig.mjs';
 
 /** Teeth and tongue from the base mesh helpers, so an open jaw shows a mouth. */
@@ -171,6 +171,55 @@ function nearestHeadVertex(positions, candidates) {
 }
 
 /**
+ * ARKit's neutral face (every coefficient at 0) has the lips together; MakeHuman's base mouth stands
+ * a slit apart (0.25–0.5 mm, measured), and the lit teeth show through it as a white line. The slit's
+ * height is measured on the body itself with rays from the front, in columns across the mouth, and
+ * the neutral body geometry gets the fraction of mouthClose (lips closing, jaw kept) that shuts every
+ * column: a shape is linear in its weight, so the slit shrinks linearly too; two measurements (weight
+ * 0 and 0.1) give each column's rate, and the largest weight needed (plus 0.4 mm) is applied. The base
+ * positions stay as they are, so every shape stays relative to them. Returns the weight.
+ */
+function sealLips(body, close, positions) {
+  if (!close) return 0;
+  const count = positions.length / 3;
+  // The lower lip: what mouthClose really lifts (its falloff barely touches the upper lip too).
+  let lift = 0;
+  for (let v = 0; v < count; v++) lift = Math.max(lift, close[v * 3 + 1]);
+  let lip = -1;
+  for (let v = 0; v < count; v++) {
+    if (Math.abs(positions[v * 3]) < 0.004 && close[v * 3 + 1] > 0.25 * lift && (lip < 0 || positions[v * 3 + 1] > positions[lip * 3 + 1])) lip = v;
+  }
+  if (lip < 0) return 0;
+  const lipY = positions[lip * 3 + 1], lipZ = positions[lip * 3 + 2];
+  const ids = body.geometry.userData.baseIds, position = body.geometry.getAttribute('position'), base = Float32Array.from(position.array);
+  // The probe: only the body triangles around the mouth (rays against the whole body would be slow).
+  const index = body.geometry.index.array, near = i => Math.abs(base[i * 3]) < 0.05 && Math.abs(base[i * 3 + 1] - lipY) < 0.025 && base[i * 3 + 2] > lipZ - 0.06, keep = [];
+  for (let t = 0; t < index.length; t += 3) if (near(index[t]) && near(index[t + 1]) && near(index[t + 2])) keep.push(index[t], index[t + 1], index[t + 2]);
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', position); geometry.setIndex(keep);
+  const probe = new Mesh(geometry, new MeshBasicMaterial({ side: DoubleSide })), ray = new Raycaster(), origin = new Vector3(), back = new Vector3(0, 0, -1);
+  const apply = weight => {
+    for (let i = 0; i < ids.length; i++) { const v = ids[i] * 3; for (let k = 0; k < 3; k++) position.array[i * 3 + k] = base[i * 3 + k] + weight * close[v + k]; }
+    geometry.boundingSphere = null; geometry.boundingBox = null;
+  };
+  const columns = [0, 0.006, 0.012, 0.016, 0.02];
+  const hitZ = (x, y) => { ray.set(origin.set(x, y, lipZ + 0.2), back); return ray.intersectObject(probe, false)[0]?.point.z ?? null; };
+  // Per column: the lips' front, then the height where a ray passes it by more than 8 mm (into the mouth).
+  const fronts = columns.map(x => { let f = -Infinity; for (let y = lipY - 0.01; y <= lipY + 0.008; y += 0.0005) { const z = hitZ(x, y); if (z !== null) f = Math.max(f, z); } return f; });
+  const slits = () => columns.map((x, c) => { let n = 0; for (let y = lipY - 0.01; y <= lipY + 0.008; y += 0.0001) { const z = hitZ(x, y); if (z !== null && z < fronts[c] - 0.008) n++; } return n * 0.0001; });
+  const before = slits();
+  apply(0.1);
+  const after = slits();
+  let weight = 0;
+  columns.forEach((_, c) => { const rate = (before[c] - after[c]) / 0.1; if (before[c] > 0 && rate > 0) weight = Math.max(weight, (before[c] + 0.0004) / rate); });
+  weight = Math.min(0.3, weight);
+  apply(weight);
+  position.needsUpdate = true;
+  probe.material.dispose(); geometry.setIndex(null);
+  return weight;
+}
+
+/**
  * Give the body, mouth and face grooms the same named morph targets and set
  * their starting weights. Returns the meshes that carry the face rig.
  */
@@ -189,6 +238,8 @@ export async function addFaceRig(context, weights = {}) {
     return out;
   };
   const meshes = [];
+  // The neutral face with the lips together, as ARKit's neutral (measured slit, see sealLips).
+  body.geometry.userData.lipSeal = sealLips(body, dense.get('mouthClose'), positions);
   // Body normals per base vertex, neutral and for each shape, so a shape's normal
   // displacement is exactly zero wherever no face around a vertex moves.
   const bodyGroup = data.base.faceGroups.indexOf('body'), bodyFaces = [];

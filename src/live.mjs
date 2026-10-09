@@ -148,7 +148,10 @@ export class LiveShape {
     for (const part of this.parts) {
       const g = part.mesh.geometry, position = g.getAttribute('position'), out = position.array, v0 = part.v0;
       if (part.mode === 'base') {
-        for (let i = 0; i < part.ids.length; i++) { const s = part.ids[i] * 3; out[i * 3] = P[s]; out[i * 3 + 1] = P[s + 1]; out[i * 3 + 2] = P[s + 2]; }
+        // Relative to the build, like the other modes: what the build added per vertex (the sealed lips,
+        // the teeth seated behind them) stays.
+        const P0 = this.P0;
+        for (let i = 0; i < part.ids.length; i++) { const s = part.ids[i] * 3; for (let k = 0; k < 3; k++) out[i * 3 + k] = P[s + k] + v0[i * 3 + k] - P0[s + k]; }
       } else if (part.mode === 'proxy') {
         const fit = fitProxy(part.proxy, P);
         for (let i = 0; i < out.length; i++) out[i] = v0[i] + fit[i] - part.fit0[i];
