@@ -1761,10 +1761,10 @@ export class StudioUI {
     const targets = ['body', 'outfit', 'hair'];
     this.useTabs(['Corpo e rosto', 'Roupa', 'Cabelo'], { selected: Math.max(0, targets.indexOf(ui.sculptTarget)), onPick: i => this.store.dispatch({ type: 'ui/set', changes: { sculptTarget: targets[i] } }) });
     const target = this.pane('Escultura', count ? [h('span', { class: 'badge', text: `${count.toLocaleString('pt-BR')} edições`, title: 'Edições de escultura no corpo e nas roupas' })] : []);
-    if (ui.sculptTarget !== 'outfit') this.toggle(target, 'Sem roupa', ui.undress, on => this.store.dispatch({ type: 'ui/set', changes: { undress: on } }), 'Esculpe o corpo sem as roupas por cima');
+    if (ui.sculptTarget === 'body') this.toggle(target, 'Sem roupa', ui.undress, on => this.store.dispatch({ type: 'ui/set', changes: { undress: on } }), 'Esculpe o corpo sem as roupas por cima');
     const clearPatterns = () => this.person.garments.map(garment => garment.patternData ? { ...garment, patternData: { ...garment.patternData, edits: [] } } : garment);
     target.append(h('div', { class: 'icon-bar' },
-      iconButton('reset', ui.sculptTarget === 'body' ? 'Desfazer a escultura do corpo' : 'Desfazer a escultura desta roupa', () => {
+      iconButton('reset', ui.sculptTarget === 'body' ? 'Desfazer a escultura do corpo' : ui.sculptTarget === 'hair' ? 'Desfazer a escultura do cabelo' : 'Desfazer a escultura desta roupa', () => {
         const sculpt = structuredClone(this.person.sculpt);
         if (ui.sculptTarget === 'body') sculpt.body = {}; else { const style = this.renderer.sculpt.target?.style; if (style) delete sculpt[ui.sculptTarget][style]; }
         this.patch({ sculpt, garments: ui.sculptTarget === 'outfit' ? clearPatterns() : this.person.garments }, { history: true });
