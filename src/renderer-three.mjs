@@ -1,5 +1,5 @@
 import {
-  AmbientLight, AnimationMixer, CanvasTexture, DirectionalLight, Fog, GridHelper, Group, Mesh,
+  AmbientLight, AnimationMixer, CanvasTexture, CircleGeometry, DirectionalLight, Fog, Group, Mesh,
   MeshStandardMaterial, PerspectiveCamera, PlaneGeometry, Raycaster, SRGBColorSpace, Scene, Vector3, WebGLRenderer,
 } from 'three';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
@@ -25,18 +25,34 @@ const femaleOutfits = ['female_casualsuit01', 'female_casualsuit02', 'female_ele
 const maleOutfits = ['male_casualsuit01', 'male_casualsuit02', 'male_elegantsuit01', 'male_worksuit01'];
 const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
 const hex = value => parseInt(value.slice(1), 16);
-// Neutral grey studio: a colourless surround keeps skin, hair and fabric from
-// being tinted by simultaneous contrast; the floor fades into it with the fog.
-const BACKDROP = ['#4b4d52', '#36383c', '#26272a'], HORIZON = 0x2a2b2e;
+// Photo-studio cyclorama: still colourless (skin, hair and fabric are not tinted
+// by simultaneous contrast), but lit like a studio — brighter behind the
+// character, falling to dark at the edges (a dark surface, not black: Material
+// dark theme) — instead of a flat grey with an engineering grid. The floor and
+// the fog share the horizon colour, so the floor melts into the backdrop.
+const BACKDROP = ['#6a6c71', '#47494e', '#2a2b2f', '#18191c'], HORIZON = 0x232427;
 function studioBackdrop() {
   const canvas = document.createElement('canvas');
-  canvas.width = 4; canvas.height = 512;
-  const context = canvas.getContext('2d'), gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+  canvas.width = canvas.height = 512;
+  const context = canvas.getContext('2d');
+  // Screen-space background: the light pool sits a little above the middle, where the body is.
+  const gradient = context.createRadialGradient(256, 210, 10, 256, 250, 400);
   BACKDROP.forEach((color, i) => gradient.addColorStop(i / (BACKDROP.length - 1), color));
   context.fillStyle = gradient; context.fillRect(0, 0, canvas.width, canvas.height);
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
   return texture;
+}
+/** A soft round stage under the feet (alpha from the centre out), in place of the grid. */
+function stageDisc() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 256;
+  const context = canvas.getContext('2d'), gradient = context.createRadialGradient(128, 128, 0, 128, 128, 128);
+  gradient.addColorStop(0, '#ffffff'); gradient.addColorStop(0.55, '#b0b0b0'); gradient.addColorStop(1, '#000000');
+  context.fillStyle = gradient; context.fillRect(0, 0, 256, 256);
+  const disc = new Mesh(new CircleGeometry(1.6, 72), new MeshStandardMaterial({ color: 0x4a4c51, roughness: 0.85, transparent: true, alphaMap: new CanvasTexture(canvas), depthWrite: false }));
+  disc.rotation.x = -Math.PI / 2; disc.position.y = -0.012;
+  return disc;
 }
 
 /** The locks a character's hair is built from: its edited locks, else its ready-made style. */
@@ -81,6 +97,8 @@ export function studioSpec(person, { undressed = false } = {}) {
     // The ready-made hair mesh under the locks (appearance.mjs), fitted as a MakeHuman proxy.
     hairBase: person.hairBase ?? null,
     // Makeup and tattoos painted into the skin texture (skin-layers.mjs).
+    // Glasses, earrings, hat, necklace (accessories.mjs).
+    accessories: person.accessories,
     skinLayers: { makeup: person.makeup, tattoos: person.tattoos ?? [], beard: person.beard, hairColor: colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1] },
     hairColor: hex(colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1]),
     browColor: colors.brows ? hex(colors.brows) : undefined,
@@ -183,11 +201,9 @@ export class Renderer {
     const key = new DirectionalLight(0xfff2df, 2.6); key.position.set(-3, 7, 5); this.scene.add(key); this.keyLight = key;
     // A barely cool fill: a strongly blue one tinted dark hair and shadows blue on the neutral backdrop.
     const fill = new DirectionalLight(0xdde5f2, 0.85); fill.position.set(3, 4, -4); this.scene.add(fill); this.fillLight = fill;
-    const floor = new Mesh(new PlaneGeometry(200, 200), new MeshStandardMaterial({ color: 0x313236, roughness: 1 }));
+    const floor = new Mesh(new PlaneGeometry(200, 200), new MeshStandardMaterial({ color: 0x26272a, roughness: 1 }));
     floor.rotation.x = -Math.PI / 2; floor.position.y = -0.015; this.scene.add(floor);
-    const grid = new GridHelper(200, 200, 0x55575c, 0x46484d); grid.position.y = -0.012;
-    Object.assign(grid.material, { transparent: true, opacity: 0.45, depthWrite: false });
-    this.scene.add(grid);
+    if (typeof document !== 'undefined') this.scene.add(stageDisc());
     this.current = null; this.mixer = null; this.crowd = [];
     this.crowdPrototypes = []; this.crowdVersion = 0;
     this.lastTime = null; this.token = 0; this.requestedCrowd = 0; this.crowdBuiltFor = 0; this.action = null;
@@ -533,10 +549,16 @@ export class Renderer {
     const dt = Math.min(0.1, time - this.lastTime); this.lastTime = time;
     const width = Math.max(1, this.canvas.clientWidth), height = Math.max(1, this.canvas.clientHeight), ratio = Math.min(devicePixelRatio, 1.7);
     // Resized only on change: setting canvas.width resets the drawing buffer even to the same value.
-    if (width !== this.size?.width || height !== this.size?.height || ratio !== this.size?.ratio) {
+    // `centerShift` (px, set by the interface): panels float over the left and right of the view, so the
+    // projection centre moves to the middle of the free area (PerspectiveCamera.setViewOffset: a window
+    // `shift` px to the right in a frustum of the same size; picking stays right, the matrix carries it).
+    const shift = Math.round(this.centerShift ?? 0);
+    if (width !== this.size?.width || height !== this.size?.height || ratio !== this.size?.ratio || shift !== this.size?.shift) {
       this.renderer.setPixelRatio(ratio); this.renderer.setSize(width, height, false);
-      this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
-      this.size = { width, height, ratio };
+      this.viewCamera.aspect = width / height;
+      if (shift) this.viewCamera.setViewOffset(width, height, shift, 0, width, height); else this.viewCamera.clearViewOffset();
+      this.viewCamera.updateProjectionMatrix();
+      this.size = { width, height, ratio, shift };
     }
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
     if (this.liveRequest && this.canLive) this.runLive();

@@ -1,41 +1,43 @@
 /*
- * Human Studio — neutral graphite surfaces (no blue or warm cast, so skin and
- * hair are judged against grey) and one accent, the orange the viewport already
- * uses for selection and the brush cursor. Contrast (WCAG 2.2): text ≥ 4.5:1,
- * control boundaries and states ≥ 3:1 (1.4.11), targets ≥ 24 px (2.5.8).
- * Layout (docs/INTERFACE.md): sections on the left in the order a person is
- * made, the section's tools with their names, the 3D view with its camera bar
- * at the bottom, the section's panel on the right, status and mouse hints in
- * the footer (Blender's status bar).
+ * Human Studio — the character on a lit studio stage fills the window; the
+ * sections, the tools and the section's panel float over it as glass cards
+ * (dark surfaces, never black; lighter = higher: Material dark theme). One
+ * accent, a soft violet that no skin, hair or fabric shares, so a selected
+ * control never reads as part of the character. Contrast (WCAG 2.2): text
+ * ≥ 4.5:1, control boundaries and states ≥ 3:1 (1.4.11), targets ≥ 24 px
+ * (2.5.8). Status and mouse hints in the footer (Blender's status bar).
  */
 :root {
   color-scheme: dark;
-  --bg: #0e0f11;
-  --panel: #151619;
-  --surface: #1c1e22;
-  --surface-2: #24272c;
-  --surface-3: #2c3036;
-  --overlay: #151619eb;
-  --border: #ffffff12;
-  --border-strong: #ffffff24;
+  --bg: #0c0d12;
+  --panel: #14161c;
+  --surface: #1b1e26;
+  --surface-2: #232733;
+  --surface-3: #2c3140;
+  /* Glass cards over the stage. */
+  --overlay: #14161cd9;
+  --glass: #13151bd6;
+  --border: #ffffff10;
+  --border-strong: #ffffff22;
   /* Boundary of a control that must be found by its outline (≥ 3:1 on the panel). */
   --control-line: #ffffff55;
-  --text: #ececee;
-  --text-2: #c9cbd0;
-  --muted: #a3a6ad;
-  --faint: #868a92;
-  --track: #686b72;
-  --accent: #f27a2e;
-  --accent-hover: #ff8b42;
-  --accent-text: #1a0f07;
-  --accent-soft: #f27a2e24;
-  --accent-line: #f27a2e99;
-  --danger: #f0705e;
-  --ok: #3ecf8e;
-  --warn: #e8b04b;
-  --radius: 9px;
-  --radius-lg: 14px;
-  --shadow: 0 10px 30px #00000073, 0 2px 6px #0000004d;
+  --text: #eceef4;
+  --text-2: #c8ccd8;
+  --muted: #a0a6b4;
+  --faint: #848a99;
+  --track: #5d6375;
+  --accent: #9d8fff;
+  --accent-hover: #b3a8ff;
+  --accent-text: #0d0b1f;
+  --accent-soft: #9d8fff26;
+  --accent-line: #9d8fffa6;
+  --danger: #ff7a6b;
+  --ok: #4fd6a0;
+  --warn: #f2c25b;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --shadow: 0 18px 40px #00000066, 0 2px 8px #00000059;
+  --gap: 12px;
   font-family: "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, -apple-system, Arial, sans-serif;
   font-size: 13px;
 }
@@ -54,18 +56,31 @@ button:disabled { cursor: default; }
 kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; background: var(--surface); color: var(--muted); font: 600 10.5px/1 inherit; font-family: inherit; }
 
 /* ------------------------------------------------------------------ layout */
+/*
+ * The stage (viewport) takes the whole middle row; the rail of sections, the
+ * rail of tools and the inspector are cards laid over it in the same grid cell
+ * (left, left after the rail, right). --ui-left and --ui-right are the room
+ * they take, so the viewport's own overlays sit in the free middle; the
+ * renderer moves the projection centre there too (renderer.centerShift).
+ */
 .app {
+  --rail-w: 72px; --tools-w: 0px; --inspector-w: 336px;
+  --ui-left: calc(var(--gap) + var(--rail-w) + var(--tools-w));
+  --ui-right: calc(var(--gap) * 2 + var(--inspector-w));
   display: grid; height: 100vh; min-height: 520px;
-  grid-template-rows: 54px minmax(0, 1fr) 30px;
-  grid-template-columns: 80px auto minmax(0, 1fr) 340px;
+  grid-template-rows: 52px minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr);
+  background: var(--bg);
 }
-.app.pattern-mode { grid-template-columns: 80px auto minmax(0, 1fr) min(480px, 40vw); }
-.topbar { grid-row: 1; grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; padding: 0 12px 0 18px; background: var(--bg); border-bottom: 1px solid var(--border); }
-.rail { grid-row: 2; grid-column: 1; }
-.tool-rail { grid-row: 2; grid-column: 2; }
-.viewport { grid-row: 2; grid-column: 3; }
-.inspector { grid-row: 2; grid-column: 4; }
-.statusbar { grid-row: 3; grid-column: 1 / -1; }
+.app.has-tools { --tools-w: 60px; }
+.app.pattern-mode { --inspector-w: min(480px, 40vw); }
+.topbar { grid-row: 1; grid-column: 1; z-index: 6; display: flex; align-items: center; gap: 6px; padding: 0 12px 0 16px; background: var(--bg); border-bottom: 1px solid var(--border); }
+.viewport { grid-row: 2; grid-column: 1; }
+.rail, .tool-rail, .inspector { grid-row: 2; grid-column: 1; z-index: 5; align-self: stretch; margin: var(--gap) 0; background: var(--glass); backdrop-filter: blur(14px) saturate(1.2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+.rail { justify-self: start; width: var(--rail-w); margin-left: var(--gap); align-self: start; max-height: calc(100% - var(--gap) * 2); }
+.tool-rail { justify-self: start; margin-left: calc(var(--gap) * 1.5 + var(--rail-w)); align-self: start; max-height: calc(100% - var(--gap) * 2); }
+.inspector { justify-self: end; width: var(--inspector-w); margin-right: var(--gap); overflow: hidden; }
+.statusbar { grid-row: 3; grid-column: 1; }
 
 /* ------------------------------------------------------------------ top bar */
 .brand { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; letter-spacing: -.2px; white-space: nowrap; }
@@ -81,19 +96,18 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 
 /* ------------------------------------------------------- rail of sections */
 /* Never scrolls sideways (a sideways offset cut the labels' first letters). */
-.rail { display: flex; flex-direction: column; gap: 4px; padding: 10px 6px; background: var(--bg); border-right: 1px solid var(--border); overflow: hidden auto; scrollbar-width: none; }
+.rail { display: flex; flex-direction: column; gap: 4px; padding: 8px 6px; overflow: hidden auto; scrollbar-width: none; }
 .rail-divider { height: 1px; margin: 6px 6px; background: var(--border-strong); }
 .nav-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 10px 2px 9px; border: 0; border-radius: 12px; background: none; color: var(--muted); }
 .nav-item:hover { color: var(--text); background: var(--surface); }
-.nav-item.active { color: var(--text); background: var(--surface-2); }
+.nav-item.active { color: var(--text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
 .nav-item.active .icon { color: var(--accent); }
-.nav-item.active::before { content: ''; position: absolute; left: -6px; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0; background: var(--accent); }
 .nav-item { min-width: 0; }
 .nav-label { max-width: 100%; font-size: 11px; line-height: 1.15; text-align: center; white-space: nowrap; }
 
 /* ---------------------------------------------- rail of the section's tools */
 /* Icons only (name and key in the tooltip and the tool card); groups split by a thin line. */
-.tool-rail { display: flex; flex-direction: column; gap: 6px; padding: 10px 7px; background: var(--panel); border-right: 1px solid var(--border); overflow: hidden auto; scrollbar-width: none; }
+.tool-rail { display: flex; flex-direction: column; gap: 6px; padding: 7px; overflow: hidden auto; scrollbar-width: none; }
 .tool-group { display: flex; flex-direction: column; gap: 3px; }
 .tool-group + .tool-group { padding-top: 6px; border-top: 1px solid var(--border-strong); }
 .tool-grid { display: flex; flex-direction: column; gap: 3px; }
@@ -104,22 +118,23 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .tool-card-head kbd { margin-right: 2px; }
 
 /* ---------------------------------------------------------------- viewport */
-.viewport { position: relative; min-width: 0; overflow: hidden; background: #2b2c30; }
+.viewport { position: relative; min-width: 0; overflow: hidden; background: #26272b; --mid: calc((var(--ui-left) + 100% - var(--ui-right)) / 2); }
 #stage { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
 #stage:active { cursor: grabbing; }
-.view-toolbar, .camera-bar, .zoom-controls, .tool-card, .busy-pill, .toast { background: var(--overlay); backdrop-filter: blur(10px); border: 1px solid var(--border-strong); box-shadow: var(--shadow); }
-.view-toolbar { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; }
+.view-toolbar, .camera-bar, .zoom-controls, .tool-card, .busy-pill, .toast { background: var(--overlay); backdrop-filter: blur(12px); border: 1px solid var(--border-strong); box-shadow: var(--shadow); }
+/* The viewport's own controls live in the free middle, between the cards. */
+.view-toolbar { position: absolute; top: var(--gap); right: calc(var(--ui-right) + var(--gap) / 2); z-index: 3; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px; }
 /* Camera framings at the bottom of the view, where the eye already is when turning the character. */
-.camera-bar { position: absolute; left: 50%; bottom: 12px; z-index: 3; transform: translateX(-50%); padding: 4px; border-radius: 12px; max-width: calc(100% - 90px); overflow-x: auto; scrollbar-width: none; }
-.zoom-controls { position: absolute; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 12px; }
+.camera-bar { position: absolute; left: var(--mid); bottom: var(--gap); z-index: 3; transform: translateX(-50%); padding: 4px; border-radius: 12px; max-width: calc(100% - var(--ui-left) - var(--ui-right) - 70px); overflow-x: auto; scrollbar-width: none; }
+.zoom-controls { position: absolute; right: calc(var(--ui-right) + var(--gap) / 2); bottom: var(--gap); display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 12px; }
 /* Work in progress shows over the character it changes (not only in the footer). */
-.busy-pill { position: absolute; top: 12px; left: 50%; z-index: 5; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; max-width: min(420px, calc(100% - 340px)); padding: 7px 14px 7px 11px; border-radius: 999px; color: var(--text); font-size: 12.5px; white-space: nowrap; pointer-events: none; }
+.busy-pill { position: absolute; top: var(--gap); left: var(--mid); z-index: 5; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; max-width: min(420px, calc(100% - var(--ui-left) - var(--ui-right) - 140px)); padding: 7px 14px 7px 11px; border-radius: 999px; color: var(--text); font-size: 12.5px; white-space: nowrap; pointer-events: none; }
 .busy-pill span { overflow: hidden; text-overflow: ellipsis; }
 .spinner { flex: none; width: 14px; height: 14px; border: 2px solid #ffffff33; border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* The active tool's options, next to the tool rail (Blender's Tool Settings). */
-.tool-card { position: absolute; top: 12px; left: 12px; z-index: 4; width: 280px; max-width: calc(100% - 80px); max-height: calc(100% - 84px); overflow: auto; border-radius: var(--radius-lg); scrollbar-width: thin; scrollbar-color: #ffffff22 transparent; }
+.tool-card { position: absolute; top: var(--gap); left: calc(var(--ui-left) + var(--gap) / 2); z-index: 4; width: 272px; max-width: calc(100% - var(--ui-left) - var(--ui-right) - 70px); max-height: calc(100% - 84px); overflow: auto; border-radius: var(--radius-lg); scrollbar-width: thin; scrollbar-color: #ffffff22 transparent; }
 .tool-card-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 9px; padding: 8px 8px 8px 14px; background: var(--overlay); color: var(--accent); }
 .tool-card-title { flex: 1; color: var(--text); font-size: 13.5px; font-weight: 600; }
 .tool-card-head .icon-button .icon { transition: transform .15s; }
@@ -131,7 +146,7 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .tool-card .field { grid-template-columns: minmax(0, 44%) minmax(0, 1fr) 52px; }
 .tool-card .stack.inline { grid-template-columns: minmax(0, 46%) minmax(0, 1fr); }
 
-.toasts { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
+.toasts { position: absolute; left: var(--mid); bottom: 64px; transform: translateX(-50%); z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 8px; max-width: min(520px, 80vw); padding: 6px 6px 6px 14px; min-height: 36px; border-radius: 999px; font-size: 12.5px; color: var(--text); animation: toast-in .18s ease-out; pointer-events: auto; }
 .toast > span:not(.icon) { padding-right: 8px; }
 .toast .icon { color: var(--ok); }
@@ -146,9 +161,9 @@ kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; 
 .error-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* --------------------------------------------------------------- inspector */
-.inspector { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-left: 1px solid var(--border); }
-.inspector-head { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-height: 60px; padding: 10px 18px; border-bottom: 1px solid var(--border); }
-.inspector-head h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.1px; }
+.inspector { display: flex; flex-direction: column; min-height: 0; }
+.inspector-head { display: flex; flex-direction: column; justify-content: center; gap: 3px; min-height: 50px; padding: 8px 18px; border-bottom: 1px solid var(--border); }
+.inspector-head h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: -.2px; }
 .section-lead { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .section-lead:empty { display: none; }
 .inspector-body { flex: 1; overflow-y: auto; padding: 4px 0 28px; scrollbar-width: thin; scrollbar-color: #ffffff22 transparent; }
@@ -270,9 +285,11 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 /* Choices on the label's line. */
 .stack.inline { display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); align-items: center; column-gap: 10px; margin-bottom: 8px; }
 .stack.inline .stack-label { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* In menus the choices get the room (short labels like Esqueleto, Detalhe). */
+.popover .stack.inline { grid-template-columns: minmax(0, 25%) minmax(0, 1fr); }
 
 .segmented { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--bg); border: 1px solid var(--control-line); }
-.segmented button { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 0; border-radius: 7px; background: none; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.segmented button { flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 0; border-radius: 7px; background: none; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .segmented button:hover { color: var(--text); }
 /* The chosen segment: accent text and fill, not only a lighter grey (1.4.11). */
 .segmented button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 0 0 0 1px var(--accent-line); }
@@ -442,24 +459,22 @@ input[type=range]:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 3px var(--
 
 /* --------------------------------------------------------------- responsive */
 @media (max-width: 1200px) {
-  .app { grid-template-columns: 72px auto minmax(0, 1fr) 312px; }
-  .app.pattern-mode { grid-template-columns: 72px auto minmax(0, 1fr) min(440px, 40vw); }
+  .app { --inspector-w: 304px; --gap: 10px; }
+  .app.pattern-mode { --inspector-w: min(440px, 40vw); }
   .character small, .brand span { display: none; }
-  .camera-bar .segmented button { padding: 0 9px; }
-  .busy-pill { max-width: calc(100% - 300px); }
+  .camera-bar .segmented button { padding: 0 8px; }
 }
 @media (max-width: 900px) {
   .topbar .button .label { display: none; }
   .topbar .button { padding: 0 10px; }
-  .busy-pill { top: 56px; max-width: calc(100% - 24px); }
+  .camera-bar { display: none; }
 }
 @media (max-height: 700px) {
   .tool { height: 32px; }
 }
 @media (max-width: 760px) {
-  .app, .app.pattern-mode { grid-template-columns: 56px auto minmax(0, 1fr); }
-  .inspector { position: absolute; right: 0; bottom: 30px; width: min(340px, calc(100vw - 56px)); height: 52vh; z-index: 7; box-shadow: -8px -8px 24px #0009; }
+  .app { --rail-w: 52px; --inspector-w: min(320px, calc(100vw - 80px)); }
+  .inspector { align-self: end; height: 52vh; }
   .nav-label, .character, .history, .statusbar .hint { display: none; }
-  .tool-card { width: min(260px, calc(100% - 24px)); }
-  .camera-bar { display: none; }
+  .tool-card { width: min(240px, calc(100% - 24px)); }
 }
