@@ -81,12 +81,16 @@ function showRing(event) {
   combRing.style.width = combRing.style.height = `${size}px`;
   combRing.style.left = `${event.clientX - size / 2}px`; combRing.style.top = `${event.clientY - size / 2}px`;
 }
-canvas.addEventListener('pointerleave', () => { combRing.style.display = 'none'; });
+canvas.addEventListener('pointerleave', () => {
+  combRing.style.display = 'none';
+  if (renderer && !drag) { renderer.shapeHandles.highlight(null); renderer.shapeHandles.hoverVertex = undefined; }
+});
 canvas.addEventListener('pointermove', event => {
   if (!renderer) return;
   showRing(event);
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
   if (ui.locking && !drag) renderer.lockEditor.hover(sculptNdc(event, canvas), renderer.viewCamera);
+  if (ui.molding && !drag) renderer.shapeHandles.hover(sculptNdc(event, canvas));
   if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera, { alt: event.altKey }); return; }
   if (drag?.pose) { renderer.poseEditor.dragHandle(sculptNdc(event, canvas)); return; }
   if (drag?.mold) { ui.moldTo(renderer.shapeHandles.move(sculptNdc(event, canvas), { single: event.altKey })); return; }

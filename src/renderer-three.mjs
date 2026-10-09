@@ -389,6 +389,7 @@ export class Renderer {
   setMoldMode(on) {
     if (on === this.moldMode) return;
     this.moldMode = on;
+    if (!on) { this.shapeHandles.highlight(null); this.shapeHandles.hoverVertex = undefined; }
     this.action = null;
     if (this.person) this.setPresentation(this.person);
   }

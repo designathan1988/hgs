@@ -1,4 +1,4 @@
-import { Plane, Raycaster, Vector3 } from 'three';
+import { BufferAttribute, BufferGeometry, Mesh, MeshBasicMaterial, Plane, Raycaster, Vector3 } from 'three';
 
 /**
  * Direct manipulation of the body (The Sims 4 Create-a-Sim: pull the part
@@ -118,7 +118,11 @@ export class ShapeHandles {
       // Region size: how many vertices the adjustment moves (the smaller, the more local).
       const size = Math.max(morpher.localByName.get(`${group}/${positive}`)?.count ?? 0, morpher.localByName.get(`${group}/${negative}`)?.count ?? 0);
       const peak = target => target ? this.peakOf(`${group}/${target}`) : 0;
-      list.push({ name, group, sided, side: x >= 0 ? 'l' : 'r', plus, minus, size, onlyPositive: !category.opposites, plusPeak: peak(positive), minusPeak: peak(negative) });
+      // Every target the adjustment drives (both sides when symmetric), for drawing its area.
+      const other = sided ? (side === 'left' ? 'right' : 'left') : null;
+      const targets = [positive, negative, ...(other && category.opposites ? [category.opposites[`positive-${other}`], category.opposites[`negative-${other}`]] : [])].filter(Boolean).map(t => `${group}/${t}`);
+      const own = [positive, negative].filter(Boolean).map(t => `${group}/${t}`);
+      list.push({ name, group, sided, side: x >= 0 ? 'l' : 'r', plus, minus, size, targets, own, onlyPositive: !category.opposites, plusPeak: peak(positive), minusPeak: peak(negative) });
     }
     return list;
   }
@@ -151,19 +155,30 @@ export class ShapeHandles {
       // MetaHuman Creator: each marker acts on a limited area. The part grabbed is an adjustment that
       // moves this point along the pull (cosine ≥ 0.6) and whose area this point is the core of (it
       // moves here at least half as much as anywhere): an eye corner that barely moves the nose is out.
-      // Among those, the smallest area wins (moving the whole torso also moves the nose, but loses).
-      let best = null;
-      const pull = delta.length();
+      // The part is the region of the point (regionOf: chin, nose…); inside it, the adjustment that carries
+      // the point farthest along the pull wins (pulling the chin down takes its height, 17 mm, not its
+      // cleft, 1.5 mm). With nothing fitting there, the smallest area anywhere (moving the whole head also
+      // moves the chin, but loses).
+      const pull = delta.length(), options = [], region = this.regionOf(drag.candidates);
       for (const candidate of drag.candidates) for (const [sign, d, peak] of [[1, candidate.plus, candidate.plusPeak], [-1, candidate.minus, candidate.minusPeak]]) {
         const length = d.length();
         if (length < 1e-9 || (sign < 0 && candidate.onlyPositive)) continue;
         const cosine = delta.dot(d) / (length * pull);
         if (cosine < 0.6 || length < 0.5 * peak) continue;
-        if (!best || candidate.size < best.candidate.size || (candidate.size === best.candidate.size && cosine > best.cosine)) best = { cosine, candidate };
+        options.push({ cosine, candidate, along: delta.dot(d) / pull });
+      }
+      let best = null;
+      for (const option of options.filter(option => option.candidate.group === region)) {
+        if (!best || option.along > best.along || (option.along === best.along && option.candidate.size < best.candidate.size)) best = option;
+      }
+      if (!best) for (const option of options) {
+        if (!best || option.candidate.size < best.candidate.size || (option.candidate.size === best.candidate.size && option.cosine > best.cosine)) best = option;
       }
       if (!best) return null;
       const key = best.candidate.sided && (single || !this.symmetry) ? `${best.candidate.side}-${best.candidate.name}` : best.candidate.name;
       drag.chosen = { ...best.candidate, key, start: drag.value(key) };
+      // The part being pulled stays lit (one side only with Alt or without symmetry).
+      this.highlight(key === best.candidate.name ? best.candidate : { ...best.candidate, targets: best.candidate.own });
     }
     const c = drag.chosen;
     // Whichever direction the value moves, the displacement of that direction's target leads.
@@ -174,4 +189,81 @@ export class ShapeHandles {
     return { key: c.key, category: c.name, value, label: `${regionNames[c.group] ?? c.group} · ${categoryLabel(c.name)}` };
   }
   end() { const chosen = Boolean(this.drag?.chosen); this.drag = null; return chosen; }
+  /**
+   * The region a point belongs to: the group (chin, nose, ears…) of the most local adjustment whose core
+   * holds it (it moves the point at least half as much as anywhere). Whole-body scales also have their
+   * core at the head, but their area is thousands of vertices, so they never decide the region.
+   */
+  regionOf(candidates) {
+    let best = null;
+    for (const candidate of candidates) {
+      const core = candidate.plus.length() >= 0.5 * candidate.plusPeak || (!candidate.onlyPositive && candidate.minus.length() >= 0.5 * candidate.minusPeak);
+      if (core && (!best || candidate.size < best.size)) best = candidate;
+    }
+    return best?.group ?? null;
+  }
+  /**
+   * Before a pull, light the part under the cursor (The Sims 4 Create-a-Sim lights the part to be
+   * pulled; MetaHuman Creator shows its markers): the most local adjustment whose core holds this point,
+   * the one a pull would most likely take. Null when off the body.
+   */
+  hover(ndc) {
+    if (this.drag) return;
+    const at = this.vertexAt(ndc);
+    if (at?.v === this.hoverVertex) return;
+    this.hoverVertex = at?.v;
+    if (!at) { this.highlight(null); return; }
+    // The pull's rule (move()) without a direction yet: in the point's region, the adjustment that moves
+    // the point most.
+    const candidates = this.candidates(at.v, this.renderer.current.context.positions[at.v * 3]), region = this.regionOf(candidates);
+    let best = null, most = 0;
+    for (const candidate of candidates) {
+      if (candidate.group !== region) continue;
+      const plus = candidate.plus.length(), minus = candidate.onlyPositive ? 0 : candidate.minus.length();
+      const reach = Math.max(plus >= 0.5 * candidate.plusPeak ? plus : 0, minus >= 0.5 * candidate.minusPeak ? minus : 0);
+      if (reach > most) { most = reach; best = candidate; }
+    }
+    this.highlight(best);
+  }
+  /**
+   * Draw `candidate`'s area over the skin: a mesh sharing the body's positions and morph targets (the body
+   * rests in its bind pose while molding), one RGBA colour per corner with alpha from how far the
+   * adjustment moves that vertex, drawn without depth writes and with a polygon offset, like a decal.
+   */
+  highlight(candidate) {
+    const body = this.renderer.current?.body;
+    const key = candidate && body ? `${candidate.targets.join('|')}` : null;
+    if (key === this.lit && this.overlay?.parent === body) return;
+    this.lit = key;
+    if (this.overlay) { this.overlay.removeFromParent(); this.overlay.geometry.dispose(); this.overlay.material.dispose(); this.overlay = null; }
+    if (!key) return;
+    const morpher = this.renderer.current.context.data.morpher, unit = this.renderer.current.context.positions.unitScale ?? 0.1;
+    const source = body.geometry, ids = source.userData.baseIds, strength = new Map();
+    for (const name of candidate.targets) {
+      const t = morpher.localByName.get(name), peak = this.peakOf(name);
+      if (!t || !peak) continue;
+      for (let e = t.start; e < t.start + t.count; e++) {
+        const d = Math.hypot(morpher.lDelta[e * 3], morpher.lDelta[e * 3 + 1], morpher.lDelta[e * 3 + 2]) * t.scale * unit / peak;
+        if (d > 0.05) strength.set(morpher.lIdx[e], Math.max(strength.get(morpher.lIdx[e]) ?? 0, Math.min(1, d)));
+      }
+    }
+    const count = source.getAttribute('position').count, colors = new Float32Array(count * 4);
+    for (let i = 0; i < count; i++) {
+      const s = strength.get(ids[i]) ?? 0;
+      colors.set([0.66, 0.55, 1, 0.12 + 0.43 * s], i * 4);
+      if (!s) colors[i * 4 + 3] = 0;
+    }
+    const index = source.index.array, kept = [];
+    for (let i = 0; i < index.length; i += 3) if (colors[index[i] * 4 + 3] || colors[index[i + 1] * 4 + 3] || colors[index[i + 2] * 4 + 3]) kept.push(index[i], index[i + 1], index[i + 2]);
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', source.getAttribute('position'));
+    geometry.setAttribute('color', new BufferAttribute(colors, 4));
+    geometry.morphAttributes = source.morphAttributes; geometry.morphTargetsRelative = source.morphTargetsRelative;
+    geometry.setIndex(kept);
+    const overlay = new Mesh(geometry, new MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 }));
+    overlay.name = 'MoldHighlight'; overlay.renderOrder = 2;
+    overlay.morphTargetInfluences = body.morphTargetInfluences; overlay.morphTargetDictionary = body.morphTargetDictionary;
+    body.add(overlay);
+    this.overlay = overlay;
+  }
 }
