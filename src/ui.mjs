@@ -56,6 +56,9 @@ const clothHints = {
 const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity', 'faceShapes']);
 // These change no mesh at all.
 const metaFields = new Set(['name', 'creation', 'version']);
+// Body shape: the character on screen follows at once (live.mjs); the full build refines it when the drag ends.
+const liveShapeFields = new Set(['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength',
+  'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'ancestry', 'cupsize', 'firmness', 'morphs']);
 // Viewing choices, not edits: they stay out of the undo history.
 const noHistory = new Set(['lighting', 'animation', 'animationSpeed']);
 const views = [['front', 'Frente'], ['side', 'Lado'], ['rear', 'Costas'], ['face', 'Rosto'], ['body', 'Corpo']];
@@ -187,9 +190,20 @@ export class StudioUI {
   personChanged(prev, next, action) {
     const keys = Object.keys(next).filter(key => prev[key] !== next[key]);
     if (keys.some(key => presentationFields.has(key))) this.renderer?.setPresentation(next);
-    if (keys.some(key => !presentationFields.has(key) && !metaFields.has(key)) && action.rebuild !== false) this.queueCharacter(action.rebuild ?? 80);
+    const build = keys.filter(key => !presentationFields.has(key) && !metaFields.has(key));
+    if (build.length && action.rebuild !== false && action.origin !== 'history' && build.every(key => liveShapeFields.has(key)) && this.renderer?.canLive) {
+      // Shape: shown on the next frame; a drag refines on release (commitLive), a click right away.
+      this.renderer.liveShape(next);
+      if (action.live) this.pendingRefine = true; else this.queueCharacter(action.rebuild ?? 150);
+    } else if (build.length && action.rebuild !== false) this.queueCharacter(action.rebuild ?? 80);
     this.updateMeta();
     this.scheduleAutosave();
+  }
+  /** End of a drag: the full build (drape, hair gravity, facial rig) refines what was shown live. */
+  commitLive() {
+    if (!this.pendingRefine) return;
+    this.pendingRefine = false;
+    this.queueCharacter(150);
   }
   uiChanged(prev, next) {
     if (prev.crowd !== next.crowd) this.applyCrowd(next.crowd);
@@ -582,7 +596,7 @@ export class StudioUI {
   }
   /** Slider bound to a character field (one undo step per drag). */
   range(parent, key, label, min, max, step = 0.01, unit = '') {
-    return this.slide(parent, { label, value: this.person[key], min, max, step, unit, key, onInput: v => this.update(key, v, { live: true }), onEnd: () => this.scheduleRender() });
+    return this.slide(parent, { label, value: this.person[key], min, max, step, unit, key, onInput: v => this.update(key, v, { live: true }), onEnd: () => { this.commitLive(); this.scheduleRender(); } });
   }
   segmented(parent, label, items, selected, onPick) { parent.append(segmented({ label, items, selected, onPick: i => { onPick(i); this.scheduleRender(); } })); }
   toggle(parent, label, checked, onChange, title, id) { parent.append(toggle({ label, checked, onChange, title, id })); }

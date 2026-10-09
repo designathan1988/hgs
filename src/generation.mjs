@@ -1,4 +1,4 @@
-import { ObjectLoader, Vector3 } from 'three';
+import { ObjectLoader, Quaternion, Vector3 } from 'three';
 import { createHuman } from './human-three.mjs';
 import { loadHumanData } from './parametric.mjs';
 
@@ -20,6 +20,8 @@ export function packHuman(human) {
     context: {
       positions, unitScale: positions.unitScale, outfitSurface, height, lod,
       heads: skeleton.heads.map(point => point.toArray()), byName: [...skeleton.byName],
+      // Rest rotations and tails: clips rebuilt on the page (live reshaping) need them.
+      rest: skeleton.rest.map(q => q.toArray()), tails: skeleton.tails.map(point => point.toArray()),
       bones: skeleton.bones.map(bone => bone.uuid), roots: skeleton.roots.map(bone => bone.uuid),
     },
   };
@@ -64,6 +66,7 @@ export async function unpackHuman(packet) {
     positions.unitScale = saved.unitScale;
     const skeleton = {
       heads: saved.heads.map(point => new Vector3(...point)), byName: new Map(saved.byName),
+      rest: saved.rest.map(q => new Quaternion().fromArray(q)), tails: saved.tails.map(point => new Vector3(...point)),
       bones: saved.bones.map(uuid => objects.get(uuid)), roots: saved.roots.map(uuid => objects.get(uuid)),
     };
     if (skeleton.bones.some(bone => !bone?.isBone)) throw new Error('Generated character has an incomplete skeleton');

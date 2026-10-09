@@ -5,7 +5,8 @@ import {
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
 import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
-import { oneShotClips } from './motion.mjs';
+import { buildClips, oneShotClips } from './motion.mjs';
+import { LiveShape } from './live.mjs';
 import { SculptSession } from './sculpt.mjs';
 import { HairEditor } from './hair-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
@@ -203,6 +204,8 @@ export class Renderer {
       const crowdSeed = this.person?.seed;
       this.person = person;
       this.current = human; this.scene.add(human.group);
+      // Live reshaping ties itself to this build on its first use.
+      this.live = null; this.liveReady = null;
       this.mixer = new AnimationMixer(human.group);
       // Hair joint chains swing after the body animation (VRMC_springBone algorithm).
       this.springs = new SpringBones(human.group, human.group.userData.hairSprings);
@@ -284,6 +287,29 @@ export class Renderer {
     this.sculpt.cursor.visible = false;
     if (on) this.freezeForSculpt();
     else if (this.person) { this.sculpt.target = null; this.setPresentation(this.person); }
+  }
+  /** Live edits apply to the character on screen when it is neither frozen (sculpt, hair) nor in a crowd. */
+  get canLive() { return Boolean(this.current) && !this.frozen && !this.requestedCrowd; }
+  /** Reshape the character on screen to `person` on the next frame (one reshape per frame, the latest wins). */
+  liveShape(person) { this.liveRequest = person; }
+  runLive() {
+    const human = this.current;
+    this.liveReady ??= LiveShape.create(human).then(live => { if (this.current === human) this.live = live; },
+      error => { console.error(error); this.liveRequest = null; });
+    if (!this.live) return;
+    const person = this.liveRequest; this.liveRequest = null;
+    const before = human.metrics.height, time = this.action?.time ?? 0;
+    this.mixer.stopAllAction();
+    const height = this.live.update(studioSpec(person), this.springs);
+    // Clips key rotations against the rest pose and the pelvis by position: rebuilt for the new rest.
+    const group = human.group;
+    human.animations = group.animations = buildClips(human.context.skeleton, person.pose ?? 0, human.faceMeshes.map(mesh => mesh.name));
+    this.mixer.uncacheRoot(group); this.action = null;
+    this.springs = new SpringBones(group, group.userData.hairSprings);
+    this.setPresentation(person);
+    if (this.action) { this.action.time = time; this.mixer.update(0); }
+    human.metrics.height = height;
+    this.camera.rescale(before, height);
   }
   /** Replay a one-shot clip such as Sit from its first frame. */
   replay() { this.action?.reset().play(); }
@@ -373,6 +399,7 @@ export class Renderer {
     this.renderer.setSize(width, height, false);
     this.viewCamera.aspect = width / height; this.viewCamera.updateProjectionMatrix();
     this.viewCamera.position.copy(this.camera.eye()); this.viewCamera.lookAt(this.camera.target);
+    if (this.liveRequest && this.canLive) this.runLive();
     if (!this.frozen) { this.mixer?.update(dt); this.springs?.update(dt); }
     if (this.locksMode && this.lockEditor.active) {
       this.lockEditor.tickPhysics(dt || 1 / 60);

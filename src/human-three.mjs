@@ -16,7 +16,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 export { registerHairStyle, registerClothingStyle } from './appearance.mjs';
 
-function resolvedSpec(spec) {
+export function resolvedSpec(spec) {
   if (!Number.isFinite(spec.seed)) return spec;
   let state = Math.floor(spec.seed) >>> 0;
   const next = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state / 4294967296; };
@@ -97,7 +97,7 @@ function sculptShift(data, unsculpted, displaced, bodyVertices, point, axis, bon
   return n ? new Vector3(x / n, y / n, z / n) : new Vector3();
 }
 
-function makeSkeleton(data, positions, unsculpted = null, height = 1.7) {
+export function makeSkeleton(data, positions, unsculpted = null, height = 1.7) {
   const meta = data.skeleton.bones;
   const heads = meta.map(bone => boneHead(bone, data.base.vertexGroups, positions));
   const tails = meta.map(bone => boneHead({ head: bone.tail }, data.base.vertexGroups, positions));
@@ -210,7 +210,7 @@ function makeBodyGeometry(data, positions) {
 }
 
 // Mean sRGB colour of each bundled skin texture (assets/skins/index.json).
-const skinMaps = {
+export const skinMaps = {
   young_caucasian_female: [206, 158, 131], young_caucasian_male: [224, 169, 137],
   young_asian_female: [207, 158, 126], young_asian_male: [199, 155, 130],
   young_african_female: [96, 56, 41], young_african_male: [87, 56, 41],
