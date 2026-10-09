@@ -1393,9 +1393,9 @@ export class StudioUI {
     const gallery = this.group('Adicionar peça', { open: garments.length < 3, key: 'galeria' });
     const card = type => h('button', { type: 'button', class: 'style-card', title: full ? `Limite de ${MAX_GARMENTS} peças` : `Vestir: ${garmentLabels[type]}`, disabled: full,
       onclick: () => { this.setGarments([...garments, newGarment(type)], garments.length); this.toast(`${garmentLabels[type]} vestida: ajuste no 3D com Bordas ou Pintar`, 'info'); } }, garmentPictogram(type), h('span', { text: garmentLabels[type] }));
-    gallery.append(h('p', { class: 'empty-note', text: 'Dia a dia' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Roupas do dia a dia' }, garmentTypes.filter(type => !costumeTypes.includes(type) && !footwearTypes.includes(type)).map(card)));
-    gallery.append(h('p', { class: 'empty-note', text: 'Calçados' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Calçados' }, footwearTypes.map(card)));
-    gallery.append(h('p', { class: 'empty-note', text: 'Carnaval' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Peças de carnaval' }, costumeTypes.map(card)));
+    gallery.append(h('div', { class: 'step-label', text: 'Dia a dia' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Roupas do dia a dia' }, garmentTypes.filter(type => !costumeTypes.includes(type) && !footwearTypes.includes(type)).map(card)));
+    gallery.append(h('div', { class: 'step-label', text: 'Calçados' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Calçados' }, footwearTypes.map(card)));
+    gallery.append(h('div', { class: 'step-label', text: 'Carnaval' }), h('div', { class: 'style-grid', role: 'group', 'aria-label': 'Peças de carnaval' }, costumeTypes.map(card)));
     gallery.append(h('div', { class: 'button-row two' }, ...Object.entries(costumePresets).map(([id, preset]) => h('button', { type: 'button', class: 'button', title: preset.title,
       onclick: () => { this.setGarments(preset.garments(), 0); this.toast(`Fantasia "${preset.name}" vestida`, 'info', this.undoAction()); } }, preset.name))));
     if (!garment) return;
@@ -1453,7 +1453,6 @@ export class StudioUI {
     const painted = Object.keys(garment.paint).length;
     this.renderAdvanced([
       // Carnival pieces and shoes are cut on the body (or built as plumes and fringe): no 2D pattern.
-      ...(patternTypes.includes(garment.type) ? [] : [['Moldes', body => body.append(h('p', { class: 'empty-note', text: 'Esta peça é feita direto no corpo: ajuste no 3D com Bordas e Pintar.' }))]]),
       ...(!patternTypes.includes(garment.type) ? [] : [['Moldes', body => {
         method(body);
         const canvas = h('div', { class: 'pattern-host' }); body.append(canvas);
