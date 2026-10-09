@@ -29,9 +29,37 @@ const words = {
   triangle: 'triângulo', double: 'papada', prominent: 'proeminência', bones: 'ossos', round: 'arredondado', flaring: 'abertura', compression: 'compressão',
   curve: 'curva', hump: 'giba', septumangle: 'ângulo do septo', nubian: 'núbio', greek: 'grego', bulge: 'saliência', cleft: 'covinha', lobe: 'lóbulo',
   epicanthus: 'epicanto', bag: 'olheira', fold: 'prega', lid: 'pálpebra', cupid: 'arco do cupido', size: 'tamanho', open: 'abertura', dimples: 'covinhas',
+  foot: 'pé', hand: 'mão', fingers: 'dedos', eyebrows: 'sobrancelhas', breast: 'mama', nipple: 'mamilo', tone: 'tônus', ankle: 'tornozelo', wrist: 'pulso',
+  diameter: 'espessura', distance: 'distância', measure: 'medida', concave: 'côncavo', convex: 'convexo', pointed: 'pontudo', square: 'quadrado',
+  shape: 'formato', inner: 'interno', top: 'topo', trunk: 'tronco', brown: 'sobrancelha', asym: 'assimetria', asymm: 'assimetria', l: '', r: '',
+};
+// Whole labels for the targets whose name does not read word by word: MakeHuman's own slider labels
+// (data/modifiers/modeling_sliders.json), in Portuguese. Keyed by the name without its side prefix.
+const labels = {
+  // Measured on the targets: height 1, 2, 3 open the eye at its inner part, middle and outer part.
+  'eye-height1-decr-incr': 'abertura junto ao nariz', 'eye-height2-decr-incr': 'abertura no meio', 'eye-height3-decr-incr': 'abertura no canto externo',
+  'eye-push1-in-out': 'canto externo para os lados', 'eye-push2-in-out': 'canto interno para os lados',
+  'eye-corner1-down-up': 'canto externo para cima', 'eye-corner2-down-up': 'canto interno para cima',
+  'eye-eyefold-down-up': 'posição da prega', 'eye-eyefold-angle-down-up': 'ângulo da prega', 'eye-eyefold-concave-convex': 'volume da prega',
+  'nose-width1-decr-incr': 'largura do dorso', 'nose-width2-decr-incr': 'largura do meio', 'nose-width3-decr-incr': 'largura da base',
+  'nose-base-down-up': 'base para cima', 'nose-compression-compress-uncompress': 'compressão',
+  'mouth-angles-down-up': 'cantos para cima', 'mouth-upperlip-ext-down-up': 'curvatura do lábio superior', 'mouth-lowerlip-ext-down-up': 'curvatura do lábio inferior',
+  'mouth-upperlip-middle-down-up': 'meio do lábio superior', 'mouth-lowerlip-middle-down-up': 'meio do lábio inferior',
+  'mouth-laugh-lines-in-out': 'sulco nasolabial', 'mouth-philtrum-volume-decr-incr': 'volume do filtro', 'mouth-cupidsbow-decr-incr': 'arco do cupido',
+  'mouth-cupidsbow-width-decr-incr': 'largura do arco do cupido',
+  'ear-flap-decr-incr': 'orelha de abano', 'ear-wing-decr-incr': 'orelha em asa', 'ear-rot-backward-forward': 'rotação',
+  'ear-shape-pointed-triangle': 'formato pontudo↔triangular', 'ear-shape-square-round': 'formato quadrado↔redondo',
+  'head-oval': 'oval', 'head-round': 'redonda', 'head-rectangular': 'retangular', 'head-square': 'quadrada', 'head-triangular': 'triangular',
+  'head-invertedtriangular': 'triângulo invertido', 'head-diamond': 'losango', 'head-age-decr-incr': 'idade',
+  'head-back-scale-depth-decr-incr': 'profundidade da parte de trás', 'neck-back-scale-depth-decr-incr': 'profundidade da nuca',
+  'torso-vshape-decr-incr': 'formato em V', 'torso-muscle-dorsi-decr-incr': 'dorsais', 'torso-muscle-pectoral-decr-incr': 'peitorais',
+  'leg-valgus-decr-incr': 'joelho para dentro↔fora', 'cheek-inner-decr-incr': 'volume interno', 'chin-jaw-drop-decr-incr': 'tônus da lateral do queixo',
+  'chin-prognathism-decr-incr': 'queixo projetado', 'pelvis-tone-decr-incr': 'tônus da pelve', 'stomach-tone-decr-incr': 'tônus abdominal',
+  'measure-napetowaist-dist-decr-incr': 'nuca à cintura', 'measure-waisttohip-dist-decr-incr': 'cintura ao quadril', 'measure-frontchest-dist-decr-incr': 'largura do peito',
 };
 /** A readable Portuguese label for a MakeHuman category name. */
 export function categoryLabel(name) {
+  if (labels[name.replace(/^[lr]-/, '')]) return labels[name.replace(/^[lr]-/, '')];
   let text = name.replace(/^[lr]-/, '');
   for (const pair of ['in-out', 'down-up', 'backward-forward', 'decr-incr']) text = text.replace(pair, ` ${pair} `);
   const parts = text.split(/[\s]+/).flatMap(part => words[part] !== undefined ? [words[part]] : part.split('-').map(w => words[w] ?? w));
