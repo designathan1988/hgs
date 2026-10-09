@@ -806,9 +806,11 @@ export function lockCard(lock, state, { detail = 1, vertex = null } = {}) {
   const sweep = lockSweep(lock, state, { detail });
   // A card keeps most of its width to the tip (the strands in its texture thin out there, not the card),
   // and is half again as wide as the lock so neighbouring cards overlap and no scalp shows between them.
+  // A lock growing out of other hair (rootTaper) starts from nothing, with the tube's root ramp (profile).
+  const rootRamp = s => lock.rootTaper ? smooth(0, Math.min(0.04, sweep.length * 0.3), s) : 0.75 + 0.25 * smooth(0, Math.min(0.03, sweep.length * 0.2), s);
   const half = sweep.ss.map(s => {
     const u = clamp(s / sweep.length, 0, 1);
-    return 0.75 * lock.width * (1 - 0.7 * lock.taper * Math.pow(u, 1.6)) * (0.75 + 0.25 * smooth(0, Math.min(0.03, sweep.length * 0.2), s));
+    return 0.75 * lock.width * (1 - 0.7 * lock.taper * Math.pow(u, 1.6)) * rootRamp(s);
   });
   const u = sweep.ss.map(s => clamp(s / sweep.length, 0, 1));
   return cardFromSweep({ M: sweep.M, line: sweep.line, tan: sweep.tan, side: sweep.SA, out: sweep.RA, half, u }, lock, { vertex });

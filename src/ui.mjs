@@ -17,7 +17,7 @@ import { namedFeatures } from './renderer-three.mjs';
 import { faceWeights, mixamoName } from './human-three.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
-  skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames,
+  skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames, hairBases,
 } from './state.mjs';
 
 /**
@@ -791,6 +791,8 @@ export class StudioUI {
     this.patch({ hairColor: index ?? this.person.hairColor, colors }, { history: false, rebuild: false });
     const hex = parseInt((custom ?? hairPalette[this.person.hairColor]).slice(1), 16);
     this.renderer?.lockEditor.setColor(hex);
+    // The ready-made base belongs to the character on screen: it takes the colour at once too.
+    this.renderer?.liveLook(this.person);
     if (this.renderer) this.renderer.hairColor = hex;
   }
   renderHair() {
@@ -802,6 +804,11 @@ export class StudioUI {
     // 1. The hairstyle to start from and its colour.
     const style = this.group('Penteado');
     const tint = this.person.colors.hair ?? hairPalette[this.person.hairColor];
+    // 1a. A ready-made hair mesh as the base (the locks below are laid over it); it rebuilds the character.
+    const baseIds = [null, ...hairBases.map(base => base.id)];
+    style.append(chips({ label: 'Base pronta', items: ['Nenhuma', ...hairBases.map(base => base.name)], selected: baseIds.indexOf(this.person.hairBase ?? null),
+      onPick: i => { this.hairDirty = true; this.patch({ hairBase: baseIds[i] }); } }));
+    style.append(h('p', { class: 'muted', text: 'Base pronta: cabelo inteiro feito por artista. Mechas: escolha um estilo abaixo ou desenhe por cima da base.' }));
     style.append(h('div', { class: 'style-grid', style: `--hair-tint:${tint}` }, hairPresets.map(p => h('button', {
       type: 'button', class: `style-card${this.person.hairPreset === p.id ? ' on' : ''}`, title: p.name, 'aria-pressed': String(this.person.hairPreset === p.id), onclick: () => this.applyHairPreset(p.id),
     }, hairPictogram(p.id), h('span', { text: p.name })))));

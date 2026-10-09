@@ -23,9 +23,11 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const veilBones = /^(head|neck|spine|pelvis|clavicle)/;
 
 export class HairGuide {
-  constructor(state, { volume = 0.008, length = 0.6 } = {}) {
+  constructor(state, { volume = 0.008, length = 0.6, outline = null } = {}) {
     this.state = state;
     this.C = state.frame.C.clone();
+    // Positions of hair already on the head as a mesh (a ready-made base): the guide wraps it too.
+    this.outline = outline;
     this.measure();
     this.build(volume, length);
   }
@@ -54,6 +56,21 @@ export class HairGuide {
       const horizontal = Math.hypot(d.x, d.z);
       if (headWeight > 0.5) wide[t] = Math.max(wide[t], horizontal);
       if (d.y < 0 && best >= 0 && veilBones.test(bones[best])) {
+        const row = Math.floor(-d.y / ROW);
+        if (row < rows) body[t * rows + row] = Math.max(body[t * rows + row], horizontal);
+      }
+    }
+    // The base hair: over the head centre it widens the cap and the widest outline; below it, the veil rows.
+    const outline = this.outline ?? [];
+    for (let v = 0; v < outline.length; v += 3) {
+      d.set(outline[v] - C.x, outline[v + 1] - C.y, outline[v + 2] - C.z);
+      s.setFromVector3(d);
+      const t = ((Math.floor((s.theta + Math.PI) / TAU * THETA) % THETA) + THETA) % THETA, horizontal = Math.hypot(d.x, d.z);
+      if (d.y >= 0) {
+        const p = clamp(Math.round(s.phi / (Math.PI / 2) * PHI), 0, PHI);
+        cap[t * (PHI + 1) + p] = Math.max(cap[t * (PHI + 1) + p], s.radius);
+        wide[t] = Math.max(wide[t], horizontal);
+      } else {
         const row = Math.floor(-d.y / ROW);
         if (row < rows) body[t * rows + row] = Math.max(body[t * rows + row], horizontal);
       }

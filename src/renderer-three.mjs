@@ -78,6 +78,8 @@ export function studioSpec(person, { undressed = false } = {}) {
     // Hair is mesh locks: the edited locks, else the chosen ready-made style.
     hair: { style: hairLocksOf(person)?.locks.length ? 'locks' : 'none' },
     hairLocks: hairLocksOf(person),
+    // The ready-made hair mesh under the locks (appearance.mjs), fitted as a MakeHuman proxy.
+    hairBase: person.hairBase ?? null,
     hairColor: hex(colors.hair ?? hairPalette[person.hairColor] ?? hairPalette[1]),
     browColor: colors.brows ? hex(colors.brows) : undefined,
     lashes: { length: person.lashLength ?? 1, curl: person.lashCurl ?? 0.5, density: person.lashDensity ?? 1, color: colors.lashes ? hex(colors.lashes) : undefined },

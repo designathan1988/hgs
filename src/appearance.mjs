@@ -125,6 +125,34 @@ export function garmentTexture(image, proxy, lower, top, bottom) {
   return new CanvasTexture(canvas);
 }
 
+/**
+ * A ready-made hair texture made dyeable: its shading in grey (linear luminance over the mean of
+ * the texels the mesh uses, times 0.85), alpha kept. The hair colour is the material colour, which
+ * multiplies the map, so one colour gives the same hair tone whatever the style's own texture was.
+ */
+export function hairDyeTexture(image, uvs) {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width; canvas.height = image.height;
+  const drawing = canvas.getContext('2d', { willReadFrequently: true });
+  drawing.drawImage(image, 0, 0);
+  const pixels = drawing.getImageData(0, 0, canvas.width, canvas.height), d = pixels.data;
+  const luminance = i => 0.2126 * LINEAR[d[i * 4]] + 0.7152 * LINEAR[d[i * 4 + 1]] + 0.0722 * LINEAR[d[i * 4 + 2]];
+  let mean = 0, count = 0;
+  for (let i = 0; i < uvs.length; i += 2) {
+    const x = Math.min(canvas.width - 1, Math.max(0, Math.floor(uvs[i] * canvas.width)));
+    const y = Math.min(canvas.height - 1, Math.max(0, Math.floor(uvs[i + 1] * canvas.height)));
+    const t = y * canvas.width + x;
+    if (d[t * 4 + 3] > 127) { mean += luminance(t); count++; }
+  }
+  mean = Math.max(0.02, mean / Math.max(1, count));
+  for (let i = 0; i < d.length / 4; i++) {
+    const grey = encode(Math.min(1, 0.85 * luminance(i) / mean));
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = grey;
+  }
+  drawing.putImageData(pixels, 0, 0);
+  return new CanvasTexture(canvas);
+}
+
 async function proxyObject(name, label, context, { color, hair = false, length = 1, volume = 0, textureFile = null, deform = null, recolor = null, texture = 'straight', curl = 0.5, collide = 0, layer = false } = {}) {
   const proxy = await loadProxy(name);
   const shaped = fitProxy(proxy, context.positions);
@@ -206,6 +234,7 @@ async function proxyObject(name, label, context, { color, hair = false, length =
     const derived = make => async () => { const texture = make(); texture.colorSpace = SRGBColorSpace; texture.flipY = false; texture.needsUpdate = true; return texture; };
     let texture = base;
     if (recolorSource) texture = await sharedTexture(`garment:${name}:${recolorSource.top}:${recolorSource.bottom}`, derived(() => garmentTexture(base.image, proxy, lower, recolorSource.top, recolorSource.bottom)));
+    else if (hair) texture = await sharedTexture(`dye:${textureURL}`, derived(() => hairDyeTexture(base.image, proxy.uvs)));
     else if (proxy.meta.kind === 'eyebrows' || proxy.meta.kind === 'eyelashes') {
       // Alpha-only cards: white texels, coloured by the material.
       texture = await sharedTexture(`white:${textureURL}`, derived(() => {
@@ -256,6 +285,9 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
           const proxy = await loadProxy(source.name), { top, bottom, lower } = source.recolor;
           texture = await sharedTexture(`garment:${source.name}:${top}:${bottom}`, derived(() => garmentTexture(base.image, proxy, lower, top, bottom)));
           mesh.geometry.deleteAttribute('color'); material.vertexColors = false;
+        } else if (source.hair) {
+          const proxy = await loadProxy(source.name);
+          texture = await sharedTexture(`dye:${source.url}`, derived(() => hairDyeTexture(base.image, proxy.uvs)));
         } else if (source.kind === 'eyebrows' || source.kind === 'eyelashes') {
           texture = await sharedTexture(`white:${source.url}`, derived(() => {
             const canvas = document.createElement('canvas'); canvas.width = base.image.width; canvas.height = base.image.height;
@@ -804,6 +836,21 @@ export async function dressHuman(context, spec) {
     if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
     context.outfitSurface = { positions: geometry.getAttribute('position').array, normals: geometry.getAttribute('normal').array, index: geometry.index.array };
   }
+  // A ready-made hairstyle (MakeHuman CC0, made by an artist) as the base under the edited locks:
+  // fitted to this head like every proxy and skinned to its bones, dyed by the hair colour. Its
+  // surface joins the one the locks rest on (with the clothes), so locks lie over it, not in it.
+  if (spec.hairBase && hairStyles.has(spec.hairBase)) {
+    const { mesh } = await proxyObject(spec.hairBase, 'HairBase', context, { hair: true, color: spec.hairColor ?? 0x30231e, collide: 0.003 });
+    const g = mesh.geometry;
+    if (!g.getAttribute('normal')) g.computeVertexNormals();
+    const add = { positions: g.getAttribute('position').array, normals: g.getAttribute('normal').array, index: g.index.array };
+    const had = context.outfitSurface;
+    const join = (Type, a, b, shift = 0) => { const out = new Type(a.length + b.length); out.set(a); for (let i = 0; i < b.length; i++) out[a.length + i] = b[i] + shift; return out; };
+    context.outfitSurface = had ? {
+      positions: join(Float32Array, had.positions, add.positions), normals: join(Float32Array, had.normals, add.normals),
+      index: join(Uint32Array, had.index, add.index, had.positions.length / 3),
+    } : add;
+  }
   const hair = spec.hair ?? { style: spec.gender < 0.5 ? 'long01' : 'short01' };
   if (hair.style && hair.style !== 'none') {
     if (hair.style === 'locks') {
@@ -860,5 +907,5 @@ export async function dressHuman(context, spec) {
       await addScalpUnderlay(context, spec.hairColor ?? 0x30231e);
     }
   }
-
+  if (spec.hairBase && hairStyles.has(spec.hairBase) && !context.group.getObjectByName('HairCap') && !context.group.getObjectByName('ScalpUnderlay')) await addScalpUnderlay(context, spec.hairColor ?? 0x30231e);
 }

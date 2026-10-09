@@ -92,7 +92,7 @@ export function liveLook(human, spec, { garments = null } = {}) {
       const mean = baked && material.map ? bakedMean(baked.url, baked.tint) : null;
       if (mean) material.color.setRGB(skin.target.r / Math.max(1e-3, mean[0]), skin.target.g / Math.max(1e-3, mean[1]), skin.target.b / Math.max(1e-3, mean[2]));
       else material.color.copy(skin.target);
-    } else if (mesh.name === 'Hair' || mesh.name === 'HairCap') {
+    } else if (mesh.name === 'Hair' || mesh.name === 'HairCap' || mesh.name === 'HairBase') {
       material.color.copy(hair);
       material.specularColor?.copy(hair).lerp(new Color(0xffffff), 0.12);
     } else if (mesh.name === 'Brows') material.color.copy(brow).lerp(hairBrowMix, 0.15);

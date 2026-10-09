@@ -74,7 +74,12 @@ export class HairEditor {
     this.group = new Group(); this.group.name = 'HairEditor';
     this.renderer.scene.add(this.group);
     this.materials = { normal: hairCardMaterial(color), selected: hairCardMaterial(color, { highlight: true }), cap: hairCapMaterial(color) };
-    this.guide = new HairGuide(this.state, { volume: this.settings.guideVolume, length: this.settings.guideLength });
+    // A ready-made base stays visible and is wrapped by the guide, so new locks are drawn over it.
+    const base = human.group.getObjectByName('HairBase');
+    this.overBase = Boolean(base);
+    // Over a base the guide lies close on it (locks rest on that hair, not standing off it).
+    if (base) this.settings.guideVolume = Math.min(this.settings.guideVolume, 0.003);
+    this.guide = new HairGuide(this.state, { volume: this.settings.guideVolume, length: this.settings.guideLength, outline: base?.geometry.getAttribute('position').array ?? null });
     this.hoverMark = new Mesh(new SphereGeometry(1, 10, 8), new MeshBasicMaterial({ color: 0xffffff, depthTest: false, transparent: true, opacity: 0.9 }));
     this.hoverMark.visible = false; this.hoverMark.renderOrder = 11;
     this.strokeLine = new Line(new BufferGeometry(), new LineBasicMaterial({ color: 0xf27a2e, depthTest: false, transparent: true, opacity: 0.95 }));
@@ -259,6 +264,8 @@ export class HairEditor {
     if (points.length < 9) return null;
     const lock = makeLock(this.state, root, null, params);
     lock.group = params.group ?? 'main';
+    // Drawn over a ready-made base, a lock grows out of that hair: its root narrows to nothing (no card edge on top).
+    if (this.overBase) lock.rootTaper = true;
     if (!setLockShape(lock, points)) return null;
     this.keepOut(lock);
     lock.styled = true; lock.rest.set(lock.x);
@@ -464,6 +471,7 @@ export class HairEditor {
       const length = lockLength(lock);
       setLockShape(lock, Array.from(lock.x)); setLockLength(lock, length); lock.styled = true; lock.rest.set(lock.x);
       this.dirty = true;
+      if (this.drag) this.drag.changed = true;
     }
   }
   /** Retouch: from where each lock was caught, the lock follows the stroke; past the stroke its old tail continues. */
@@ -503,8 +511,8 @@ export class HairEditor {
       this.showStroke();
       return true;
     }
+    // Fill, Cut, Erase and Volume start anywhere and act where the stroke passes over the hair.
     if (tool === 'fill') {
-      if (!this.pickScalp(ndc, camera) && !this.pickLock(ndc, camera)) return false;
       this.checkpoint();
       this.drag = { tool, made: [] };
       if (!shift) this.selected.clear();
@@ -524,17 +532,14 @@ export class HairEditor {
       return true;
     }
     if (tool === 'cut' || tool === 'erase') {
-      const hit = this.pickLock(ndc, camera);
-      if (!hit) return false;
       this.checkpoint();
-      this.drag = { tool, done: new Set() };
-      this.cutOrErase(hit);
+      this.drag = { tool, done: new Set(), last: { x: ndc.x, y: ndc.y } };
+      this.cutOrErase(this.drag.last, ndc, camera); this.step();
       return true;
     }
     if (tool === 'volume') {
-      if (!this.locksUnder(ndc, camera, { from: 2 }).length) return false;
       this.checkpoint();
-      this.drag = { tool, invert: ctrl };
+      this.drag = { tool, invert: ctrl, changed: false };
       this.volumeAt(ndc, camera, ctrl); this.step();
       return true;
     }
@@ -566,9 +571,9 @@ export class HairEditor {
     }
     if (drag.tool === 'fill') { this.fillAt(ndc, camera); this.step(); return; }
     if (drag.tool === 'volume') { this.volumeAt(ndc, camera, drag.invert); this.step(); return; }
+    if (drag.tool === 'cut' || drag.tool === 'erase') { this.cutOrErase(drag.last, ndc, camera); drag.last = { x: ndc.x, y: ndc.y }; this.step(); return; }
     const hit = this.pickLock(ndc, camera);
     if (!hit) return;
-    if (drag.tool === 'cut' || drag.tool === 'erase') this.cutOrErase(hit);
     if (drag.tool === 'select') this.selectHit(hit);
   }
   pointerUp() {
@@ -594,21 +599,62 @@ export class HairEditor {
       for (const lock of moved) this.layer(lock, moved);
     }
     if (drag.tool === 'fill' && !drag.made.length) this.undoStack.pop();
+    if (drag.tool === 'volume' && !drag.changed) this.undoStack.pop();
     if ((drag.tool === 'cut' || drag.tool === 'erase') && !drag.done.size) this.undoStack.pop();
     if (drag.tool === 'erase') this.purge();
     this.syncMeshes();
     if (drag.tool !== 'select') this.updateCap();
     this.onChange();
   }
-  /** Cut where the scissors pass, or erase the whole lock (Delete Curves). */
-  cutOrErase(hit) {
-    const lock = this.locks[hit.index];
-    if (!lock || this.drag.done.has(lock)) return;
-    this.drag.done.add(lock);
-    if (this.drag.tool === 'erase') { lock.erased = true; if (this.meshes[hit.index]) this.meshes[hit.index].visible = false; return; }
-    setLockLength(lock, Math.max(lockLimits.length[0], arcLengthAt(lock, hit.point)));
-    lock.styled = true; lock.rest.set(lock.x);
-    this.dirty = true; this.step();
+  /**
+   * The stroke went from `a` to `b` (NDC). Cut: every lock whose card, seen on screen, crosses that
+   * stretch is cut where it crosses (front and back hair alike, as scissors through a lock of hair).
+   * Erase: every lock with a segment inside the circle goes whole (Blender's Delete Curves).
+   */
+  cutOrErase(a, b, camera) {
+    const erase = this.drag.tool === 'erase', aspect = camera.aspect, radius = this.settings.radius;
+    const ax = a.x * aspect, ay = a.y, bx = b.x * aspect, by = b.y, q = new Vector3(), p = new Float32Array(N * 3);
+    // Distance from the screen point (x, y) to the stroke stretch, and where on the stretch.
+    const toStroke = (x, y) => {
+      const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+      const s = l2 > 1e-12 ? clamp(((x - ax) * dx + (y - ay) * dy) / l2, 0, 1) : 0;
+      return Math.hypot(x - (ax + s * dx), y - (ay + s * dy));
+    };
+    this.locks.forEach((lock, index) => {
+      if (lock.erased || lock.hidden || this.drag.done.has(lock)) return;
+      let front = true;
+      for (let i = 0; i < N; i++) { q.fromArray(lock.x, i * 3).project(camera); if (q.z > 1) front = false; p[i * 3] = q.x * aspect; p[i * 3 + 1] = q.y; }
+      if (!front) return;
+      if (erase) {
+        for (let i = 1; i < N; i++) if (toStroke(p[i * 3], p[i * 3 + 1]) < radius) {
+          lock.erased = true; this.drag.done.add(lock);
+          if (this.meshes[index]) this.meshes[index].visible = false;
+          return;
+        }
+        return;
+      }
+      // First crossing from the root: segment (i, i+1) against the stroke stretch (a, b).
+      for (let i = 1; i < N - 1; i++) {
+        const px = p[i * 3], py = p[i * 3 + 1], rx = p[i * 3 + 3] - px, ry = p[i * 3 + 4] - py;
+        const sx = bx - ax, sy = by - ay, den = rx * sy - ry * sx;
+        let t = -1;
+        if (Math.abs(den) > 1e-12) {
+          const u = ((ax - px) * sy - (ay - py) * sx) / den, v = ((ax - px) * ry - (ay - py) * rx) / den;
+          if (u >= 0 && u <= 1 && v >= 0 && v <= 1) t = u;
+        }
+        // A click without movement cuts the lock passing under the cursor.
+        if (t < 0 && sx * sx + sy * sy < 1e-10) {
+          const l2 = rx * rx + ry * ry, u = l2 > 1e-12 ? clamp(((ax - px) * rx + (ay - py) * ry) / l2, 0, 1) : 0;
+          if (Math.hypot(ax - (px + u * rx), ay - (py + u * ry)) < 0.008) t = u;
+        }
+        if (t < 0) continue;
+        const at = new Vector3().fromArray(lock.x, i * 3).lerp(q.fromArray(lock.x, (i + 1) * 3), t);
+        setLockLength(lock, Math.max(lockLimits.length[0], arcLengthAt(lock, at)));
+        lock.styled = true; lock.rest.set(lock.x);
+        this.drag.done.add(lock); this.dirty = true;
+        return;
+      }
+    });
   }
   /** Remove erased locks (their meshes go with them; the selection is renumbered). */
   purge() {

@@ -10,6 +10,15 @@ export const eyePalette = ['#563622', '#80583b', '#7b7568', '#53725a', '#4c6484'
 export const topPalette = ['#45403d', '#293b49', '#a66141', '#94837a', '#75836a', '#7c6474'];
 export const bottomPalette = ['#626152', '#343944', '#4d554d', '#4b5361', '#a3947e', '#393634'];
 export const outfitNames = ['Casual', 'Esporte fino', 'Social', 'Trabalho', 'Sob medida'];
+// Ready-made hair meshes (MakeHuman CC0, made by artists): the base the edited locks are laid over.
+export const hairBases = [
+  { id: 'short01', name: 'Curto repicado' }, { id: 'short02', name: 'Curto liso' }, { id: 'culturalibre_hair_06', name: 'Desfiado' },
+  { id: 'long01', name: 'Longo liso' }, { id: 'braid01', name: 'Trança lateral' }, { id: 'bob01', name: 'Chanel de lado' },
+  { id: 'toigo_blunt_bob', name: 'Chanel reto' }, { id: 'toigo_blunt_bob_with_bangs', name: 'Chanel reto com franja' },
+  { id: 'toigo_curled_under_bob', name: 'Chanel virado' }, { id: 'toigo_curled_under_bob_with_bangs', name: 'Chanel virado com franja' },
+  { id: 'toigo_inverted_bob', name: 'Chanel invertido' }, { id: 'toigo_inverted_bob_with_bangs', name: 'Chanel invertido com franja' },
+];
+const hairBaseIds = hairBases.map(base => base.id);
 // Old presets stored a CC0 hair mesh index; each maps to the nearest mesh-lock style.
 const legacyHair = ['curto', 'curto', 'longo', 'chanel', 'chanel', 'chanel', 'franja', 'longo', 'franja', 'franja', 'cacheado', 'curto', 'careca', 'longo', 'longo'];
 export const expressionNames = ['Neutra', 'Relaxada', 'Feliz', 'Sorriso', 'Rindo', 'Triste', 'Brava', 'Irritada', 'Surpresa', 'Preocupada', 'Cansada', 'Falando'];
@@ -22,7 +31,7 @@ export const defaultCharacter = Object.freeze({
   build: 0.05, muscle: 0.32, shoulders: 0.0, waist: 0.0, hips: 0.08,
   legLength: 0, headSize: 0, faceWidth: 0, jaw: 0, cheek: 0.12,
   nose: 0, eyeSize: 0, eyeSpacing: 0, skin: 2, skinDetail: 0.65,
-  skinRoughness: 0.58, hairPreset: 'chanel', hairColor: 1,
+  skinRoughness: 0.58, hairPreset: 'careca', hairBase: 'toigo_blunt_bob', hairColor: 1,
   eyeColor: 0, outfit: 0, topColor: 0, bottomColor: 0,
   browAngle: 0, browShape: 0, browArch: 0, browThickness: 1, browWidth: 1, browHeight: 0, browDensity: 1,
   expression: 1, expressionIntensity: 0.38, animation: 0,
@@ -137,6 +146,8 @@ export function normalizeCharacter(value = {}) {
   // Hair: a ready-made style, and the locks edited from it (null = the style as made).
   if (hairPresetIds.includes(value.hairPreset)) result.hairPreset = value.hairPreset;
   else if (Number.isInteger(value.hairStyle) && legacyHair[value.hairStyle]) result.hairPreset = legacyHair[value.hairStyle];
+  // Characters saved before the base existed keep their hair as it was: no base.
+  result.hairBase = hairBaseIds.includes(value.hairBase) ? value.hairBase : value.hairBase === undefined && !('hairPreset' in value) ? defaultCharacter.hairBase : null;
   result.locks = value.locks ? normalizeLocks(value.locks) : null;
   if (result.locks && !result.locks.locks.length && !Array.isArray(value.locks?.locks)) result.locks = null;
   result.garments = Array.isArray(value.garments) ? value.garments.slice(0, 8).map(normalizeGarment) : [newGarment('tshirt'), newGarment('pants')];
@@ -187,7 +198,9 @@ export function randomCharacter(seed = Math.floor(Math.random() * 4294967296)) {
     eyeSize: signed(random) * 0.45, eyeSpacing: signed(random) * 0.45,
     skin: skinGroup, skinDetail: 0.45 + random() * 0.5,
     skinRoughness: 0.43 + random() * 0.3,
-    hairPreset: (gender ? ['curto', 'curto', 'curto', 'ondulado', 'careca'] : ['longo', 'chanel', 'franja', 'ondulado', 'cacheado'])[pick(random, 5)], hairColor: pick(random, 9),
+    // A ready-made hair mesh, no locks over it (the editor adds them).
+    hairPreset: 'careca', hairBase: (gender ? ['short01', 'short02', 'culturalibre_hair_06', 'short02'] : ['long01', 'toigo_blunt_bob', 'toigo_curled_under_bob_with_bangs', 'toigo_inverted_bob', 'bob01', 'braid01'])[pick(random, gender ? 4 : 6)],
+    hairColor: pick(random, 9),
     eyeColor: pick(random, 6), outfit: pick(random, 4),
     topColor: pick(random, 6), bottomColor: pick(random, 6),
     expression: pick(random, 12), expressionIntensity: 0.2 + random() * 0.45,
@@ -203,7 +216,7 @@ export function varyCharacter(character, locks = character.creation?.locks ?? {}
     body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness',
       'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs'],
     face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes'],
-    hair: ['hairPreset', 'hairColor', 'locks'],
+    hair: ['hairPreset', 'hairBase', 'hairColor', 'locks'],
     clothes: ['outfit', 'garments', 'topColor', 'bottomColor'],
   };
   for (const [group, keys] of Object.entries(groups)) if (locks[group]) for (const key of keys) next[key] = structuredClone(current[key]);

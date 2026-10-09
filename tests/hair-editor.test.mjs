@@ -103,15 +103,22 @@ test('fill plants evenly spaced locks under the circle; cut shortens, erase remo
   }
   // Cut through the middle of a lock: shorter, root kept.
   e.setTool('cut');
-  const lock = e.locks[0], before = lockLength(lock), mid = new Vector3().fromArray(lock.x, 10 * 3);
-  const hit = { index: 0, point: mid };
-  e.checkpoint(); e.drag = { tool: 'cut', done: new Set() }; e.cutOrErase(hit); e.drag = null;
+  const lock = e.locks[0], before = lockLength(lock), mid = ndcOf(new Vector3().fromArray(lock.x, 10 * 3), cam);
+  // A scissors stroke across the lock, started off it (as the user swipes).
+  assert.ok(e.pointerDown({ x: mid.x - 0.08, y: mid.y }, cam, {}));
+  e.pointerMove({ x: mid.x + 0.08, y: mid.y }, cam); e.pointerUp();
   assert.ok(lockLength(lock) < before * 0.8, 'cut shortened the lock');
-  // Erase removes whole locks.
-  e.drag = { tool: 'erase', done: new Set() }; e.cutOrErase({ index: 1, point: new Vector3() }); e.drag = null; e.purge();
-  assert.equal(e.locks.length, planted - 1);
+  // Erase removes whole locks: a small circle over one lock takes that lock only.
+  e.setTool('erase'); e.settings.radius = 0.004;
+  const other = ndcOf(new Vector3().fromArray(e.locks[1].x, 15 * 3), cam);
+  assert.ok(e.pointerDown(other, cam, {})); e.pointerUp();
+  assert.ok(e.locks.length < planted, 'the lock under the circle was erased');
+  const erased = planted - e.locks.length;
+  assert.equal(e.locks.length, planted - erased);
   e.undo();
   assert.equal(e.locks.length, planted, 'undo restored the erased lock');
+  e.undo();
+  assert.ok(Math.abs(lockLength(e.locks[0]) - before) < 1e-4, 'undo restored the cut length');
   e.end();
 });
 

@@ -46,7 +46,8 @@ export function cardFromSweep(sweep, lock, { vertex = null } = {}) {
   let v = 0;
   for (let j = 0; j < M; j++) {
     const o = j * 3, a = half[j], s = u[j];
-    const shade = jitter * (0.62 + 0.38 * smooth(0, 0.22, s));
+    // A lock grown out of other hair (rootTaper) lies on top: no root shadow.
+    const shade = lock.rootTaper ? jitter : jitter * (0.62 + 0.38 * smooth(0, 0.22, s));
     for (let k = 0; k < ACROSS; k++, v++) {
       const across = k - 1; // -1, 0, 1
       // Flat at the root (it lies on the scalp), arched further on (a lock with volume).
