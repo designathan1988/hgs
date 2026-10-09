@@ -20,7 +20,16 @@ Etapas em andamento: [PLANO.md](PLANO.md).
 - Cabelo no personagem final: segue a cabeça e balança por cadeias de mola (VRMC_springBone).
 - Exportação: GLB e Pacote LOD; glTF Validator 0 erros e 0 avisos (LOD0 40.039, LOD1 23.321, LOD2 6.239 triângulos).
 - Navegação: roda faz zoom no cursor, botão do meio move, botão direito gira no ponto sob o cursor.
-- Editor de cabelo atual (`hair-editor.mjs`, desde `188601c`): Pincel, Preencher, Retocar, Volume, Cortar, Apagar, Selecionar; peças prontas; cartões com textura de fios.
+- Editor de cabelo atual (`hair-editor.mjs`, desde `188601c`): Pincel, Preencher, Retocar, Volume, Cortar, Apagar, Selecionar; peças prontas; cartões com textura de fios. Efeito de cor (ombré, luzes, raiz, pontas) e tipo de fio (1–4C), gel, frisado e tipo de mecha aparecem na hora no editor (conferido: ombré e 3B).
+- Roupa sob medida com silhueta própria (conferido em 09/10, homem, mulher, corpo pesado, andando): calça de perna reta (retas coxa→joelho→barra, Müller & Sohn) e lisa na virilha; manga em tubo bíceps→punho; blusa que cai do busto (por dentro da calça, reta do busto ao cós); saia evasê com godês; tênis e botas com forma de sapato (sem dedos). Testes de roupa e moldes 26/26.
+- Carnaval (conferido): alças frente-única que contornam a nuca; paetê costurado chato; cabeça de plumas em leque (auréola) com cartões cruzados; faixa rente à testa; saia de franjas em duas carreiras.
+- Luz de ambiente (RoomEnvironment pela PMREM): metais, paetê, lamê, sandálias e joias refletem.
+- Física de cabelo e fantasia com `center` = pelve (VRMC_springBone): correr não joga o cabelo na horizontal; gravado no GLB.
+- Touca do cabelo em mechas cobre o couro (sem falhas de pele por dentro) e esmaece fio a fio na linha do cabelo.
+- Rosto: barba (estilos), maquiagem, tatuagens e acessórios (óculos com haste atrás da orelha, aviador em gota, brincos, chapéus, colar sobre a gola) — conferidos e no GLB.
+- Moldar: a parte sob o cursor acende antes de puxar; o puxão pega a região certa (queixo para baixo = altura do queixo).
+- LOD1/LOD2: pele e camadas cobertas removidas antes de simplificar (sem pele atravessando a roupa). Corpo exportado soldado (17.533 vértices).
+- Boca: jawOpen abre por inteiro (o fechamento dos lábios em repouso sai com a abertura).
 
 ## Interface (conferido no app em 09/10, 1280×800 e 1920×1080)
 
@@ -37,16 +46,12 @@ Etapas em andamento: [PLANO.md](PLANO.md).
 
 - Animação: Rocketbox não tem pulo nem samba (o Sambar é procedural); sentar fica sem cadeira; clipes capturados não acompanham o rosto além de piscar e sorrir.
 - Interface: Rosto mantém "Ajustes por região" como grupo recolhível na aba Forma (o Corpo tem a aba Detalhes); os ícones de movimento repetem a mesma figura em variações do mesmo clipe (Andar, Passear, Andar confiante; as cinco danças).
-- Boca: dentes e gengiva aparecem entre os lábios fechados.
-- Esculpir: corpo facetado durante o traço; a escultura salva é bem menor que a vista.
-- Moldar: puxar o nariz pega "olhos".
-- Cabelo: tesoura corta só a mecha da frente sob o cursor; ferramentas não começam fora do cabelo; risca aberta no Chanel; sem gravidade, fixar, prender, curvar, torcer, pente e linha central (removidos em `188601c`).
-- Roupa sob medida: no corte no corpo não há dobras simuladas (a casca é lisa); no moletom em molde o punho sobra por fora da manga; os calçados fechados mostram leves vincos dos dedos na biqueira; não há salto (pediria mudar a pose de repouso do pé); a cor dos cartões de plumas e franjas só muda depois da reconstrução (~1,5 s).
-- Orçamento: Passista com cabelo longo tem 130 ossos e 14 chamadas de desenho (orçamento 113 e 10); o cabelo responde por 50 ossos.
-- Cílios: 35% dos folículos fora da borda da pálpebra (teste).
-- Corpo exportado sem soldar vértices (53.512 vértices para 15.692 triângulos).
+- Boca: com a boca aberta os dentes de cima não aparecem (a malha existe, atrás do lábio).
+- Cabelo em mechas: na têmpora e na linha do cabelo a pele aparece em listras entre os cartões que passam sobre a pele fora da touca; penteados prontos de mechas ("Longo", "Cacheado") com cara de fitas/fios finos; "Franja" sem franja; mechas atravessam ombros em parte dos quadros (a colisão é só na ponta de cada osso); faltam pentear, agrupar e alisar no editor.
+- Roupa sob medida: blusa feminina ainda marca o bico do seio; tênis com bico e solado pouco definidos; sem dobras simuladas no corte no corpo; sem salto; cor de plumas e franjas só muda após reconstruir.
+- LOD2 do conjunto pronto "Esporte fino": um triângulo da calça aparece sobre a camiseta (sobreposição numa costura de UV).
+- Orçamento: Passista com cabelo longo tem 130 ossos e 14 chamadas de desenho (orçamento 113 e 10).
 
 ## Não existe
 
-- Barba, maquiagem, tatuagem, acessórios (óculos, brincos, chapéus).
 - Curvas editáveis por chave (tangentes), camadas aditivas de animação, pulo.
