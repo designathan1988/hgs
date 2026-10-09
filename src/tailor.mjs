@@ -2,7 +2,7 @@ import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, MeshStandard
 import { SurfaceCollider, resolvePenetration } from './collision.mjs';
 import { drapeCloth } from './cloth.mjs';
 import { normalizePattern } from './patterns.mjs';
-import { buildPatternPanels, projectPanelContacts, coveredPatternFaces } from './pattern-cloth.mjs';
+import { buildPatternPanels, projectPanelContacts, coveredPatternFaces, layeredCollider } from './pattern-cloth.mjs';
 
 /**
  * Made-to-measure clothing, cut from the body and draped by simulation.
@@ -551,8 +551,11 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       // from the chest and shoulder blades instead of following every curve.
       if (!panel.pattern) taubinSmooth(points, panel.index, Math.round(30 + garment.fit * 150));
       const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
-      resolvePenetration(points, panel.index, collider, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
-      drapeCloth(points, panel.index, collider, {
+      // A sewn piece rests on the skin raised by what is already dressed (layer order), not on the
+      // nearest point of the thin garments beneath (pattern-cloth.mjs layeredCollider).
+      const beneath = panel.pattern ? layeredCollider(collider, k) : collider;
+      resolvePenetration(points, panel.index, beneath, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
+      drapeCloth(points, panel.index, beneath, {
         thickness: 0.004 * k, slack: 0.96 + garment.fit * 0.14, frames: 30, substeps: 5, friction: 0.9, radius: 0.05 * k,
         bendCompliance: 3e-6, elastic: panel.elastic, normals: panel.normal, rest: pattern, pinned: panel.pinned,
         ...(panel.pattern ? {thickness:panel.thickness, seams:panel.seams, selfCollision:true, iterations:3, particleCompliance:panel.particleCompliance, particleSlack:panel.particleSlack, particleThickness:panel.particleThickness, slack:0.97+garment.fit*0.08} : {}),
@@ -578,10 +581,10 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
         while(start<points.length/3) {
           let end=start+1;
           while(end<points.length/3&&panel.materials[end]===panel.materials[start])end++;
-          resolvePenetration(points.subarray(start*3,end*3),null,collider,{thickness:panel.particleThickness[start],depth:0.03*k,smoothing:0,normals:panel.normal.slice(start*3,end*3)});
+          resolvePenetration(points.subarray(start*3,end*3),null,beneath,{thickness:panel.particleThickness[start],depth:0.03*k,smoothing:0,normals:panel.normal.slice(start*3,end*3)});
           start=end;
         }
-        projectPanelContacts(points,panel,collider,k);
+        projectPanelContacts(points,panel,beneath,k);
       } else resolvePenetration(points, panel.index, collider, { thickness: 0.0035 * k, depth: 0.03 * k, smoothing: 2, normals: panel.normal });
       // Weights: a panel cut from the body keeps the weights of the skin it was
       // cut from (topology mapping, like MakeHuman proxies weighted by their

@@ -151,10 +151,20 @@ export function buildPatternPanels(context,garment,layout,layer,skin=null) {
  */
 export function projectPanelContacts(points,panel,collider,k) {
   const samples=[[1,0,0],[0,1,0],[0,0,1],[0.5,0.5,0],[0,0.5,0.5],[0.5,0,0.5],[1/3,1/3,1/3]],hit={};
+  // Garments beneath are thin open sheets: pushing against their nearest point tore an outer
+  // garment at its seams (measured in the app: mean edge 1.20× the pattern against the skin only,
+  // 1.96× and up to 51× against the garments). The contacts below are with the skin; the garments
+  // beneath are kept under this one by layer order (orderLayers).
+  if(!collider.ordered&&collider.layers.length>1)collider=layeredCollider(collider,k);
   const membership=new Map();
+  // Contacts only with surfaces facing the same way as this cloth (its outward anatomical normal),
+  // as the drape does (cloth.mjs): a thin garment beneath is two-sided, and at a seam or an armpit
+  // its nearest point can be the panel on the other side, whose normal would push the wrong way.
+  const facingAt=(ids,bary)=>[0,1,2].map(c=>ids.reduce((s,v,i)=>s+panel.normal[v*3+c]*bary[i],0));
   for(const group of panel.seamGroups){
     const xyz=[0,1,2].map(c=>group.reduce((sum,v)=>sum+points[v*3+c],0)/group.length),thickness=Math.max(...group.map(v=>panel.particleThickness[v]));
-    if(collider.deepest(...xyz,0.08*k,thickness,0.08*k,hit)&&hit.distance<thickness){xyz[0]+=hit.nx*(thickness-hit.distance);xyz[1]+=hit.ny*(thickness-hit.distance);xyz[2]+=hit.nz*(thickness-hit.distance);}
+    const facing=[0,1,2].map(c=>group.reduce((sum,v)=>sum+panel.normal[v*3+c],0));
+    if(collider.deepest(...xyz,0.08*k,thickness,0.08*k,hit,facing)&&hit.distance<thickness){xyz[0]+=hit.nx*(thickness-hit.distance);xyz[1]+=hit.ny*(thickness-hit.distance);xyz[2]+=hit.nz*(thickness-hit.distance);}
     const mass=group.some(v=>panel.pinned?.[v])?0:1/group.length;
     const entry={vertices:group,mass};for(const v of group){membership.set(v,entry);for(let c=0;c<3;c++)points[v*3+c]=xyz[c];}
   }
@@ -172,7 +182,7 @@ export function projectPanelContacts(points,panel,collider,k) {
       const ids=panel.index.slice(f,f+3),thickness=ids.reduce((s,v)=>s+panel.particleThickness[v],0)/3;
       for(const bary of samples) {
         const xyz=[0,1,2].map(c=>ids.reduce((s,v,i)=>s+points[v*3+c]*bary[i],0));
-        if(!collider.deepest(...xyz,0.08*k,thickness,0.08*k,hit)||hit.distance>=thickness)continue;
+        if(!collider.deepest(...xyz,0.08*k,thickness,0.08*k,hit,facingAt(ids,bary))||hit.distance>=thickness)continue;
         const push=thickness-hit.distance;deepest=Math.max(deepest,push);
         pushContact(ids,bary,[hit.nx,hit.ny,hit.nz],push,thickness);
       }
@@ -197,6 +207,47 @@ export function projectPanelContacts(points,panel,collider,k) {
     geometry.dispose();
     if(deepest<1e-5*k)break;
   }
+}
+
+/**
+ * The surfaces a garment rests on, in layer order (ClothCombo, Sung et al. 2023, distance term:
+ * wherever two garments share the same nearest skin, the lower one is closer to the body). The
+ * garments already dressed are thin open sheets; contact with their nearest point gave wrong
+ * normals at seams and armpits and tore the garment on top. Instead the contact surface is the
+ * skin raised, at every skin vertex, to the farthest point of the garments dressed over it
+ * (interpolated across the skin triangle and spread a few rings over the skin, so a lower hem is a
+ * ramp, not a step). Used as the collider for the drape and the contact passes, it keeps the cloth
+ * smooth while it stays outside everything beneath.
+ */
+export function layeredCollider(collider,k) {
+  const skin=collider.layers[0],lower=collider.layers.slice(1);
+  if(!skin||!lower.length)return collider;
+  const count=skin.positions.length/3,depth=new Float32Array(count),hit={};
+  for(const layer of lower){
+    const p=layer.positions;
+    for(let v=0;v<p.length/3;v++){
+      if(!skin.closest(p[v*3],p[v*3+1],p[v*3+2],0.15*k,hit))continue;
+      for(const id of [hit.a,hit.b,hit.c])if(hit.distance>depth[id])depth[id]=hit.distance;
+    }
+  }
+  // Spread over the skin (never lowering a point): ramps over the edges of what lies beneath.
+  const neighbours=Array.from({length:count},()=>[]),t=skin.triangles;
+  for(let i=0;i<t.length;i+=3)for(let e=0;e<3;e++){neighbours[t[i+e]].push(t[i+(e+1)%3]);neighbours[t[i+(e+1)%3]].push(t[i+e]);}
+  for(let pass=0;pass<4;pass++){
+    const next=depth.slice();
+    for(let v=0;v<count;v++){const n=neighbours[v];if(!n.length)continue;let s=0;for(const u of n)s+=depth[u];next[v]=Math.max(depth[v],0.5*(depth[v]+s/n.length));}
+    depth.set(next);
+  }
+  const raise=(out,depthLimit)=>{
+    const under=out.u*depth[out.a]+out.v*depth[out.b]+out.w*depth[out.c];
+    out.x+=out.nx*under;out.y+=out.ny*under;out.z+=out.nz*under;out.distance-=under;
+    return !(depthLimit!==undefined&&out.distance<-depthLimit);
+  };
+  return {
+    ordered:true,cell:collider.cell,layers:[skin],
+    closest(x,y,z,radius,out,facing=null){return skin.closest(x,y,z,radius,out,facing)&&raise(out);},
+    deepest(x,y,z,radius,thickness,depthLimit,out,facing=null){return skin.closest(x,y,z,radius,out,facing)&&raise(out,depthLimit);},
+  };
 }
 
 /** Cull only skin enclosed by real cloth faces. Open edges and holes remain visible. */
