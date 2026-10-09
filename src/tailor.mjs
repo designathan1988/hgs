@@ -1146,6 +1146,15 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       const drafting = shell ? new SurfaceCollider(collider.cell) : collider;
       if (shell) drafting.layers.push(footwearTypes.includes(garment.type) ? shoeLast(context).skin : draftSkin(context), ...collider.layers.slice(1));
       const beneath = layeredCollider(drafting, k);
+      // A cut piece starts on the drafting skin (smoothed), not on the skin itself: started on the
+      // skin, the dense patch of a nipple stayed a point through the shell's steps.
+      if (shell && !footwearTypes.includes(garment.type)) {
+        const draft = drafting.layers[0], near = {};
+        for (let v = 0; v < points.length / 3; v++) {
+          if (!draft.closest(points[v * 3], points[v * 3 + 1], points[v * 3 + 2], 0.03 * k, near, [panel.normal[v * 3], panel.normal[v * 3 + 1], panel.normal[v * 3 + 2]])) continue;
+          points[v * 3] = near.x + near.nx * lift; points[v * 3 + 1] = near.y + near.ny * lift; points[v * 3 + 2] = near.z + near.nz * lift;
+        }
+      }
       // Ease: a garment is bigger than the body (wearing ease, plus design ease for looser
       // styles). The cut is drafted into a shell that spans the body's hollows and keeps the ease
       // from it (fitShell). Gravity rests a garment on what faces up (shoulders, the top of the
@@ -1390,8 +1399,10 @@ function draftSkin(context) {
     const [a, b, c, d] = [0, 1, 2, 3].map(k => data.faces[face * 4 + k]);
     index.push(a, b, c, a, c, d);
   }
+  // Taubin's λ|μ filter is a low-pass: more passes remove smaller features. 40 take out what fabric
+  // cannot follow (the nipples, ~1.5 cm, the ribs) and keep the bust and the muscles, much larger.
   const smoothed = Float32Array.from(positions);
-  taubinSmooth(smoothed, index, 12);
+  taubinSmooth(smoothed, index, 40);
   context.tailorDraftSkin = new SurfaceCollider(0.012 * layout.k).add(smoothed, layout.normals, index).layers[0];
   return context.tailorDraftSkin;
 }
