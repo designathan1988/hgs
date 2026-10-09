@@ -9,6 +9,8 @@ import { buildClips, oneShotClips } from './motion.mjs';
 import { LiveShape } from './live.mjs';
 import { liveLook, bakeLook } from './look.mjs';
 import { PoseEditor } from './pose.mjs';
+import { buildUserClip, USER_CLIP } from './timeline.mjs';
+import { clipNames } from './motion.mjs';
 import { SculptSession } from './sculpt.mjs';
 import { HairEditor } from './hair-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
@@ -82,6 +84,8 @@ export function studioSpec(person, { undressed = false } = {}) {
     sculpt: person.sculpt,
     animationSpeed: person.animationSpeed,
     pose: person.pose,
+    // The character's own keyed clip goes into every build (and so into every exported GLB and LOD).
+    clip: person.clip,
     faceWeights: faceWeights(person.expression, person.expressionIntensity ?? 0.5, person.faceShapes),
   };
 }
@@ -209,8 +213,8 @@ export class Renderer {
       const crowdSeed = this.person?.seed;
       this.person = person;
       this.current = human; this.scene.add(human.group);
-      // Live reshaping ties itself to this build on its first use.
-      this.live = null; this.liveReady = null;
+      // Live reshaping ties itself to this build on its first use; the user's clip is rebuilt for it.
+      this.live = null; this.liveReady = null; this.clipSource = undefined;
       this.mixer = new AnimationMixer(human.group);
       // Hair joint chains swing after the body animation (VRMC_springBone algorithm).
       this.springs = new SpringBones(human.group, human.group.userData.hairSprings);
@@ -234,7 +238,8 @@ export class Renderer {
   /** Animation, playback speed and lighting change without rebuilding the mesh. */
   setPresentation(person) {
     if (this.person) Object.assign(this.person, { animation: person.animation, animationSpeed: person.animationSpeed, lighting: person.lighting,
-      expression: person.expression, expressionIntensity: person.expressionIntensity, faceShapes: person.faceShapes, posing: person.posing });
+      expression: person.expression, expressionIntensity: person.expressionIntensity, faceShapes: person.faceShapes, posing: person.posing, clip: person.clip });
+    this.refreshUserClip(person.clip);
     this.faceBase = faceWeights(person.expression, person.expressionIntensity ?? 0.5, person.faceShapes);
     if (this.current && !this.frozen) applyFaceWeights(this.current.faceMeshes, this.faceBase);
     // Lighting presets change the lights only; the neutral backdrop stays (key, fill).
@@ -256,6 +261,8 @@ export class Renderer {
       this.mixer.update(0); this.springs?.reset();
     }
     action.setEffectiveTimeScale(person.animationSpeed ?? 1);
+    // A clip left paused by the timeline cursor plays again when chosen.
+    action.paused = false;
   }
   /**
    * Sculpting works on the rest pose: stop playback, return the skeleton to
@@ -296,6 +303,27 @@ export class Renderer {
     if (on) this.freezeForSculpt();
     else if (this.person) { this.sculpt.target = null; this.setPresentation(this.person); }
   }
+  /** The user's keyed clip at animations[16] ("Personalizada"), rebuilt when the keys change. */
+  refreshUserClip(clip) {
+    const human = this.current;
+    if (!human || clip === this.clipSource) return;
+    this.clipSource = clip;
+    const animations = human.animations.filter(each => each.name !== USER_CLIP).slice(0, clipNames.length);
+    const built = buildUserClip(human.context.skeleton, clip, human.faceMeshes.map(mesh => mesh.name));
+    if (built) animations.push(built);
+    const old = human.animations.find(each => each.name === USER_CLIP);
+    if (old) { if (this.action?.getClip() === old) { this.action.stop(); this.action = null; } this.mixer?.uncacheClip(old); }
+    human.animations = human.group.animations = animations;
+  }
+  /** Show the user's clip at time `t`, paused (the timeline's cursor). */
+  scrubUserClip(t) {
+    const clip = this.current?.animations.find(each => each.name === USER_CLIP);
+    if (!clip || !this.mixer || this.frozen || this.poseMode) return;
+    const action = this.mixer.clipAction(clip);
+    if (action !== this.action) { this.mixer.stopAllAction(); action.reset().play(); this.action = action; }
+    action.paused = true; action.time = Math.max(0, Math.min(clip.duration, t));
+    this.mixer.update(0);
+  }
   /** Posing (Animação → Posar): clips stop, the gizmo and IK handles act on the skeleton. */
   setPoseMode(on) {
     if (on === this.poseMode) return;
@@ -327,7 +355,7 @@ export class Renderer {
     // Clips key rotations against the rest pose and the pelvis by position: rebuilt for the new rest.
     const group = human.group;
     human.animations = group.animations = buildClips(human.context.skeleton, person.pose ?? 0, human.faceMeshes.map(mesh => mesh.name));
-    this.mixer.uncacheRoot(group); this.action = null;
+    this.mixer.uncacheRoot(group); this.action = null; this.clipSource = undefined;
     this.springs = new SpringBones(group, group.userData.hairSprings);
     this.setPresentation(person);
     if (this.action) { this.action.time = time; this.mixer.update(0); }

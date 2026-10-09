@@ -6,6 +6,7 @@ import { loadHumanData, shapeHuman } from './parametric.mjs';
 import { dressHuman, tintedSkinTexture } from './appearance.mjs';
 import { reduceGeometry } from './lod.mjs';
 import { buildClips } from './motion.mjs';
+import { buildUserClip } from './timeline.mjs';
 import { addFaceRig, applyFaceWeights } from './face-mesh.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { sanitizeSkin } from './skin.mjs';
@@ -322,6 +323,9 @@ export async function createHuman(spec = {}, { signal, onProgress } = {}) {
   // Every skinned mesh leaves with glTF-valid weights (one set of four, summing to 1, unused slots 0).
   group.traverse(object => { if (object.isSkinnedMesh) sanitizeSkin(object.geometry, object.name); });
   const animations = buildClips(skeleton, spec.pose ?? 0, faceMeshes.map(mesh => mesh.name));
+  // The character's own keyed clip (timeline.mjs) travels with every build, so every export carries it.
+  const custom = buildUserClip(skeleton, spec.clip, faceMeshes.map(mesh => mesh.name));
+  if (custom) animations.push(custom);
   group.animations = animations;
   const bounds = body.geometry.boundingBox;
   const height = bounds.max.y - bounds.min.y;

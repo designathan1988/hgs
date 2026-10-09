@@ -11,6 +11,8 @@ import { h, group, row, iconButton, slider, segmented, chips, toggle, swatches, 
 import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
 import { libraryPose, poseLibrary } from './motion.mjs';
+import { importAnimation } from './timeline.mjs';
+import { faceWeights, mixamoName } from './human-three.mjs';
 import {
   defaultCharacter, randomCharacter, varyCharacter, normalizeCharacter, serializePreset, parsePreset, ageHeightReference,
   skinPalette, hairPalette, eyePalette, topPalette, bottomPalette, outfitNames, expressionNames, animationNames, lightingNames,
@@ -55,7 +57,7 @@ const clothHints = {
   clothUnpin: 'Clique numa região fixada para liberá-la',
 };
 // Changing these only re-poses or relights the character; it is never rebuilt.
-const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity', 'faceShapes', 'posing']);
+const presentationFields = new Set(['animation', 'animationSpeed', 'lighting', 'expression', 'expressionIntensity', 'faceShapes', 'posing', 'clip']);
 // These change no mesh at all.
 const metaFields = new Set(['name', 'creation', 'version']);
 // Body shape: the character on screen follows at once (live.mjs); the full build refines it when the drag ends.
@@ -1074,6 +1076,51 @@ export class StudioUI {
   }
 
   // ------------------------------------------------------------ animation
+  /**
+   * Timeline of the character's own clip ("Personalizada"): a key holds the
+   * pose (Posar) and the face (expression and fine shapes) at a time; the
+   * cursor shows the clip at that time; an imported .glb becomes keys.
+   */
+  renderTimeline() {
+    const clip = this.person.clip, r = this.renderer, custom = animationNames.length - 1;
+    const group = this.group('Linha do tempo', { open: clip.keys.length > 0 });
+    this.timeAt = Math.min(this.timeAt ?? 0, clip.duration);
+    const setClip = (changes, history = 'clip') => this.patch({ clip: { ...this.person.clip, ...changes } }, { history });
+    this.slide(group, { label: 'Duração', value: clip.duration, min: 0.5, max: 20, step: 0.1, unit: ' s', onInput: v => setClip({ duration: Math.max(v, clip.keys.at(-1)?.t ?? 0) }, 'clip:duration'), onEnd: () => this.scheduleRender() });
+    this.slide(group, { label: 'Tempo', value: this.timeAt, min: 0, max: clip.duration, step: 0.05, unit: ' s', onInput: v => { this.timeAt = v; r?.scrubUserClip(v); } });
+    const near = key => Math.abs(key.t - this.timeAt) < 0.026;
+    group.append(h('div', { class: 'button-grid' },
+      h('button', { type: 'button', class: 'button primary', title: 'Grava a pose (Posar) e a expressão atuais no tempo do cursor', onclick: () => {
+        const pose = r?.poseEditor.active ? r.poseEditor.read() : this.person.posing;
+        const face = faceWeights(this.person.expression, this.person.expressionIntensity ?? 0.5, this.person.faceShapes);
+        const keys = [...this.person.clip.keys.filter(key => !near(key)), { t: Math.round(this.timeAt * 1000) / 1000, pose, face }];
+        setClip({ keys, duration: Math.max(this.person.clip.duration, this.timeAt) }, true);
+      } }, icon('save', 16), 'Inserir chave'),
+      h('button', { type: 'button', class: 'button', disabled: !clip.keys.some(near), onclick: () => setClip({ keys: this.person.clip.keys.filter(key => !near(key)) }, true) }, icon('trash', 16), 'Apagar chave'),
+      h('button', { type: 'button', class: 'button', disabled: !clip.keys.length, onclick: () => { this.store.dispatch({ type: 'ui/set', changes: { posing: false } }); this.update('animation', custom); } }, icon('play', 16), 'Tocar'),
+      h('button', { type: 'button', class: 'button danger', disabled: !clip.keys.length, onclick: () => { if (confirm('Apagar todas as chaves?')) setClip({ keys: [] }, true); } }, 'Limpar')));
+    if (clip.keys.length) group.append(chips({ label: `Chaves (${clip.keys.length})`, items: clip.keys.slice(0, 40).map(key => `${key.t.toFixed(2)} s`), selected: clip.keys.findIndex(near), onPick: i => {
+      this.timeAt = this.person.clip.keys[i].t;
+      if (r?.poseEditor.active) { r.poseEditor.apply(this.person.clip.keys[i].pose); r.poseEditor.commit(); } else r?.scrubUserClip(this.timeAt);
+      this.scheduleRender();
+    } }));
+    // An animation from a file (Mixamo or this app's rig) becomes editable keys.
+    const file = h('input', { type: 'file', accept: '.glb,.gltf', hidden: true });
+    file.addEventListener('change', async () => {
+      const chosen = file.files[0];
+      file.value = '';
+      if (!chosen || !/\.(glb|gltf)$/i.test(chosen.name) || !r?.current) { if (chosen) this.toast('Escolha um arquivo .glb ou .gltf', 'error'); return; }
+      try {
+        this.store.begin('import', { label: 'Importando animação…', cancellable: false });
+        const imported = await importAnimation(await chosen.arrayBuffer(), r.current, { alias: mixamoName });
+        this.patch({ clip: imported }, { history: true });
+        this.update('animation', custom);
+        this.toast(`Animação "${imported.name}" importada · ${imported.keys.length} chaves`);
+      } catch (error) { this.toast(`Não foi possível importar: ${error.message}`, 'error'); }
+      finally { this.store.end('import'); r.setPresentation(this.person); }
+    });
+    group.append(file, h('button', { type: 'button', class: 'button wide', onclick: () => file.click() }, icon('export', 16), 'Importar animação (.glb Mixamo)'));
+  }
   /** Pose: click a bone to turn it with the gizmo; drag the orange handles to place hands and feet (IK). */
   renderPosing() {
     const r = this.renderer, editor = r?.poseEditor, on = Boolean(this.state.ui.posing);
@@ -1106,6 +1153,7 @@ export class StudioUI {
     const pose = this.group('Postura');
     this.segmented(pose, null, ['Natural', 'Relaxada', 'Confiante', 'Mãos na cintura'], this.person.pose, v => this.update('pose', v));
     this.renderPosing();
+    this.renderTimeline();
     const face = this.group('Expressão');
     face.append(chips({ label: 'Expressão', items: expressionNames, selected: this.person.expression, onPick: i => this.update('expression', i) }));
     this.range(face, 'expressionIntensity', 'Intensidade', 0, 1);

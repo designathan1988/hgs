@@ -13,7 +13,8 @@ export const outfitNames = ['Casual', 'Esporte fino', 'Social', 'Trabalho', 'Sob
 // Old presets stored a CC0 hair mesh index; each maps to the nearest mesh-lock style.
 const legacyHair = ['curto', 'curto', 'longo', 'chanel', 'chanel', 'chanel', 'franja', 'longo', 'franja', 'franja', 'cacheado', 'curto', 'careca', 'longo', 'longo'];
 export const expressionNames = ['Neutra', 'Relaxada', 'Feliz', 'Sorriso', 'Rindo', 'Triste', 'Brava', 'Irritada', 'Surpresa', 'Preocupada', 'Cansada', 'Falando'];
-export const animationNames = ['Parado', 'Andar', 'Andar rápido', 'Trote', 'Correr', 'Parar', 'Virar', 'Sentar', 'Levantar', 'Olhar em volta', 'Falar', 'Gesticular', 'Acenar', 'Usar celular', 'Carregar', 'Interagir'];
+// The last one is the character's own keyed clip (timeline.mjs).
+export const animationNames = ['Parado', 'Andar', 'Andar rápido', 'Trote', 'Correr', 'Parar', 'Virar', 'Sentar', 'Levantar', 'Olhar em volta', 'Falar', 'Gesticular', 'Acenar', 'Usar celular', 'Carregar', 'Interagir', 'Personalizada'];
 export const lightingNames = ['Neutra', 'Luz do dia', 'Estúdio', 'Dramática', 'Externa'];
 
 export const defaultCharacter = Object.freeze({
@@ -62,7 +63,7 @@ const ranges = {
   browWidth: [0.7, 1.4], browHeight: [-1, 1], browDensity: [0, 1],
   lashLength: [0.4, 1.8], lashCurl: [0, 1], lashDensity: [0, 1],
   bottomColor: [0, 5, true], expression: [0, 11, true], expressionIntensity: [0, 1],
-  animation: [0, 15, true], animationSpeed: [0.4, 1.8], lighting: [0, 4, true], pose: [0, 3, true],
+  animation: [0, 16, true], animationSpeed: [0.4, 1.8], lighting: [0, 4, true], pose: [0, 3, true],
 };
 
 export const colorKeys = ['skin', 'hair', 'eyes', 'top', 'bottom', 'brows', 'lashes'];
@@ -85,6 +86,21 @@ export function normalizePose(value) {
   return out;
 }
 
+/** The keyed clip: { name, duration (s, ≤ 60), keys: [{ t, pose, face }] } sorted by time, at most 240 keys. */
+export function normalizeClip(value) {
+  const keys = [];
+  for (const key of Array.isArray(value?.keys) ? value.keys.slice(0, 240) : []) {
+    if (!Number.isFinite(key?.t)) continue;
+    const face = {};
+    for (const [shape, weight] of Object.entries(key.face ?? {})) if (/^[a-zA-Z]{3,32}$/.test(shape) && Number.isFinite(weight)) face[shape] = Math.round(Math.max(0, Math.min(1, weight)) * 1000) / 1000;
+    keys.push({ t: Math.round(Math.max(0, Math.min(60, key.t)) * 1000) / 1000, pose: normalizePose(key.pose), face });
+  }
+  keys.sort((a, b) => a.t - b.t);
+  const last = keys.at(-1)?.t ?? 0;
+  const duration = Number.isFinite(value?.duration) ? Math.max(last, Math.min(60, Math.max(0.1, value.duration))) : Math.max(2, last);
+  return { name: typeof value?.name === 'string' ? value.name.slice(0, 40) : 'Personalizada', duration: Math.round(duration * 1000) / 1000, keys };
+}
+
 export function normalizeCharacter(value = {}) {
   const result = { ...defaultCharacter };
   result.version = 2;
@@ -104,8 +120,9 @@ export function normalizeCharacter(value = {}) {
     }
   }
   result.sculpt = normalizeSculpt(value.sculpt);
-  // The character's own pose (Animação → Posar).
+  // The character's own pose (Animação → Posar) and keyed clip (Linha do tempo).
   result.posing = normalizePose(value.posing);
+  result.clip = normalizeClip(value.clip);
   // Hair: a ready-made style, and the locks edited from it (null = the style as made).
   if (hairPresetIds.includes(value.hairPreset)) result.hairPreset = value.hairPreset;
   else if (Number.isInteger(value.hairStyle) && legacyHair[value.hairStyle]) result.hairPreset = legacyHair[value.hairStyle];
