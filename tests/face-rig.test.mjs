@@ -40,9 +40,11 @@ test('expressions are blendshape weights and survive GLB export with facial clip
   assert.ok(human.body.morphTargetInfluences[human.body.morphTargetDictionary.jawOpen] > 0.4);
   const loaded = await new GLTFLoader().parseAsync(await exportHumanGLB(human), '');
   // Game export moves the blendshapes onto a separate Head mesh.
-  const head = loaded.scene.getObjectByName('Head');
+  // A mesh of several primitives loads as a Group of Meshes (GLTFLoader): the dictionary is on its parts.
+  const withMorphs = node => { let found = null; node?.traverse(object => { if (!found && object.morphTargetDictionary) found = object; }); return found; };
+  const head = withMorphs(loaded.scene.getObjectByName('Head'));
   assert.deepEqual(Object.keys(head.morphTargetDictionary), blendshapeNames);
-  assert.equal(loaded.scene.getObjectByName('Body').morphTargetDictionary, undefined);
+  assert.equal(withMorphs(loaded.scene.getObjectByName('Body')), null);
   const talk = loaded.animations.find(clip => clip.name === 'talk');
   assert.ok(talk.tracks.some(track => track.name.includes('morphTargetInfluences')), 'talking animates the face');
   human.dispose();

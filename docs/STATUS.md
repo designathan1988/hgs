@@ -24,6 +24,23 @@ Plano executado: redesenho da interface e controlador global de estado e eventos
 | 4 | Editor de moldes nas classes do app | feito |
 | 5 | Documentação | feito |
 
+Plano executado: edição ao vivo, desempenho, LOD real, pose/animação, 52 expressões e interface direta (2026-10-08).
+
+| Etapa | Conteúdo | Commit |
+| --- | --- | --- |
+| E1 | Forma ao vivo (`live.mjs`): corpo, esqueleto, roupas, olhos e cabelo acompanham o slider; refino ao soltar | `5be0af0` |
+| E2 | Cores e materiais ao vivo (`look.mjs`), seletor de cor com prévia | `c9c5954` |
+| E3 | Canvas só redimensiona quando muda, sem `preserveDrawingBuffer`, multidão no worker | `7c53049` |
+| E4 | Olhos com textura MakeHuman (32.640 → 1.060 triângulos), cor dos olhos ao vivo | `1e70c58` |
+| E5 | LOD com meshoptimizer, rosto no LOD1, Pacote LOD (.zip), `export:glb --lods` | `0653294` |
+| E6 | 52 blendshapes ARKit (olhar gira o globo) | `2d60a8a` |
+| E7 | Posar: osso sob o clique + gizmo, IK de mãos e pés, simetria, espelhar, poses prontas | `1df330a` |
+| E8 | Linha do tempo, clipe "Personalizada", importar animação .glb (retarget com pose de casamento) | `8e365fa` |
+| E9 | Moldar direto no corpo, ~230 ajustes MakeHuman por região, Proporção/Ancestralidade/Busto | `b91d6d1` |
+| E10 | Teste do GLB de várias primitivas, COLOR_0 do cabelo ≤ 1, documentação | este |
+
+Validação (`npm run export:glb -- --lods`, 2026-10-08): LOD0 40.039 triângulos, LOD1 23.321 (52 blendshapes, desvio 1,41 cm), LOD2 6.239 (desvio 6,99 cm); glTF Validator 0 erros e 0 avisos nos três. Antes desta correção o LOD0 saía com 189 erros `ACCESSOR_NON_CLAMPED` (cor de vértice dos cartões de cabelo até 1,1).
+
 ## Ativo no app
 
 - Estado global: `store.mjs` é a fonte única (personagem + interface); a UI reage ao evento `change`. Desfazer/refazer único no topo e em Ctrl+Z/Y para Personagem, Corpo, Rosto, Roupas, Esculpir e Animação (expressões); no Cabelo vai para o histórico do editor de mechas e a visita inteira vira um passo. Status e Cancelar vêm das operações registradas (geração, exportação, cabelo, multidão). Personagem autosalvo (`hgs.autosave`) e restaurado ao abrir; grupos abertos, opções de exportação e cartão recolhido lembrados (`hgs.ui`).
@@ -51,8 +68,14 @@ Plano executado: redesenho da interface e controlador global de estado e eventos
 
 ## Não ativo / pendente
 
+- Conferência visual do plano de 2026-10-08 (lista no relatório da sessão) é do usuário; nada foi aberto no navegador (regra do projeto). `npm test` não foi rodado.
+- Moldar só no LOD alto do personagem em edição (precisa de `baseIds`); no LOD médio/baixo os ajustes vêm dos sliders.
+- Importação de animação: testada só por leitura do código; fontes fora do padrão Mixamo/Unreal Mannequin não são reconhecidas.
+- O LOD2 tem desvio de ~7 cm (limite `error` 0,05 relativo à altura): adequado a multidão/distância, não a câmera próxima.
+- `src/tailor.mjs`, `src/cloth*.mjs`, `src/collision.mjs`, `src/generation*.mjs`, `src/hair-editor.mjs`, `server.py` e um trecho de `src/ui.mjs` têm alterações de outra pessoa/sessão, não commitadas por este trabalho.
+
 - Mecha atravessando mecha: não resolvido. Foi tentada uma separação por caixas orientadas (SAT) depois da deposição, com projeção em planos de contato (PBD); medida nos 6 penteados prontos, ela girava as mechas (pontas deslocadas 5–53 cm) sem zerar os contatos (as fitas de 5,5 cm se sobrepõem como telhas: ~890 contatos em ~1.100 pontos), então foi retirada. Continua a camada fina de `turnOffLocks` na deposição e o campo de densidade na gravidade ao vivo.
-- Testes automáticos (2026-10-08): `npm test` 108 de 109; falha `tests/face-rig.test.mjs` "expressions…GLB", que procura `morphTargetDictionary` no nó `Head`, mas o GLTFLoader carrega uma malha de várias primitivas como `Group` (os 32 alvos estão nos filhos) — teste desatualizado em relação à exportação em duas malhas, sem relação com o cabelo.
+- Testes automáticos: `tests/face-rig.test.mjs` "expressions…GLB" corrigido para procurar os alvos nos filhos do `Head` (GLTFLoader carrega malha de várias primitivas como `Group`); a suíte não foi rodada de novo nesta sessão.
 - Gravidade do editor: o worker leva ~10–12 ms por subpasso com 63 mechas; acima disso a simulação fica mais lenta que o tempo real (sem acumular atraso).
 - A conferência visual (lista no fim do relatório da sessão) é do usuário. O redesenho da interface foi verificado só por leitura do código e `node --check` (sem navegador, pela regra do projeto).
 - Ferramentas ainda sem atalho de teclado próprio (só F, G, P, Delete, +/−, Ctrl+Z/Y).

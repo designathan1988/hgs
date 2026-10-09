@@ -39,7 +39,8 @@ export function cardFromSweep(sweep, lock, { vertex = null } = {}) {
   const variant = Math.floor(hash * variants) % variants;
   const u0 = (variant + 0.04) / CARD_VARIANTS, u1 = (variant + 0.96) / CARD_VARIANTS;
   // Each lock a little lighter or darker than its neighbours; roots darker (shadowed by the hair above).
-  const jitter = 0.9 + 0.2 * ((hash * 7.31) % 1);
+  // Divided by its largest value: glTF requires COLOR_0 in [0, 1], and the relative variation is what matters.
+  const jitter = (0.9 + 0.2 * ((hash * 7.31) % 1)) / 1.1;
   // The middle of the card is raised outwards (an arch), so a card reads as a lock with volume and lights round.
   const arch = 0.32 * (lock.volume ?? 0.2) / 0.2;
   let v = 0;
