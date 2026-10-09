@@ -83,8 +83,18 @@ export class PoseEditor {
     this._controls = controls;
     return controls;
   }
-  /** True while the gizmo is under the cursor or being dragged: the pointer belongs to it. */
-  get busy() { return Boolean(this._controls && (this._controls.dragging || this._controls.axis !== null)); }
+  /**
+   * True when a press belongs to the gizmo. The app's pointerdown runs before the gizmo's, and the
+   * gizmo only knows its axis after a hover test; it runs that test itself on pointerdown
+   * (TransformControls onPointerDown: pointerHover, then pointerDown), so the same test runs here.
+   */
+  grabs(event) {
+    const controls = this._controls;
+    if (!controls?.object) return false;
+    if (controls.dragging) return true;
+    controls.pointerHover(controls._getPointer(event));
+    return controls.axis !== null;
+  }
   begin(human, pose) {
     this.human = human; this.active = true;
     this.renderer.scene.add(this.controls.getHelper());

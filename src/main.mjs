@@ -29,7 +29,7 @@ canvas.addEventListener('pointerdown', event => {
   }
   if (event.button !== 0) { drag = null; return; }
   // Posing: the gizmo (TransformControls, its own listener) owns the pointer when it is under the cursor.
-  if (ui.posing && renderer.poseEditor.busy) { drag = null; return; }
+  if (ui.posing && renderer.poseEditor.grabs(event)) { drag = null; return; }
   // Moldar: a press on the body pulls it into shape; elsewhere the left button still orbits.
   if (ui.molding && renderer.shapeHandles.begin(sculptNdc(event, canvas), key => ui.morphValue(key))) { drag = { mold: true }; return; }
   if (ui.pinning) {
