@@ -2,7 +2,7 @@ import {
   BufferGeometry, DoubleSide, Float32BufferAttribute, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, Raycaster, SphereGeometry, Vector3,
 } from 'three';
 import {
-  LOCK_POINTS as N, arcLengthAt, capGeometry, combLock, geometryFrom, lockCard, lockLength, lockLimits, locksCap, makeLock, normalizeLocks, prepareLocks,
+  LOCK_POINTS as N, arcLengthAt, bendLock, capGeometry, combLock, geometryFrom, lockCard, lockLength, lockLimits, locksCap, makeLock, normalizeLocks, prepareLocks,
   resamplePolyline, rootFrame, rootFromHit, serializeLocks, setLockLength, setLockShape, updateGeometry,
 } from './locks.mjs';
 import { hairCapMaterial, hairCardMaterial } from './hair-cards.mjs';
@@ -716,6 +716,32 @@ export class HairEditor {
     for (const lock of this.targets()) { setLockLength(lock, lockLength(lock) * factor); lock.styled = true; lock.rest.set(lock.x); }
     this.dirty = true; this.onChange();
   }
+  /**
+   * Gravity as a one-pass groom operator (LockShaper, as Ornatrix's Gravity): the chosen locks
+   * (or all) hang from their current shape and settle on the head, shoulders, clothes and the hair
+   * below them, then keep that shape as their rest (nothing moves afterwards).
+   */
+  settle() {
+    const chosen = new Set(this.targets().filter(lock => !lock.erased));
+    if (!chosen.size) return;
+    this.checkpoint();
+    for (const lock of chosen) { lock.rest.set(lock.x); lock.styled = false; }
+    this.state.sim.apply({ only: chosen });
+    for (const lock of chosen) { lock.styled = true; lock.rest.set(lock.x); }
+    this.dirty = true; this.step(); this.updateCap(); this.onChange();
+  }
+  /** Curvar: the chosen locks bend from the shape they had when the slider was taken (bendLock), lengths kept, out of the body. */
+  beginBend() { this.checkpoint(); this.bendFrom = new Map(this.targets().map(lock => [lock, { x: Float32Array.from(lock.x), rest: Float32Array.from(lock.rest) }])); }
+  bendTo(amount) {
+    if (!this.bendFrom) this.beginBend();
+    for (const [lock, base] of this.bendFrom) {
+      bendLock(lock, base, amount, this.state.frame);
+      this.keepOut(lock);
+      lock.styled = true; lock.rest.set(lock.x);
+    }
+    this.dirty = true; this.step();
+  }
+  endBend() { this.bendFrom = null; this.updateCap(); this.onChange(); }
   setForm(form) { const values = forms[form] ?? forms.straight; for (const lock of this.targets()) Object.assign(lock, values); this.dirty = true; this.onChange(); }
   formOf(lock) { return lock.curl > 0.6 ? 'curl' : lock.curl > 0 ? 'wavy' : 'straight'; }
   deleteSelected() {

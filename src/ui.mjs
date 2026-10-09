@@ -860,6 +860,10 @@ export class StudioUI {
       this.segmented(adjust, 'Forma', choices(shapes.forms), formOf(lock.curl), i => { record(); editor.setForm(shapes.forms[i][0]); });
       if (lock.curl > 0) this.slide(adjust, { label: 'Ondas', value: lock.turns, min: 0.5, max: 10, step: 0.1, onStart: record, onInput: v => editor.setParam('turns', v), title: 'Quantas voltas ao longo da mecha' });
       this.slide(adjust, { label: 'Firmeza', value: lock.stiffness, min: 0, max: 1, onStart: record, onInput: v => editor.setParam('stiffness', v), title: 'Quanto a mecha balança no movimento (0 solta, 1 firme)' });
+      this.slide(adjust, { label: 'Torcer', value: lock.twist ?? 0, min: -3.14, max: 3.14, step: 0.01, onStart: () => { this.hairDirty = true; record(); }, onInput: v => editor.setParam('twist', v), title: 'Gira a mecha em volta do próprio eixo, da raiz à ponta' });
+      // Curvar works from the shape the locks have when the slider is taken; it rests at 0 again afterwards.
+      this.slide(adjust, { label: 'Curvar', value: 0, min: -1, max: 1, step: 0.01, onStart: () => { this.hairDirty = true; editor.beginBend(); }, onInput: v => editor.bendTo(v), onEnd: () => { editor.endBend(); this.scheduleRender(); }, title: 'Dobra as pontas para dentro (+) ou para fora (−) a partir da forma atual' });
+      adjust.append(h('button', { type: 'button', class: 'button wide', title: 'As mechas escolhidas (ou todas) caem e assentam sobre a cabeça, os ombros, a roupa e o cabelo de baixo, e ficam nessa forma', onclick: () => { this.hairDirty = true; editor.settle(); } }, 'Assentar com gravidade'));
       adjust.append(h('div', { class: 'actions' },
         count ? iconButton('close', 'Limpar seleção', () => editor.clearSelection()) : iconButton('select', 'Selecionar todas', () => editor.selectAll()),
         count ? iconButton('trash', 'Apagar as selecionadas (Delete)', () => editor.deleteSelected(), { danger: true }) : null,
