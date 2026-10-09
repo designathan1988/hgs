@@ -1,5 +1,10 @@
 import { createHuman } from './human-three.mjs';
 import { packHuman } from './generation.mjs';
+import { loadHumanData } from './parametric.mjs';
+
+// A spare worker loads the human data at evaluation, before any build is asked of it;
+// createHuman awaits the same promise (errors surface there).
+loadHumanData().catch(() => {});
 
 function transfers(value, buffers = new Set()) {
   if (ArrayBuffer.isView(value)) buffers.add(value.buffer);

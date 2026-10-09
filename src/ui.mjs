@@ -806,7 +806,7 @@ export class StudioUI {
       type: 'button', class: `style-card${this.person.hairPreset === p.id ? ' on' : ''}`, title: p.name, 'aria-pressed': String(this.person.hairPreset === p.id), onclick: () => this.applyHairPreset(p.id),
     }, hairPictogram(p.id), h('span', { text: p.name })))));
     style.append(swatches({ label: 'Cor', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
-    this.toggle(style, 'Base de fios sobre o couro', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Cobre o couro entre as mechas com fios penteados na mesma direção');
+    this.toggle(style, 'Fundo escuro no couro cabeludo', Boolean(editor.state.scalp), on => { this.hairDirty = true; editor.setScalp(on); }, 'Pinta o couro entre as mechas com fios da cor do cabelo. Desligado, aparece a pele. Vale para qualquer penteado escolhido.');
 
     // 1b. Parts: build a hairstyle from pieces (base, bangs, sides, back, tails), each added over the hair there.
     const parts = this.group('Montar com peças');

@@ -41,6 +41,18 @@ Plano executado: edição ao vivo, desempenho, LOD real, pose/animação, 52 exp
 
 Validação (`npm run export:glb -- --lods`, 2026-10-08): LOD0 40.039 triângulos, LOD1 23.321 (52 blendshapes, desvio 1,41 cm), LOD2 6.239 (desvio 6,99 cm); glTF Validator 0 erros e 0 avisos nos três. Antes desta correção o LOD0 saía com 189 erros `ACCESSOR_NON_CLAMPED` (cor de vértice dos cartões de cabelo até 1,1).
 
+Rodada de testes no app (2026-10-09), com o navegador, depois do relato do usuário (roupa rasgada, abertura lenta):
+
+| Defeito visto no app | Correção | Commit |
+| --- | --- | --- |
+| Camiseta de molde sobre outra rasgava nas costuras (aresta média 1,96× o molde, até 51×) | Colisor em ordem de camadas (pele elevada pela roupa de baixo) | `078550a` |
+| Abertura sem cache: nada até 20–58 s | Boneco sem roupa aparece em ~5 s a frio; vestido o substitui | `fda0d2a` |
+| Moldar puxando o nariz pegava "cabeça · posição" | Ajuste de menor região entre os alinhados ao puxão | `b5c15e9` |
+| Clique direto na seta do gizmo girava a câmera | Mesmo teste de hover do TransformControls no pointerdown | `f55f3ec` |
+| eyeLook jogava o branco do olho para fora das pálpebras | Centro da calota esférica do globo | `f9280e7` |
+
+Conferido no app e funcionando: forma ao vivo (42 ms por passo, refino ao soltar em ~11 s sem salto), pele e olhos ao vivo sem rebuild, Moldar, pose T, IK da mão com simetria, linha do tempo tocando o clipe "Personalizada", Pacote LOD (3 GLB; 52/52/0 blendshapes; 17 clipes), eyeLook e tongueOut. `export:glb --lods`: 0 erros e 0 avisos nos três níveis.
+
 ## Ativo no app
 
 - Estado global: `store.mjs` é a fonte única (personagem + interface); a UI reage ao evento `change`. Desfazer/refazer único no topo e em Ctrl+Z/Y para Personagem, Corpo, Rosto, Roupas, Esculpir e Animação (expressões); no Cabelo vai para o histórico do editor de mechas e a visita inteira vira um passo. Status e Cancelar vêm das operações registradas (geração, exportação, cabelo, multidão). Personagem autosalvo (`hgs.autosave`) e restaurado ao abrir; grupos abertos, opções de exportação e cartão recolhido lembrados (`hgs.ui`).
@@ -67,6 +79,11 @@ Validação (`npm run export:glb -- --lods`, 2026-10-08): LOD0 40.039 triângulo
 - Validação: `npm run export:glb` — última execução: glTF Validator 0 erros, 0 avisos (informações: extensão VRMC desconhecida pelo validador; UVs sem textura no Node); auditoria sem problemas; 83 ossos (30 de cabelo); cabelo 29.547 vértices; 10 chamadas de desenho.
 
 ## Não ativo / pendente
+
+- `src/cloth.mjs`: busca de vizinhos da autocolisão uma vez por quadro (Ten Minute Physics 15), medido 5,3 → 2,1 s por camiseta de molde. Está ATIVO no working tree, mas não commitado: foi escrito sobre a reescrita da autocolisão por hash que já estava não commitada (de outra sessão/pessoa) e não dá para separar.
+- Camiseta de molde: ainda há uma pequena ponta atrás do ombro (pontos internos do painel das costas na altura da axila estufam ~8 cm no caimento) e aspereza na gola de trás. A roupa cortada do corpo (padrão) não tem isso.
+- Abertura a frio depois de mudar o código: boneco em ~5 s, vestido em ~30 s com duas camisetas de molde e calça (o primeiro uso de um worker é ~2× mais lento). Com cache: 1,7 s.
+- Cache de builds (IndexedDB, código não commitado de outra sessão): se outra aba pedir para apagar/atualizar o banco, a abertura fica esperando sem tempo limite (visto num teste que apagava o banco).
 
 - Conferência visual do plano de 2026-10-08 (lista no relatório da sessão) é do usuário; nada foi aberto no navegador (regra do projeto). `npm test` não foi rodado.
 - Moldar só no LOD alto do personagem em edição (precisa de `baseIds`); no LOD médio/baixo os ajustes vêm dos sliders.

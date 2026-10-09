@@ -70,22 +70,61 @@ export function drapeCloth(positions, index, collider, {
   }
   // Vertices sharing a triangle, a bend, or a sewing junction are local neighbours.
   for (let i = 0; i < constraints.length; i += 4) excluded.add(edgeKey(constraints[i], constraints[i + 1]));
+  // Particle-particle self collision on a dense spatial hash (Müller, Ten Minute Physics 11):
+  // cell coordinates hashed into a table twice the particle count, filled by counting into
+  // Int32Arrays allocated once; candidates from hash collisions are rejected by the distance test.
+  const tableSize = 2 * count, cellStart = new Int32Array(tableSize + 1), cellEntries = new Int32Array(count), cellOf = new Int32Array(count * 3);
+  const hashCell = (xi, yi, zi) => Math.abs((xi * 92837111) ^ (yi * 689287499) ^ (zi * 283923481)) % tableSize;
+  const seen = new Int32Array(27);
+  // Neighbour pairs are found once per frame (Ten Minute Physics 15: hash.create/queryAll before the
+  // substeps): every pair within the collision distance plus the farthest a particle can travel in
+  // the frame, with velocities clamped to 0.2·distance/Δt so that bound holds. Each substep then only
+  // resolves the listed pairs with the current positions.
+  let pairs = new Int32Array(1024), pairCount = 0;
+  const findPairs = reach => {
+    pairCount = 0;
+    cellStart.fill(0);
+    for (let v = 0; v < count; v++) {
+      const xi = Math.floor(x[v * 3] / reach), yi = Math.floor(x[v * 3 + 1] / reach), zi = Math.floor(x[v * 3 + 2] / reach);
+      cellOf[v * 3] = xi; cellOf[v * 3 + 1] = yi; cellOf[v * 3 + 2] = zi;
+      cellStart[hashCell(xi, yi, zi)]++;
+    }
+    for (let h = 1; h <= tableSize; h++) cellStart[h] += cellStart[h - 1];
+    for (let v = count - 1; v >= 0; v--) cellEntries[--cellStart[hashCell(cellOf[v * 3], cellOf[v * 3 + 1], cellOf[v * 3 + 2])]] = v;
+    const reach2 = reach * reach;
+    for (let a = 0; a < count; a++) {
+      const cx = cellOf[a * 3], cy = cellOf[a * 3 + 1], cz = cellOf[a * 3 + 2];
+      let buckets = 0;
+      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const h = hashCell(cx + dx, cy + dy, cz + dz);
+        // Two neighbour cells may share a bucket: visit each bucket once.
+        let repeated = false;
+        for (let s = 0; s < buckets; s++) if (seen[s] === h) { repeated = true; break; }
+        if (repeated) continue;
+        seen[buckets++] = h;
+        for (let e = cellStart[h]; e < cellStart[h + 1]; e++) {
+          const b = cellEntries[e];
+          if (b <= a || !(inverseMass[a] + inverseMass[b])) continue;
+          const vx = x[a * 3] - x[b * 3], vy = x[a * 3 + 1] - x[b * 3 + 1], vz = x[a * 3 + 2] - x[b * 3 + 2];
+          if (vx * vx + vy * vy + vz * vz >= reach2 || excluded.has(edgeKey(a, b))) continue;
+          if (pairCount * 2 + 2 > pairs.length) { const grown = new Int32Array(pairs.length * 2); grown.set(pairs); pairs = grown; }
+          pairs[pairCount * 2] = a; pairs[pairCount * 2 + 1] = b; pairCount++;
+        }
+      }
+    }
+  };
   const selfProject = () => {
     const distance = selfCollisionDistance;
     if (!selfCollision || !(distance > 0)) return;
-    const grid = new Map(), cell = v => [Math.floor(x[v*3]/distance), Math.floor(x[v*3+1]/distance), Math.floor(x[v*3+2]/distance)];
-    for(let v=0;v<count;v++){const key=cell(v).join(':');if(!grid.has(key))grid.set(key,[]);grid.get(key).push(v);}
-    for(let a=0;a<count;a++){
-      const [cx,cy,cz]=cell(a);
-      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)for(let dz=-1;dz<=1;dz++)for(const b of grid.get(`${cx+dx}:${cy+dy}:${cz+dz}`)??[]){
-        if(b<=a||excluded.has(edgeKey(a,b)))continue;
-        const wa=inverseMass[a],wb=inverseMass[b],w=wa+wb;if(!w)continue;
-        let vx=x[a*3]-x[b*3],vy=x[a*3+1]-x[b*3+1],vz=x[a*3+2]-x[b*3+2],len=Math.hypot(vx,vy,vz);
-        if(len>=distance)continue;
-        if(len<1e-9){vx=0;vy=0;vz=1;len=1;}
-        const correction=(distance-Math.hypot(x[a*3]-x[b*3],x[a*3+1]-x[b*3+1],x[a*3+2]-x[b*3+2]))/w;
-        for(const [c,d] of [[0,vx/len],[1,vy/len],[2,vz/len]]){x[a*3+c]+=d*correction*wa;x[b*3+c]-=d*correction*wb;}
-      }
+    for (let p = 0; p < pairCount; p++) {
+      const a = pairs[p * 2], b = pairs[p * 2 + 1], wa = inverseMass[a], wb = inverseMass[b], w = wa + wb;
+      let vx = x[a * 3] - x[b * 3], vy = x[a * 3 + 1] - x[b * 3 + 1], vz = x[a * 3 + 2] - x[b * 3 + 2], len = Math.hypot(vx, vy, vz);
+      if (len >= distance) continue;
+      const correction = (distance - len) / w;
+      if (len < 1e-9) { vx = 0; vy = 0; vz = 1; len = 1; }
+      const sx = vx / len * correction, sy = vy / len * correction, sz = vz / len * correction;
+      x[a * 3] += sx * wa; x[a * 3 + 1] += sy * wa; x[a * 3 + 2] += sz * wa;
+      x[b * 3] -= sx * wb; x[b * 3 + 1] -= sy * wb; x[b * 3 + 2] -= sz * wb;
     }
   };
   const n = constraints.length / 4;
@@ -94,7 +133,10 @@ export function drapeCloth(positions, index, collider, {
   const contact = new Uint8Array(count), hit = {};
   const surface = new Float32Array(count * 4); // cached contact plane per frame: normal + offset
   const hasPlane = new Uint8Array(count);
+  // Ten Minute Physics 15: maxVelocity = 0.2·thickness/Δt keeps every particle within the search radius for a frame.
+  const maxVelocity = selfCollision ? 0.2 * selfCollisionDistance / dt : Infinity, maxTravel = maxVelocity * dt * substeps;
   for (let frame = 0; frame < frames; frame++) {
+    if (selfCollision && selfCollisionDistance > 0) findPairs(selfCollisionDistance + maxTravel);
     // Contact planes are refreshed once per frame (Müller et al.: collision
     // constraints are generated outside the solver loop).
     hasPlane.fill(0);
@@ -110,6 +152,8 @@ export function drapeCloth(positions, index, collider, {
       for (let v = 0; v < count; v++) {
         if (!inverseMass[v]) continue;
         velocity[v * 3 + 1] += gravity * dt;
+        const speed = Math.hypot(velocity[v * 3], velocity[v * 3 + 1], velocity[v * 3 + 2]);
+        if (speed > maxVelocity) { const s = maxVelocity / speed; velocity[v * 3] *= s; velocity[v * 3 + 1] *= s; velocity[v * 3 + 2] *= s; }
         for (let k = 0; k < 3; k++) {
           velocity[v * 3 + k] *= damping;
           previous[v * 3 + k] = x[v * 3 + k];

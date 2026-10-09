@@ -80,7 +80,12 @@ export async function unpackHuman(packet) {
   } catch (error) { disposeGroup(group); throw error; }
 }
 
-const sourceModules = new Map(), moduleURLs = new Set();
+const sourceModules = new Map(), moduleURLs = new Set(), sourceHashes = new Map();
+// FNV-1a over the module texts: the build cache is keyed by the code that produced it.
+function fnv1a(text, hash = 0x811c9dc5) {
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  return hash;
+}
 const coreURL = new URL('../node_modules/three/build/three.module.js', import.meta.url).href;
 const addonsURL = new URL('../node_modules/three/examples/jsm/', import.meta.url).href;
 // Static declarations in this application's ES modules; node: dynamic imports
@@ -95,17 +100,18 @@ async function workerModule(url, ancestors = []) {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Could not prepare generation worker: ${url}: HTTP ${response.status}`);
     let source = await response.text();
+    sourceHashes.set(url, fnv1a(source));
     const matches = [...source.matchAll(declaration)];
-    const replacements = [];
-    for (const match of matches) {
+    // Dependencies are fetched in parallel; awaiting each one in turn serialised the whole graph.
+    const replacements = await Promise.all(matches.map(async match => {
       const specifier = match[3];
       let resolved;
       if (specifier === 'three') resolved = coreURL;
       else if (specifier.startsWith('three/addons/')) resolved = addonsURL + specifier.slice('three/addons/'.length);
       else if (specifier.startsWith('.') || specifier.startsWith('/') || /^https?:/.test(specifier)) resolved = new URL(specifier, url).href;
       else throw new Error(`Unsupported generation worker import: ${specifier} in ${url}`);
-      replacements.push({ start: match.index, end: match.index + match[0].length, text: match[1] + JSON.stringify(await workerModule(resolved, [...ancestors, url])) });
-    }
+      return { start: match.index, end: match.index + match[0].length, text: match[1] + JSON.stringify(await workerModule(resolved, [...ancestors, url])) };
+    }));
     for (const replacement of replacements.reverse()) source = source.slice(0, replacement.start) + replacement.text + source.slice(replacement.end);
     source = source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(url));
     const blobURL = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
@@ -137,17 +143,92 @@ export function prepareWorkerModule(url, { signal } = {}) {
   return abortable(workerModule(String(url)), signal);
 }
 
+/* Build cache. A packet is deterministic for (module sources, spec), so the last
+ * characters are kept in IndexedDB and a reload shows them without rebuilding.
+ * put() clones the value synchronously (IndexedDB 3.0, "add or put" step 10);
+ * packets hold only structured-cloneable data (they already cross postMessage).
+ * Bump cacheVersion when assets/ change: only module sources are fingerprinted. */
+const cacheVersion = 1, cacheEntries = 4;
+let cacheDB, cacheHandle = null;
+function openCache() {
+  cacheDB ??= new Promise(resolve => {
+    try {
+      const request = indexedDB.open('human-studio-builds', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('packets', { keyPath: 'key' }).createIndex('time', 'time');
+      request.onsuccess = () => { cacheHandle = request.result; resolve(cacheHandle); };
+      request.onerror = request.onblocked = () => resolve(null);
+    } catch { resolve(null); }
+  });
+  return cacheDB;
+}
+function cacheKey(spec) {
+  const sources = [...sourceHashes].sort(([a], [b]) => (a < b ? -1 : 1)).map(([url, hash]) => `${url.split('/').pop()}:${hash}`).join();
+  return `${cacheVersion}|${fnv1a(sources)}|${JSON.stringify(spec)}`;
+}
+async function cachedPacket(key) {
+  const db = await openCache();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const request = db.transaction('packets').objectStore('packets').get(key);
+      request.onsuccess = () => resolve(request.result?.packet ?? null);
+      request.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+function storePacket(key, packet) {
+  // Synchronous when the database is open (the lookup opened it), so the clone is taken before unpacking.
+  const db = cacheHandle;
+  if (!db) { openCache().then(handle => handle && storePacket(key, packet)); return; }
+  try {
+    const transaction = db.transaction('packets', 'readwrite'), store = transaction.objectStore('packets');
+    store.put({ key, time: Date.now(), packet });
+    // Oldest entries beyond the limit leave (index on write time).
+    const count = store.count();
+    count.onsuccess = () => {
+      let extra = count.result - cacheEntries;
+      if (extra <= 0) return;
+      store.index('time').openCursor().onsuccess = event => {
+        const cursor = event.target.result;
+        if (!cursor || extra-- <= 0) return;
+        cursor.delete(); cursor.continue();
+      };
+    };
+  } catch (error) { console.warn('Build cache unavailable', error); }
+}
+
+const workerEntry = () => workerModule(new URL('./generation-worker.mjs', import.meta.url).href);
+let spareWorker = null;
+/** A worker spawned ahead of time imports the modules and the human data while the user edits. */
+function takeWorker(entry) {
+  const worker = spareWorker ?? new Worker(entry, { type: 'module', name: 'human-generation' });
+  spareWorker = null;
+  return worker;
+}
+function prepareSpare(entry) {
+  if (spareWorker || typeof Worker === 'undefined') return;
+  try { spareWorker = new Worker(entry, { type: 'module', name: 'human-generation' }); } catch { spareWorker = null; }
+}
+
 /** A dedicated worker per build makes synchronous cloth/mesh work cancellable. */
 export async function buildHumanInWorker(spec, { signal, onProgress } = {}) {
   signal?.throwIfAborted();
   if (typeof Worker === 'undefined') return createHuman(spec, { signal, onProgress });
   onProgress?.('Preparando');
-  const entry = await abortable(workerModule(new URL('./generation-worker.mjs', import.meta.url).href), signal);
+  const entry = await abortable(workerEntry(), signal);
   signal?.throwIfAborted();
+  const key = cacheKey(spec);
+  const cached = await abortable(cachedPacket(key), signal);
+  if (cached) {
+    try { const human = await unpackHuman(cached); if (signal?.aborted) { human.dispose(); signal.throwIfAborted(); } prepareSpare(entry); return human; }
+    catch (error) { if (error.name === 'AbortError') throw error; console.warn('Cached build discarded', error); }
+  }
   return new Promise((resolve, reject) => {
-    const worker = new Worker(entry, { type: 'module', name: 'human-generation' });
+    const worker = takeWorker(entry);
+    // The next build starts from a warm worker; spawned after this one ends so it does not compete for the CPU.
+    const done = () => prepareSpare(entry);
     let settled = false;
-    const cleanup = () => { worker.onmessage = worker.onerror = worker.onmessageerror = null; worker.terminate(); signal?.removeEventListener('abort', abort); };
+    const cleanup = () => { worker.onmessage = worker.onerror = worker.onmessageerror = null; worker.terminate(); signal?.removeEventListener('abort', abort); done(); };
     const fail = error => { if (settled) return; settled = true; cleanup(); reject(error); };
     const abort = () => fail(signal.reason);
     signal?.addEventListener('abort', abort, { once: true });
@@ -160,6 +241,7 @@ export async function buildHumanInWorker(spec, { signal, onProgress } = {}) {
         if (message.type === 'error') { const error = new Error(message.message); error.name = message.name || 'Error'; if (message.stack) error.stack = message.stack; fail(error); return; }
         if (message.type !== 'result') throw new Error('Unexpected generation worker response');
         worker.onmessage = null;
+        storePacket(key, message.packet);
         const human = await unpackHuman(message.packet);
         if (settled || signal?.aborted) { human.dispose(); if (!settled) abort(); return; }
         settled = true; cleanup(); resolve(human);

@@ -16,6 +16,7 @@ class SurfaceLayer {
   /** Add a mesh: positions and smooth vertex normals (flat arrays) and a triangle index. */
   add(positions, normals, index) {
     const base = this.positions.length / 3, c = this.cell;
+    this.built = false;
     const used = new Uint8Array(positions.length / 3);
     for (let i = 0; i < index.length; i++) used[index[i]] = 1;
     for (let i = 0; i < positions.length; i++) { this.positions.push(positions[i]); this.normals.push(normals[i]); }
@@ -37,29 +38,59 @@ class SurfaceLayer {
     return this;
   }
   /**
+   * The query structure (Ten Minute Physics 11, dense grid): positions and
+   * normals in typed arrays and the binned vertices in a dense grid over the
+   * layer's box (cellStart counted then summed, cellEntries filled), so a cell
+   * is an array index instead of a hash lookup. Rebuilt after any `add`.
+   */
+  build() {
+    const c = this.cell, used = [];
+    this.p = Float32Array.from(this.positions); this.n = Float32Array.from(this.normals);
+    for (const list of this.grid.values()) for (const v of list) used.push(v);
+    const lo = this.min.map(v => Math.floor(v / c)), hi = this.max.map(v => Math.floor(v / c));
+    const nx = hi[0] - lo[0] + 1, ny = hi[1] - lo[1] + 1, nz = hi[2] - lo[2] + 1;
+    const start = new Int32Array(nx * ny * nz + 1), entries = new Int32Array(used.length), cellOf = new Int32Array(used.length);
+    used.forEach((v, e) => {
+      const i = Math.floor(this.p[v * 3] / c) - lo[0], j = Math.floor(this.p[v * 3 + 1] / c) - lo[1], k = Math.floor(this.p[v * 3 + 2] / c) - lo[2];
+      cellOf[e] = (k * ny + j) * nx + i; start[cellOf[e]]++;
+    });
+    for (let i = 1; i < start.length; i++) start[i] += start[i - 1];
+    for (let e = used.length - 1; e >= 0; e--) entries[--start[cellOf[e]]] = used[e];
+    Object.assign(this, { lo, nx, ny, nz, start, entries, built: true });
+  }
+  /**
    * Nearest surface vertex within the radius, searched in growing shells of
    * cells (only each shell's surface cells are visited). Once the best hit is
    * closer than the shell distance, no farther shell can beat it.
    */
   nearestVertex(x, y, z, radius, facing = null) {
-    const c = this.cell, p = this.positions, n = this.normals, cx = Math.floor(x / c), cy = Math.floor(y / c), cz = Math.floor(z / c);
+    if (!this.built) this.build();
+    const c = this.cell, p = this.p, n = this.n, { lo, nx, ny, nz, start, entries } = this;
+    const cx = Math.floor(x / c) - lo[0], cy = Math.floor(y / c) - lo[1], cz = Math.floor(z / c) - lo[2];
     let best = -1, distance = radius * radius;
-    const visit = (i, j, k) => {
-      const list = this.grid.get(this.key(cx + i, cy + j, cz + k));
-      if (!list) return;
-      for (const v of list) {
-        // Ignore surfaces facing away (the other thigh, the inside of an arm).
-        if (facing && n[v * 3] * facing[0] + n[v * 3 + 1] * facing[1] + n[v * 3 + 2] * facing[2] < 0.1) continue;
-        const d = (p[v * 3] - x) ** 2 + (p[v * 3 + 1] - y) ** 2 + (p[v * 3 + 2] - z) ** 2;
-        if (d < distance) { distance = d; best = v; }
-      }
-    };
     const rings = Math.ceil(radius / c);
     for (let r = 0; r <= rings; r++) {
-      if (r === 0) visit(0, 0, 0);
-      else for (let i = -r; i <= r; i++) for (let j = -r; j <= r; j++) {
-        if (Math.abs(i) === r || Math.abs(j) === r) for (let k = -r; k <= r; k++) visit(i, j, k);
-        else { visit(i, j, -r); visit(i, j, r); }
+      for (let i = -r; i <= r; i++) {
+        const xi = cx + i;
+        if (xi < 0 || xi >= nx) continue;
+        for (let j = -r; j <= r; j++) {
+          const yj = cy + j;
+          if (yj < 0 || yj >= ny) continue;
+          // On the shell's faces every k; inside it only the two caps k = ±r.
+          const full = i === r || i === -r || j === r || j === -r, step = full ? 1 : 2 * r || 1;
+          for (let k = -r; k <= r; k += step) {
+            const zk = cz + k;
+            if (zk < 0 || zk >= nz) continue;
+            const cell = (zk * ny + yj) * nx + xi;
+            for (let e = start[cell], end = start[cell + 1]; e < end; e++) {
+              const v = entries[e];
+              // Ignore surfaces facing away (the other thigh, the inside of an arm).
+              if (facing && n[v * 3] * facing[0] + n[v * 3 + 1] * facing[1] + n[v * 3 + 2] * facing[2] < 0.1) continue;
+              const dx = p[v * 3] - x, dy = p[v * 3 + 1] - y, dz = p[v * 3 + 2] - z, d = dx * dx + dy * dy + dz * dz;
+              if (d < distance) { distance = d; best = v; }
+            }
+          }
+        }
       }
       if (best >= 0 && distance <= (r * c) ** 2) break;
     }
@@ -75,7 +106,7 @@ class SurfaceLayer {
     if (x < this.min[0] - radius || x > this.max[0] + radius || y < this.min[1] - radius || y > this.max[1] + radius || z < this.min[2] - radius || z > this.max[2] + radius) return false;
     const nearest = this.nearestVertex(x, y, z, radius, facing);
     if (nearest < 0) return false;
-    const p = this.positions, n = this.normals, tri = this.tri;
+    const p = this.p, n = this.n, tri = this.tri;
     const query = this.query.set(x, y, z);
     let best = Infinity, found = -1, bx = 0, by = 0, bz = 0;
     for (const t of this.incident[nearest]) {

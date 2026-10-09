@@ -698,7 +698,8 @@ export class HairEditor {
     try { data = JSON.parse(json); } catch { return false; }
     if (!data || data.format !== 'hgs-locks') return false;
     this.checkpoint();
-    this.restore(JSON.stringify(normalizeLocks(data)));
+    // The scalp base is the user's choice, kept when another hairstyle is loaded.
+    this.restore(JSON.stringify({ ...normalizeLocks(data), scalp: this.state.scalp }));
     return true;
   }
 }

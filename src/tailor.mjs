@@ -482,6 +482,28 @@ function taubinSmooth(points, index, iterations, lambda = 0.5, mu = -0.53) {
   }
 }
 
+/** Push every point out along the drafted surface's own normal (oriented like the body's) by `amount(v)` metres. */
+function inflate(points, index, bodyNormals, amount) {
+  const count = points.length / 3, normal = new Float32Array(points.length);
+  for (let i = 0; i < index.length; i += 3) {
+    const a = index[i], b = index[i + 1], c = index[i + 2];
+    const ux = points[b * 3] - points[a * 3], uy = points[b * 3 + 1] - points[a * 3 + 1], uz = points[b * 3 + 2] - points[a * 3 + 2];
+    const vx = points[c * 3] - points[a * 3], vy = points[c * 3 + 1] - points[a * 3 + 1], vz = points[c * 3 + 2] - points[a * 3 + 2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    for (const v of [a, b, c]) { normal[v * 3] += nx; normal[v * 3 + 1] += ny; normal[v * 3 + 2] += nz; }
+  }
+  for (let v = 0; v < count; v++) {
+    let nx = normal[v * 3], ny = normal[v * 3 + 1], nz = normal[v * 3 + 2];
+    const l = Math.hypot(nx, ny, nz);
+    if (l < 1e-12) continue;
+    nx /= l; ny /= l; nz /= l;
+    // Face winding may run either way: the body normal says which side is out.
+    if (bodyNormals && nx * bodyNormals[v * 3] + ny * bodyNormals[v * 3 + 1] + nz * bodyNormals[v * 3 + 2] < 0) { nx = -nx; ny = -ny; nz = -nz; }
+    const d = amount(v);
+    points[v * 3] += nx * d; points[v * 3 + 1] += ny * d; points[v * 3 + 2] += nz * d;
+  }
+}
+
 /** Fold every open edge under by `depth` so cut fabric shows a hem, not a paper edge. */
 function addHems(panel, depth) {
   const count = panel.pos.length / 3, edges = new Map();
@@ -550,15 +572,20 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       // Looser garments are drafted from a smoother body, so they fall straight
       // from the chest and shoulder blades instead of following every curve.
       if (!panel.pattern) taubinSmooth(points, panel.index, Math.round(30 + garment.fit * 150));
+      // Ease: a garment is bigger than the body (wearing ease, about 6 cm round the bust, plus
+      // design ease for looser styles). The drafted shape is inflated by it, so the cloth hangs
+      // from the shoulders and hips with room and folds instead of lying on the skin like paint.
+      // Elastic bands (waistbands, cuffs) keep a quarter of it and still grip.
+      if (!panel.pattern && !panel.skirt) inflate(points, panel.index, panel.normal, v => (0.009 + garment.fit * 0.04) * k * (panel.elastic?.[v] ? 0.25 : 1));
       const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
       // A sewn piece rests on the skin raised by what is already dressed (layer order), not on the
       // nearest point of the thin garments beneath (pattern-cloth.mjs layeredCollider).
       const beneath = panel.pattern ? layeredCollider(collider, k) : collider;
       resolvePenetration(points, panel.index, beneath, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
       drapeCloth(points, panel.index, beneath, {
-        thickness: 0.004 * k, slack: 0.96 + garment.fit * 0.14, frames: 30, substeps: 5, friction: 0.9, radius: 0.05 * k,
+        thickness: 0.004 * k, slack: 0.98 + garment.fit * 0.04, frames: 40, substeps: 5, friction: 0.9, radius: 0.05 * k,
         bendCompliance: 3e-6, elastic: panel.elastic, normals: panel.normal, rest: pattern, pinned: panel.pinned,
-        ...(panel.pattern ? {thickness:panel.thickness, seams:panel.seams, selfCollision:true, iterations:3, particleCompliance:panel.particleCompliance, particleSlack:panel.particleSlack, particleThickness:panel.particleThickness, slack:0.97+garment.fit*0.08} : {}),
+        ...(panel.pattern ? {frames:30, thickness:panel.thickness, seams:panel.seams, selfCollision:true, iterations:3, particleCompliance:panel.particleCompliance, particleSlack:panel.particleSlack, particleThickness:panel.particleThickness, slack:0.97+garment.fit*0.08} : {}),
       });
       // Sculpted cloth edits apply after draping.
       if (sculptOffsets) panel.keys.forEach((key, v) => {
