@@ -7,6 +7,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import validator from 'gltf-validator';
 import { auditCharacter, createHuman, exportHumanGLB } from '../src/human-three.mjs';
 import { studioSpec } from '../src/renderer-three.mjs';
+import { loadMotionLibrary } from '../src/motion.mjs';
 import { defaultCharacter, normalizeCharacter } from '../src/state.mjs';
 import { newGarment } from '../src/tailor.mjs';
 
@@ -20,7 +21,9 @@ const budget = { hairVertices: 30000, bones: 113, primitives: 10 };
 
 const person = normalizeCharacter({ ...defaultCharacter, outfit: 4, hairPreset: 'longo', garments: [newGarment('tshirt'), newGarment('hoodie'), newGarment('pants')] });
 // Brows and lashes as cards, the app's default for game export (ui.mjs exportOptions).
-const human = await createHuman({ ...studioSpec(person), groom: 'cards' });
+// The captured clips (motion.mjs library) go into the file as they do from the app.
+const motion = await loadMotionLibrary();
+const human = await createHuman({ ...studioSpec(person), groom: 'cards' }, { motion });
 const audit = auditCharacter(human);
 const hair = human.group.getObjectByName('Hair');
 const problems = [...audit.problems];
@@ -52,7 +55,7 @@ let failed = (issues.numErrors ?? 1) > 0 || problems.length > 0;
 // --lods: the LOD pack the app exports (one GLB per level, same skeleton, `_LODn` mesh names), each validated.
 if (process.argv.includes('--lods')) {
   for (const [n, lod] of ['high', 'medium', 'low'].entries()) {
-    const level = await createHuman({ ...studioSpec(person), groom: 'cards', lod });
+    const level = await createHuman({ ...studioSpec(person), groom: 'cards', lod }, { motion });
     let triangles = 0, morphs = 0;
     level.group.traverse(object => { if (object.isMesh && object.visible && object.geometry.index) triangles += object.geometry.index.count / 3; });
     for (const mesh of level.faceMeshes) morphs = Math.max(morphs, Object.keys(mesh.morphTargetDictionary ?? {}).length);
