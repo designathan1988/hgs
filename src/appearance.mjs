@@ -10,10 +10,13 @@ import { eyePalette } from './state.mjs';
 import { applyOffsets } from './sculpt.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { tailorOutfit, hideBodyFaces, bodyCollider } from './tailor.mjs';
+import { applyFabricTextures } from './fabrics.mjs';
+import { buildCostume, mergeSprings } from './costume.mjs';
 import { prepareLocks, locksMesh, geometryFrom, locksCap, capGeometry } from './locks.mjs';
 import { hairCapMaterial, hairCapTexture, hairStrandTexture } from './hair-cards.mjs';
 import { accessoryMaterial, accessoryParts } from './hair-accessories.mjs';
 import { layeredSkinTexture } from './skin-layers.mjs';
+import { addAccessories } from './accessories.mjs';
 import { resolvePenetration, colliderFromGeometry, cullCovered } from './collision.mjs';
 import { buildHairRig } from './hair-rig.mjs';
 
@@ -308,6 +311,8 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
       // Hair cards: the strand atlas is drawn on the page (the worker has no canvas).
       if (mesh.name === 'Hair' && mesh.userData.style === 'locks') material.map = hairStrandTexture();
       if (mesh.name === 'HairCap') material.map = hairCapTexture();
+      // Made-to-measure and costume fabrics: weave, sequins, rhinestones, tulle net (fabrics.mjs).
+      if (material.userData.hgsFabric) applyFabricTextures(material, material.userData.hgsFabric);
       signal?.throwIfAborted(); material.needsUpdate = true;
     }
   }));
@@ -914,4 +919,13 @@ export async function dressHuman(context, spec) {
     }
   }
   if (spec.hairBase && hairStyles.has(spec.hairBase) && !context.group.getObjectByName('HairCap') && !context.group.getObjectByName('ScalpUnderlay')) await addScalpUnderlay(context, spec.hairColor ?? 0x30231e);
+  // Carnival plumes, fringe and crowns (costume.mjs): their spring joints join the one skeleton
+  // after the hair's, and their springs join the hair's in one VRMC_springBone definition. Before
+  // the accessories, which measure the costume to pass over it.
+  if (spec.clothing?.style === 'tailor') {
+    const springs = buildCostume(context, spec.clothing.garments ?? []);
+    if (springs) context.group.userData.hairSprings = mergeSprings(context.group.userData.hairSprings ?? null, springs);
+  }
+  // Glasses, earrings, hat, necklace: after the hair, so a hat's crown clears it (accessories.mjs).
+  if (spec.accessories) await addAccessories(context, spec.accessories);
 }

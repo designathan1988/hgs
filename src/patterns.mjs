@@ -161,6 +161,9 @@ export function createComponent(component='body',id=`${component}-${Date.now()}`
   return normalizePattern({panels:[{id,name:componentNames[component]??component,component,contour:[{x:-w/2,y:0},{x:w/2,y:0},{x:w/2,y:h},{x:-w/2,y:h}],placement:{region,side:region==='arm'||region==='leg'||region==='hand'||region==='foot'?'l':'front',offset:[0,component==='pocket'?-0.24:0,component==='pocket'?0.012:0]},material:garment}]}).panels[0];
 }
 
+/** Garment types with a 2D pattern template; carnival pieces are cut on the body or built as plumes and fringe. */
+export const patternTypes = ['tshirt', 'longsleeve', 'tank', 'hoodie', 'pants', 'shorts', 'skirt', 'dress', 'socks', 'gloves', 'paint'];
+
 /** Component drafting follows GarmentCode's panel/edge/sewing representation, without a dependency. */
 export function createPatternTemplate(type='tshirt',garment={}) {
   const panels=[],seams=[];

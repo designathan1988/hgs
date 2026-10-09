@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPatternTemplate, triangulatePanel, normalizePattern, mirrorPanel, panelMeasurements } from '../src/patterns.mjs';
-import { garmentTypes, normalizeGarment, newGarment, bodyCollider,bodyLayout } from '../src/tailor.mjs';
+import { createPatternTemplate, triangulatePanel, normalizePattern, mirrorPanel, panelMeasurements, patternTypes } from '../src/patterns.mjs';
+import { garmentTypes, costumeTypes, footwearTypes, normalizeGarment, newGarment, bodyCollider,bodyLayout } from '../src/tailor.mjs';
 import { buildPatternPanels,coveredPatternFaces,draftPanels } from '../src/pattern-cloth.mjs';
 import { drapeCloth } from '../src/cloth.mjs';
 import { SurfaceCollider } from '../src/collision.mjs';
@@ -14,7 +14,9 @@ import { studioSpec } from '../src/renderer-three.mjs';
 import * as patterns from '../src/patterns.mjs';
 
 test('editable component templates cover existing garment types and survive normalization', () => {
-  for (const type of garmentTypes) {
+  // Every garment type but the carnival pieces (cut on the body, or plumes and fringe) has a 2D pattern.
+  assert.deepEqual(garmentTypes.filter(type => !costumeTypes.includes(type) && !footwearTypes.includes(type)), patternTypes);
+  for (const type of patternTypes) {
     const patternData = createPatternTemplate(type);
     assert.ok(patternData.panels.length > 0, type);
     for (const panel of patternData.panels) assert.ok(triangulatePanel(panel, 0.06).index.length > 0);

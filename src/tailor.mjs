@@ -1,8 +1,9 @@
-import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, MeshStandardMaterial, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three';
+import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, MeshPhysicalMaterial, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three';
 import { SurfaceCollider, resolvePenetration } from './collision.mjs';
 import { drapeCloth } from './cloth.mjs';
 import { normalizePattern } from './patterns.mjs';
 import { buildPatternPanels, projectPanelContacts, coveredPatternFaces, layeredCollider } from './pattern-cloth.mjs';
+import { fabrics, normalizeFabric, fabricMaterialParameters } from './fabrics.mjs';
 
 /**
  * Made-to-measure clothing, cut from the body and draped by simulation.
@@ -21,21 +22,47 @@ import { buildPatternPanels, projectPanelContacts, coveredPatternFaces, layeredC
  * All garments share one mesh and one vertex-coloured material, and skin that
  * is fully covered is removed, so an outfit is one draw call with no overdraw.
  */
-export const garmentTypes = ['tshirt', 'longsleeve', 'tank', 'hoodie', 'pants', 'shorts', 'skirt', 'dress', 'socks', 'gloves', 'paint'];
-export const garmentLabels = { tshirt: 'Camiseta', longsleeve: 'Manga longa', tank: 'Regata', hoodie: 'Moletom', pants: 'Calça', shorts: 'Bermuda', skirt: 'Saia', dress: 'Vestido', socks: 'Meias', gloves: 'Luvas', paint: 'Livre (pintada)' };
+export const garmentTypes = ['tshirt', 'longsleeve', 'tank', 'hoodie', 'pants', 'shorts', 'skirt', 'dress', 'socks', 'gloves', 'paint',
+  'bikini_top', 'bikini_bottom', 'swimsuit', 'armband', 'anklet', 'fringe', 'backpiece', 'headdress', 'crown', 'sneakers', 'boots', 'sandals'];
+/** Shoes cut on the foot, with a flat sole; with one of them worn the ready-made shoes are left off. */
+export const footwearTypes = ['sneakers', 'boots', 'sandals'];
+export const garmentLabels = { tshirt: 'Camiseta', longsleeve: 'Manga longa', tank: 'Regata', hoodie: 'Moletom', pants: 'Calça', shorts: 'Bermuda', skirt: 'Saia', dress: 'Vestido', socks: 'Meias', gloves: 'Luvas', paint: 'Livre (pintada)',
+  bikini_top: 'Top de biquíni', bikini_bottom: 'Calcinha / tanga', swimsuit: 'Maiô / body', armband: 'Braçadeiras', anklet: 'Tornozeleiras',
+  fringe: 'Saia de franjas', backpiece: 'Costeiro de plumas', headdress: 'Cabeça de plumas', crown: 'Coroa / tiara',
+  sneakers: 'Tênis', boots: 'Botas', sandals: 'Sandálias' };
 export const garmentPatterns = ['solid', 'stripes', 'pinstripe', 'checks', 'gradient'];
+/** Carnival pieces: cut on the body (tight), or built as plumes, fringe and crowns (costume.mjs). */
+export const costumeTypes = ['bikini_top', 'bikini_bottom', 'swimsuit', 'armband', 'anklet', 'fringe', 'backpiece', 'headdress', 'crown'];
+/** Most pieces worn at once (a full carnival costume is seven; a garment index fits an Int8). */
+export const MAX_GARMENTS = 12;
+/** Pieces with nothing cut from the body: only their accessory mesh (costume.mjs). */
+export const accessoryOnly = new Set(['backpiece', 'headdress', 'crown']);
 const defaults = {
   tshirt: { sleeve: 0.3, length: 0.85, neckline: 0.25, fit: 0.3, color: '#3c5a78' },
   longsleeve: { sleeve: 0.96, length: 0.85, neckline: 0.2, fit: 0.3, color: '#7a3b3b' },
   tank: { sleeve: 0, length: 0.8, neckline: 0.5, fit: 0.15, color: '#d9d4c7' },
-  hoodie: { sleeve: 1, length: 0.95, neckline: 0.1, fit: 0.75, color: '#4b5340' },
-  pants: { leg: 1, rise: 0.5, fit: 0.35, color: '#2f3640' },
+  hoodie: { sleeve: 1, length: 0.95, neckline: 0.1, fit: 0.75, color: '#4b5340', fabric: 'knit' },
+  pants: { leg: 1, rise: 0.5, fit: 0.35, color: '#2f3640', fabric: 'denim' },
   shorts: { leg: 0.32, rise: 0.5, fit: 0.4, color: '#806a52' },
   skirt: { length: 0.45, flare: 0.4, rise: 0.55, fit: 0.3, color: '#5b2f45' },
   dress: { sleeve: 0, length: 0.7, neckline: 0.45, flare: 0.5, fit: 0.2, color: '#284f63' },
-  socks: { leg: 0.25, fit: 0.05, color: '#e8e4dc' },
-  gloves: { fit: 0.05, color: '#1f1f22' },
+  socks: { leg: 0.25, fit: 0.05, color: '#e8e4dc', fabric: 'knit' },
+  gloves: { fit: 0.05, color: '#1f1f22', fabric: 'leather' },
   paint: { fit: 0.2, color: '#9a8f7d' },
+  // Carnival: tight pieces in sequins and rhinestones, plumes and fringe that swing on spring joints.
+  bikini_top: { length: 0.5, neckline: 0.5, fit: 0, color: '#d4a63a', fabric: 'sequin', roughness: 0.18 },
+  bikini_bottom: { rise: 0.35, leg: 0.35, fit: 0, color: '#d4a63a', fabric: 'sequin', roughness: 0.18 },
+  swimsuit: { neckline: 0.55, leg: 0.4, fit: 0, color: '#b0123c', fabric: 'rhinestone', roughness: 0.3 },
+  armband: { sleeve: 0.15, length: 0.4, fit: 0, color: '#d4a63a', fabric: 'sequin', roughness: 0.18 },
+  anklet: { leg: 0.85, length: 0.35, fit: 0, color: '#d4a63a', fabric: 'sequin', roughness: 0.18 },
+  fringe: { rise: 0.35, length: 0.6, flare: 0.6, fit: 0, color: '#e8c25a', color2: '#ffffff', fabric: 'sequin', roughness: 0.2 },
+  backpiece: { length: 0.7, flare: 0.75, fit: 0, color: '#f2f2f2', color2: '#e0b03a', fabric: 'sequin', roughness: 0.2 },
+  headdress: { length: 0.55, flare: 0.6, fit: 0, color: '#f2f2f2', color2: '#e0b03a', fabric: 'sequin', roughness: 0.2 },
+  crown: { length: 0.45, fit: 0, color: '#e0b03a', fabric: 'rhinestone', roughness: 0.3 },
+  // Shoes: `color` the upper, `color2` the sole; boots' height in `leg`.
+  sneakers: { fit: 0.08, color: '#2b2f3a', color2: '#f2f2f2', fabric: 'cotton' },
+  boots: { leg: 0.5, fit: 0.1, color: '#3a2a22', color2: '#17130f', fabric: 'leather', roughness: 0.48 },
+  sandals: { fit: 0.02, color: '#d4a63a', color2: '#7a5a34', fabric: 'lame', roughness: 0.32 },
 };
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const smooth = t => { const x = clamp(t, 0, 1); return x * x * (3 - 2 * x); };
@@ -63,8 +90,9 @@ export function normalizeGarment(value = {}) {
       ? {authoringMode:value.authoringMode} : value.patternData ? {authoringMode:'pattern'} : {}),
     sleeve: number('sleeve', base.sleeve ?? 0), length: number('length', base.length ?? 0.5), neckline: number('neckline', base.neckline ?? 0.2),
     leg: number('leg', base.leg ?? 1), rise: number('rise', base.rise ?? 0.5), flare: number('flare', base.flare ?? 0.3),
-    fit: number('fit', base.fit ?? 0.2), roughness: number('roughness', 0.85),
-    color: color('color', base.color), color2: color('color2', '#e9e4da'),
+    fit: number('fit', base.fit ?? 0.2), roughness: number('roughness', base.roughness ?? fabrics[normalizeFabric(value.fabric ?? base.fabric)].roughness),
+    fabric: normalizeFabric(value.fabric ?? base.fabric),
+    color: color('color', base.color), color2: color('color2', base.color2 ?? '#e9e4da'),
     pattern: garmentPatterns.includes(value.pattern) ? value.pattern : 'solid', scale: number('scale', 0.5),
     paint,
     ...(value.patternData ? { patternData: normalizePattern(value.patternData) } : {}),
@@ -131,9 +159,28 @@ export function bodyLayout(context) {
   // Vertices of the visible body (helpers and joint cubes excluded).
   const used = new Uint8Array(count);
   for (const face of faces) for (let c = 0; c < 4; c++) used[data.faces[face * 4 + c]] = 1;
+  // The bust point of each side: the most forward torso skin between the spine_03 joint and the
+  // neck (bikini cups); on the MakeHuman body it lies about a third of the way up (y ≈ 1.24 m at 1.7 m).
+  const chestY = at('spine_03').y, neckY = at('neck_01').y, bust = { l: null, r: null };
+  for (let v = 0; v < count; v++) {
+    if (!used[v] || armW[v] > 0.2 || headW[v] > 0.2) continue;
+    const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+    if (y < chestY + 0.02 * k || y > chestY + 0.55 * (neckY - chestY) || Math.abs(x) < 0.03 * k || Math.abs(x) > 0.15 * k) continue;
+    const side = x > 0 ? 'l' : 'r';
+    if (!bust[side] || z > bust[side].z) bust[side] = new Vector3(x, y, z);
+  }
+  // Metres per unit of the body's UV map (median over its edges), so cut garments get UVs in metres.
+  const ratios = [];
+  for (let i = 0; i < faces.length; i += 7) {
+    const f = faces[i], a = data.faces[f * 4], b = data.faces[f * 4 + 1], ua = data.faceUvs[f * 4], ub = data.faceUvs[f * 4 + 1];
+    const d3 = Math.hypot(positions[a * 3] - positions[b * 3], positions[a * 3 + 1] - positions[b * 3 + 1], positions[a * 3 + 2] - positions[b * 3 + 2]);
+    const d2 = Math.hypot(data.uvs[ua * 2] - data.uvs[ub * 2], data.uvs[ua * 2 + 1] - data.uvs[ub * 2 + 1]);
+    if (d2 > 1e-6) ratios.push(d3 / d2);
+  }
+  ratios.sort((p, q) => p - q);
   context.tailorLayout = {
-    faces, normals, arm, leg, armW, legW, headW, arms, legs, height, k, used, kind,
-    hipY: at('thigh_l').y, waistY: at('spine_01').y, chestY: at('spine_03').y, neckY: at('neck_01').y,
+    faces, normals, arm, leg, armW, legW, headW, arms, legs, height, k, used, kind, bust, uvScale: ratios[ratios.length >> 1] ?? 1,
+    hipY: at('thigh_l').y, waistY: at('spine_01').y, chestY, neckY: at('neck_01').y,
     frontZ: at('spine_03').z,
   };
   return context.tailorLayout;
@@ -169,6 +216,10 @@ function coverage(garment, v, layout, positions) {
     s = Math.min(layout.leg[v] - (1 - garment.leg) * legLength, (0.35 - layout.armW[v]) * 0.25);
   } else if (type === 'gloves') {
     s = layout.arm[v] - (armLength - 0.012 * k);
+  } else if (costumeTypes.includes(type)) {
+    s = costumeCoverage(garment, v, layout, positions);
+  } else if (footwearTypes.includes(type)) {
+    s = footwearCoverage(garment, v, layout, positions);
   }
   // Painted cloth: +1 adds, -1 erases, over nearly the whole brush circle
   // (only its faint rim is left out), blended over a few centimetres.
@@ -176,6 +227,136 @@ function coverage(garment, v, layout, positions) {
   if (painted > 0) s = Math.max(s, (painted - 0.2) * 0.05 * k);
   if (painted < 0) s = Math.min(s, (0.2 + painted) * 0.05 * k);
   return s;
+}
+
+/** A path drawn on the skin: points along the segments between `stops`, each snapped to the nearest torso skin vertex. */
+function skinPath(layout, positions, stops, spacing) {
+  const out = [];
+  for (let i = 0; i + 1 < stops.length; i++) {
+    const a = stops[i], b = stops[i + 1], n = Math.max(1, Math.ceil(a.distanceTo(b) / spacing));
+    for (let s = 0; s < (i + 2 === stops.length ? n + 1 : n); s++) {
+      const p = a.clone().lerp(b, s / n);
+      let best = -1, distance = Infinity;
+      for (let v = 0; v < positions.length / 3; v++) {
+        if (!layout.used[v] || layout.armW[v] > 0.35 || layout.headW[v] > 0.35) continue;
+        const d = (positions[v * 3] - p.x) ** 2 + (positions[v * 3 + 1] - p.y) ** 2 + (positions[v * 3 + 2] - p.z) ** 2;
+        if (d < distance) { distance = d; best = v; }
+      }
+      out.push(new Vector3(positions[best * 3], positions[best * 3 + 1], positions[best * 3 + 2]));
+    }
+  }
+  return out;
+}
+const pathDistance = (path, x, y, z) => {
+  let best = Infinity;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i], b = path[i + 1], dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const t = clamp(((x - a.x) * dx + (y - a.y) * dy + (z - a.z) * dz) / (dx * dx + dy * dy + dz * dz || 1), 0, 1);
+    best = Math.min(best, Math.hypot(a.x + t * dx - x, a.y + t * dy - y, a.z + t * dz - z));
+  }
+  return best;
+};
+
+/**
+ * Carnival pieces cut on the body, as signed coverage (metres, > 0 inside):
+ * - top: two cups (ellipsoids round each bust point, `length` their size), a band under the bust
+ *   and halter straps drawn on the skin from the top of each cup round the neck's base;
+ * - bottom: below a waistband (`rise`) and above a leg opening that rises at the hips (`leg`: 0 a
+ *   high-cut tanga, 1 a full brief), continuous through the crotch;
+ * - swimsuit: a sleeveless bodice (`neckline`) closed by the same leg opening;
+ * - armbands and anklets: bands round the upper arms (`sleeve`: where, `length`: how wide) and
+ *   the lower legs (`leg`: where);
+ * - fringe skirt: a hip band (`rise`); its strands are built by costume.mjs.
+ */
+function costumeCoverage(garment, v, layout, positions) {
+  const { type } = garment, k = layout.k;
+  const x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+  const torso = Math.min((0.3 - layout.armW[v]) * 0.25, (0.3 - layout.headW[v]) * 0.25);
+  const legOpening = () => {
+    // Distance down the leg chain (negative above the hip joint); the opening is lower at the
+    // inner thigh and the crotch and rises towards the side of the hip for a higher cut.
+    const side = layout.legs[x >= 0 ? 'l' : 'r'], lateral = clamp((Math.abs(x) - Math.abs(side.A.x)) / (0.07 * k), -1, 1);
+    const cut = (0.02 - (1 - garment.leg) * 0.09 * smooth((lateral + 1) / 2)) * k;
+    return cut - layout.leg[v];
+  };
+  if (type === 'bikini_top') {
+    let s = -1;
+    const size = 0.75 + 0.6 * garment.length;
+    for (const point of [layout.bust.l, layout.bust.r]) {
+      if (!point) continue;
+      const rx = 0.07 * k * size, ry = 0.068 * k * size, centre = point.y - 0.012 * k;
+      const d = Math.hypot((x - point.x) / rx, (y - centre) / ry);
+      if (z > point.z - 0.11 * k) s = Math.max(s, (1 - d) * 0.05 * k);
+    }
+    const under = Math.min(layout.bust.l?.y ?? layout.chestY, layout.bust.r?.y ?? layout.chestY) - 0.068 * k * size + 0.002 * k;
+    // At least about one body edge wide (2.6 cm): a narrower band can pass between the vertices of
+    // a face, which is then skipped by the cut.
+    s = Math.max(s, 0.013 * k - Math.abs(y - under));
+    const key = `straps:${garment.length}:${garment.neckline}`;
+    layout.paths ??= new Map();
+    if (!layout.paths.has(key)) {
+      const paths = [];
+      for (const point of [layout.bust.l, layout.bust.r]) if (point) {
+        const sign = Math.sign(point.x), top = new Vector3(point.x - sign * 0.01 * k, point.y + 0.06 * k * size, point.z - 0.02 * k);
+        const neck = new Vector3(sign * 0.045 * k, layout.neckY - 0.01 * k, layout.frontZ - 0.035 * k);
+        const nape = new Vector3(sign * 0.02 * k, layout.neckY - 0.005 * k, layout.frontZ - 0.12 * k);
+        paths.push(skinPath(layout, positions, [top, top.clone().lerp(neck, 0.5), neck, nape], 0.012 * k));
+      }
+      layout.paths.set(key, paths);
+    }
+    const strap = (0.005 + 0.006 * garment.neckline) * k;
+    for (const path of layout.paths.get(key)) s = Math.max(s, strap - pathDistance(path, x, y, z));
+    return Math.min(s, torso);
+  }
+  if (type === 'bikini_bottom') {
+    const band = layout.hipY + (layout.waistY - layout.hipY) * (garment.rise * 0.9 - 0.15);
+    return Math.min(band - y, legOpening(), (0.3 - layout.armW[v]) * 0.25);
+  }
+  if (type === 'swimsuit') {
+    const n = garment.neckline, cy = layout.neckY + 0.012 * k, cz = layout.frontZ + 0.035 * k;
+    const rx = (0.055 + 0.05 * n) * k, ry = (0.03 + 0.2 * n) * k, rz = (0.075 + 0.02 * n) * k;
+    const scoop = (Math.hypot(x / rx, (y - cy) / ry, (z - cz) / rz) - 1) * Math.min(rx, ry, rz);
+    const armhole = 0.02 * k * (1 - layout.armW[v] * 1.6) - Math.max(0, layout.arm[v]);
+    return Math.min(scoop, armhole, layout.neckY - 0.006 * k - y, legOpening(), (0.4 - layout.headW[v]) * 0.25);
+  }
+  if (type === 'armband') {
+    if (layout.armW[v] < 0.5) return -1;
+    const centre = (0.06 + 0.55 * garment.sleeve) * layout.arms.l.length;
+    return (0.008 + 0.035 * garment.length) * k - Math.abs(layout.arm[v] - centre);
+  }
+  if (type === 'anklet') {
+    if (layout.legW[v] < 0.5) return -1;
+    const chain = layout.legs.l, centre = chain.l1 + 0.06 * k + (chain.l2 - 0.12 * k) * garment.leg;
+    return (0.008 + 0.03 * garment.length) * k - Math.abs(layout.leg[v] - centre);
+  }
+  if (type === 'fringe') {
+    const top = layout.hipY + (layout.waistY - layout.hipY) * (0.2 + garment.rise * 0.9);
+    return Math.min(top - y, y - (top - 0.035 * k), (0.35 - layout.armW[v]) * 0.25);
+  }
+  return -1;
+}
+
+/**
+ * Shoes cut on the foot (signed coverage, metres): the leg chain's distance runs past the ankle
+ * joint down the foot, so "below the ankle" is a foot. Trainers cover the foot to just above the
+ * ankle, boots up the shin (`leg`: from the ankle to below the knee), sandals the sole plus three
+ * straps (round the ankle, across the instep and across the toes).
+ */
+function footwearCoverage(garment, v, layout, positions) {
+  if (layout.legW[v] < 0.5) return -1;
+  const k = layout.k, x = positions[v * 3], y = positions[v * 3 + 1], z = positions[v * 3 + 2];
+  const chain = layout.legs[x >= 0 ? 'l' : 'r'], ankle = chain.l1 + chain.l2, along = layout.leg[v];
+  if (garment.type === 'sneakers') return along - (ankle - 0.035 * k);
+  if (garment.type === 'boots') return along - (ankle - (0.06 + 0.3 * garment.leg) * k);
+  const forward = z - chain.C.z;
+  return Math.max(0.016 * k - y, 0.012 * k - Math.abs(along - (ankle - 0.012 * k)),
+    Math.min(0.013 * k - Math.abs(forward - 0.115 * k), 0.06 * k - y), Math.min(0.012 * k - Math.abs(forward - 0.05 * k), 0.08 * k - y));
+}
+
+/** Top and bottom heights of a fringe skirt's band, where its strands hang from. */
+export function fringeBand(layout, garment) {
+  const top = layout.hipY + (layout.waistY - layout.hipY) * (0.2 + garment.rise * 0.9);
+  return { top, bottom: top - 0.035 * layout.k };
 }
 
 /**
@@ -214,6 +395,13 @@ export function garmentEdgeAt(context, garment, v) {
   if (t === 'pants' || t === 'shorts') return y < layout.hipY - 0.03 * k ? { key: 'leg', label: 'Perna', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
   if (t === 'skirt') return y < layout.hipY ? { key: 'length', label: 'Barra', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
   if (t === 'socks') return { key: 'leg', label: 'Altura', sign: 1 };
+  if (t === 'bikini_top') return { key: 'length', label: 'Bojo', sign: -1 };
+  if (t === 'bikini_bottom') return y < layout.hipY - 0.01 * k ? { key: 'leg', label: 'Cava', sign: 1 } : { key: 'rise', label: 'Cintura', sign: -1 };
+  if (t === 'swimsuit') return y > (layout.chestY + layout.neckY) / 2 ? { key: 'neckline', label: 'Decote', sign: 1 } : { key: 'leg', label: 'Cava', sign: 1 };
+  if (t === 'armband') return { key: 'sleeve', label: 'Posição', sign: 1 };
+  if (t === 'anklet') return { key: 'leg', label: 'Posição', sign: 1 };
+  if (t === 'fringe') return { key: 'length', label: 'Comprimento', sign: 1 };
+  if (t === 'boots') return { key: 'leg', label: 'Cano', sign: -1 };
   return null;
 }
 
@@ -384,7 +572,7 @@ function skirtPanel(context, garment, layout, layer) {
       const angle = c / columns * Math.PI * 2;
       const px = Math.sin(angle) * rx, pz = cz + Math.cos(angle) * rz;
       const side = smooth((px / Math.max(1e-3, rx) + 1) / 2), legs = 0.75 * s;
-      panel.vertex(`s${r}:${c}`, () => ({ pos: [px, y, pz], normal: [Math.sin(angle), 0, Math.cos(angle)], uv: [c / columns, s],
+      panel.vertex(`s${r}:${c}`, () => ({ pos: [px, y, pz], normal: [Math.sin(angle), 0, Math.cos(angle)], uv: [angle * (rx + rz) / 2, top - y],
         joints: [pelvis, thighL, thighR, 0], weights: [1 - legs, legs * side, legs * (1 - side), 0], key: 9000000 + layer * 10000 + r * columns + c }));
       if (r < rows) {
         const a = r * columns + c, b = r * columns + (c + 1) % columns;
@@ -717,10 +905,12 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
     const panels = [];
     const authored=garment.authoringMode!=='surface'&&garment.patternData?.panels.length;
     if (authored) panels.push(buildPatternPanels(context, garment, layout, layer, skin));
-    else if (garment.type !== 'skirt') {
+    else if (garment.type !== 'skirt' && !accessoryOnly.has(garment.type)) {
       const { panel, covered: faces } = cutPanel(context, garment, layout, layer);
+      panel.uvScale = layout.uvScale;
       if (panel.index.length) panels.push(panel);
-      for (const f of faces) covered.add(f);
+      // Skin under a see-through net (tulle) stays.
+      if (!fabrics[garment.fabric].net) for (const f of faces) covered.add(f);
     }
     if (!authored && (garment.type === 'skirt' || garment.type === 'dress')) panels.push(skirtPanel(context, garment, layout, layer));
     for (const panel of panels) {
@@ -748,6 +938,9 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
           room: v => room * (panel.elastic?.[v] ? 0.25 : 1) * (1 - 0.65 * smooth((panel.normal[v * 3 + 1] - 0.25) / 0.6)) * (1 - 0.5 * (layout.armW[panel.origins[v]] ?? 0)),
         });
       }
+      // A shoe stands on a flat sole: what lies under the foot goes down to one plane (1.2 cm under
+      // the sole of the foot, above the studio floor), giving the sole its thickness.
+      if (shell && footwearTypes.includes(garment.type)) for (let v = 0; v < points.length / 3; v++) if (points[v * 3 + 1] < 0.006 * k) points[v * 3 + 1] = -0.012 * k;
       const pattern = panel.pattern ? Float32Array.from(panel.rest) : points.slice();
       resolvePenetration(points, panel.index, beneath, { thickness: 0.004 * k, depth: 0.03 * k, smoothing: 6, normals: panel.normal });
       // A cut piece's shell already rests at its ease (the hollows spanned, the ease hanging from
@@ -819,7 +1012,7 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
       const geometry = new BufferGeometry();
       geometry.setAttribute('position', new Float32BufferAttribute(points, 3)); geometry.setIndex(panel.index); geometry.computeVertexNormals();
       panel.normal = Array.from(geometry.getAttribute('normal').array);
-      if(panel.pattern)for(const face of coveredPatternFaces(context,panel,points,geometry.attributes.normal.array,skin,layout))covered.add(face);
+      if(panel.pattern&&!fabrics[garment.fabric].net)for(const face of coveredPatternFaces(context,panel,points,geometry.attributes.normal.array,skin,layout))covered.add(face);
       // Normals turned away from the skin, so "outside" this garment means away from the body.
       collider.add(points, geometry.getAttribute('normal').array, panel.index, { orient: true });
       geometry.dispose();
@@ -847,14 +1040,18 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
     // Sewn pieces too, by the skin point each cloth point was placed over: a shirt under trousers is tucked in.
     const hidden = panel.origins.map(v => outerCovers(layer, v));
     const offset = meshData.pos.length / 3;
-    ranges.push({ start: meshData.index.length, roughness: garment.roughness });
+    ranges.push({ start: meshData.index.length, key: `${garment.fabric}|${garment.roughness}`, fabric: garment.fabric, roughness: garment.roughness });
     for (let v = 0; v < panel.pos.length / 3; v++) {
       const p = new Vector3(panel.pos[v * 3], panel.pos[v * 3 + 1], panel.pos[v * 3 + 2]);
       const pieceMaterial = panel.materials?.[v] ?? panel.materials?.[panel.origins[v]];
-      const color = patternColor(pieceMaterial ? {...garment,...pieceMaterial} : garment, p, k);
+      // Shoes: the sole (the lowest centimetre) in the second colour.
+      const color = footwearTypes.includes(garment.type) && p.y < 0.008 * k ? new Color(garment.color2) : patternColor(pieceMaterial ? {...garment,...pieceMaterial} : garment, p, k);
       meshData.pos.push(p.x, p.y, p.z); meshData.color.push(color.r, color.g, color.b);
     }
-    for (const key of ['uv','joints','weights','keys']) for (const value of panel[key]) meshData[key].push(value);
+    for (const key of ['joints','weights','keys']) for (const value of panel[key]) meshData[key].push(value);
+    // UVs in metres (pattern pieces already are; cut pieces carry the body's map, scaled), so a
+    // fabric's texture has the same size on every piece.
+    for (const value of panel.uv) meshData.uv.push(value * (panel.uvScale ?? 1));
     for (let v = 0; v < panel.pos.length / 3; v++) meshData.garment.push(layer);
     for (let v = 0; v < panel.pos.length / 3; v++) meshData.piece.push(panel.pieceOf?.[v] ?? -1);
     for (let v = 0; v < panel.pos.length / 3; v++) meshData.sources.push(panel.sources?.[v] ?? null);
@@ -879,13 +1076,24 @@ export function tailorOutfit(context, garments, sculptOffsets, collider) {
   geometry.userData.garmentOf = Int8Array.from(meshData.garment);
   geometry.userData.pieceOf = Int16Array.from(meshData.piece);
   geometry.userData.patternSources = meshData.sources;
-  // One material per distinct roughness and one group per panel (a glTF primitive each).
-  const roughnesses = [...new Set(ranges.map(range => range.roughness))];
-  ranges.forEach((range, i) => {
-    const end = ranges[i + 1]?.start ?? meshData.index.length;
-    if (end > range.start) geometry.addGroup(range.start, end - range.start, roughnesses.indexOf(range.roughness));
+  // One material per distinct fabric and roughness, and one group per material (a glTF primitive
+  // each, so an outfit costs as many draw calls as it has fabrics, not pieces): the triangles of
+  // every panel in the same fabric are put together. The fabric's textures are drawn on the page
+  // (fabrics.mjs applyFabricTextures, from userData).
+  const keys = [...new Set(ranges.map(range => range.key))], sorted = [];
+  for (const key of keys) {
+    const start = sorted.length;
+    ranges.forEach((range, i) => { if (range.key === key) for (let t = range.start, end = ranges[i + 1]?.start ?? meshData.index.length; t < end; t++) sorted.push(meshData.index[t]); });
+    if (sorted.length > start) geometry.addGroup(start, sorted.length - start, keys.indexOf(key));
+  }
+  geometry.setIndex(sorted);
+  const materials = keys.map(key => {
+    const { fabric, roughness } = ranges.find(range => range.key === key);
+    const material = new MeshPhysicalMaterial({ vertexColors: true, side: DoubleSide, ...fabricMaterialParameters(fabric, roughness) });
+    material.name = `Tecido_${fabric}`;
+    material.userData.hgsFabric = { fabric };
+    return material;
   });
-  const materials = roughnesses.map(roughness => new MeshStandardMaterial({ vertexColors: true, roughness, side: DoubleSide }));
   const mesh = new SkinnedMesh(geometry, materials);
   mesh.name = 'Outfit';
   mesh.userData.style = 'tailor';

@@ -102,7 +102,7 @@ test('a garment edge dragged on the body: the right edge is picked and the previ
 });
 
 test('every garment type can be made: it is built, stays outside the skin and is picked by clicking it', async () => {
-  const { garmentTypes } = await import('../src/tailor.mjs');
+  const { garmentTypes, accessoryOnly } = await import('../src/tailor.mjs');
   for (const type of garmentTypes) {
     const garment = newGarment(type);
     // A free garment starts empty: paint a patch on the belly to make it.
@@ -114,7 +114,12 @@ test('every garment type can be made: it is built, stays outside the skin and is
       assert.ok(Object.keys(garment.paint).length > 20, 'a patch was painted');
     }
     const human = await createHuman({ ageYears: 30, gender: 0.2, heightMeters: 1.7, clothing: { style: 'tailor', garments: [newGarment('tank'), garment] }, hair: { style: 'none' } });
-    const outfit = human.group.getObjectByName('Outfit')?.geometry;
+    // Plumes and crowns cut nothing from the body: they are the costume mesh (cards on spring joints).
+    const outfit = human.group.getObjectByName(accessoryOnly.has(type) ? 'Costume' : 'Outfit')?.geometry;
+    if (accessoryOnly.has(type)) {
+      const weights = outfit.getAttribute('skinWeight');
+      for (let i = 0; i < weights.count; i++) assert.ok(Math.abs(weights.getX(i) + weights.getY(i) + weights.getZ(i) + weights.getW(i) - 1) < 1e-4, `${type}: weights sum to 1`);
+    }
     assert.ok(outfit && outfit.index.count > 30, `${type}: a garment mesh is built`);
     assert.equal(inside(outfit, skinCollider(human)), 0, `${type}: nothing inside the skin`);
     const of = outfit.userData.garmentOf;
