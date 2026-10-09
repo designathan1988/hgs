@@ -229,6 +229,33 @@ function setRoving(container, button) {
   for (const b of container.querySelectorAll('.tool')) b.tabIndex = b === button ? 0 : -1;
 }
 
+// -------------------------------------------------------------------- tabs
+/**
+ * Tabs (WAI-ARIA APG Tabs, automatic activation: the panels render at once):
+ * role tablist/tab, aria-selected, aria-controls; Tab lands on the selected
+ * tab, Left/Right move and wrap, Home/End go to the ends.
+ */
+export function tabs(container, { label, names, selected, onPick, panelId }) {
+  container.setAttribute('role', 'tablist');
+  container.setAttribute('aria-label', label);
+  const buttons = names.map((name, i) => h('button', {
+    type: 'button', role: 'tab', class: `tab${i === selected ? ' on' : ''}`, id: `${panelId}-tab-${i}`, 'aria-selected': String(i === selected), 'aria-controls': panelId,
+    tabindex: i === selected ? '0' : '-1', onclick: () => onPick(i), text: name,
+  }));
+  container.replaceChildren(...buttons);
+  container.hidden = names.length < 2;
+  container.onkeydown = event => {
+    const at = buttons.indexOf(document.activeElement);
+    if (at < 0) return;
+    const to = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: buttons.length - 1 }[event.key];
+    if (to === undefined) return;
+    event.preventDefault();
+    const i = (to + buttons.length) % buttons.length;
+    onPick(i, { focus: true });
+  };
+  return buttons;
+}
+
 // --------------------------------------------------------------- popovers
 const popovers = [];
 /** A button that opens a panel: aria-expanded, Esc or a click outside closes it, focus returns to the button. */

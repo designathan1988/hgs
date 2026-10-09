@@ -10,7 +10,7 @@ import { garmentPictogram, fabricPictogram } from './garment-icons.mjs';
 import { PatternEditor } from './pattern-editor.mjs';
 import { createPatternTemplate, patternTypes } from './patterns.mjs';
 import { icon, hairPictogram } from './icons.mjs';
-import { h, group, row, iconButton, slider, sliderPair, segmented, chips, iconChoices, toggleChips, searchField, toggle, swatches, toolbar, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
+import { h, group, row, iconButton, slider, sliderPair, segmented, chips, iconChoices, toggleChips, searchField, toggle, swatches, toolbar, tabs, popover, closePopovers, captureFocus, restoreFocus } from './ui-kit.mjs';
 import { storage, defaultExport } from './store.mjs';
 import { onlyGarmentColour } from './look.mjs';
 import { renderAnimationPanel } from './animation-panel.mjs';
@@ -692,43 +692,43 @@ export class StudioUI {
     this.setHint(hints.default);
     // The panel widens only for the 2D pattern editor, which needs the room; otherwise the 3D view keeps it.
     this.app.classList.toggle('pattern-mode', this.section === 'roupas' && this.person.outfit === 4 && this.isDrafted());
+    this.tabNames = null;
+    // The active tool's options come first in the panel (one place for the task, nothing over the 3D view).
+    this.renderTools();
     ({
       personagem: () => this.renderCharacter(), corpo: () => this.renderBody(), rosto: () => this.renderFace(),
       cabelo: () => this.renderHair(), roupas: () => this.renderClothes(), esculpir: () => this.renderSculpt(),
       animacao: () => this.renderAnimation(),
     })[this.section]();
-    this.renderTools();
-    this.body.scrollTop = scroll;
+    if (!this.tabNames) { const bar = document.getElementById('sectionTabs'); bar.hidden = true; bar.replaceChildren(); this.body.removeAttribute('aria-labelledby'); }
+    this.body.scrollTop = fresh || this.tabChanged ? 0 : scroll;
+    this.tabChanged = false;
     this.updateMeta(); this.updateHistoryButtons(); this.renderViewButtons();
     restoreFocus(this.app, focus);
     this.updateCenter();
   }
-  /** The section's tools in the rail beside the sections, and the active tool's options over the viewport. */
+  /**
+   * The section's tools in the rail beside the sections; the active tool's
+   * options at the top of the panel (Blender's Tool Settings, one place for the
+   * task: nothing floats over the character's head any more).
+   */
   renderTools() {
     const groups = this.toolGroups();
     this.app.classList.toggle('has-tools', Boolean(groups));
-    this.toolRail.hidden = !groups; this.toolCard.hidden = !groups;
-    if (!groups) { this.toolRail.replaceChildren(); this.toolCard.replaceChildren(); return; }
+    this.toolRail.hidden = !groups; this.toolCard.hidden = true; this.toolCard.replaceChildren();
+    if (!groups) { this.toolRail.replaceChildren(); return; }
     const active = this.activeTool(), section = sections.find(s => s.id === this.section);
     toolbar(this.toolRail, { groups, active, label: `Ferramentas: ${section.title ?? section.name}`, onPick: id => this.pickTool(id) });
     this.toolRail.title = this.toolNote() ?? '';
     const [name, glyph, extra] = groups.flatMap(([, list]) => list).find(([id]) => id === active)?.slice(1) ?? ['', null];
     const shortcut = extra?.shortcut;
-    const options = h('div', { class: 'tool-card-body', id: 'toolCardBody' });
+    const options = h('div', { class: 'tool-options-body' });
     if (this.section === 'cabelo') this.renderHairToolOptions(options, active);
     if (this.section === 'esculpir') this.renderSculptToolOptions(options);
     if (this.section === 'roupas') this.renderClothToolOptions(options, active);
-    const open = this.state.ui.toolPanel, hasOptions = options.childElementCount > 0;
-    this.toolCard.classList.toggle('collapsed', !open || !hasOptions);
-    // replaceChildren turns null into the text "null": only real nodes are passed.
-    this.toolCard.replaceChildren(...[
-      h('div', { class: 'tool-card-head', title: extra?.title ?? name }, glyph ? icon(glyph, 18) : null, h('span', { class: 'tool-card-title', text: name }), shortcut ? h('kbd', { text: shortcut, title: `Tecla ${shortcut}` }) : null,
-        hasOptions ? h('button', {
-          type: 'button', class: 'icon-button small', title: open ? 'Recolher as opções' : 'Mostrar as opções', 'aria-label': open ? 'Recolher as opções' : 'Mostrar as opções',
-          'aria-expanded': String(open), 'aria-controls': 'toolCardBody', onclick: () => this.store.dispatch({ type: 'ui/set', changes: { toolPanel: !open } }),
-        }, icon('chevronDown', 16)) : null),
-      hasOptions && open ? options : null,
-    ].filter(Boolean));
+    this.body.append(h('section', { class: 'tool-options', 'aria-label': `Ferramenta: ${name}` },
+      h('div', { class: 'tool-options-head', title: extra?.title ?? name }, glyph ? icon(glyph, 16) : null, h('span', { text: name }), shortcut ? h('kbd', { text: shortcut, title: `Tecla ${shortcut}` }) : null),
+      options.childElementCount ? options : null));
   }
   toolGroups() {
     if (this.section === 'cabelo') {
@@ -755,6 +755,28 @@ export class StudioUI {
   /** The hair tool in effect (a tool saved by an older version falls back to the brush). */
   hairTool() { const tool = this.state.ui.tools.cabelo; return hairTools.includes(tool) ? tool : 'brush'; }
   // Controls bound to this UI: groups remember their state; sliders mark a drag in progress.
+  /**
+   * The section's tabs (at most four), in the panel's head. Returns the index of
+   * the open tab; the panel shows only that tab's sections.
+   */
+  useTabs(names) {
+    this.tabNames = names;
+    this.tabAt ??= {};
+    const at = Math.min(this.tabAt[this.section] ?? 0, names.length - 1);
+    const buttons = tabs(document.getElementById('sectionTabs'), { label: `Partes de ${sections.find(s => s.id === this.section).name}`, names, selected: at, panelId: 'inspectorBody',
+      onPick: (i, { focus } = {}) => {
+        if (i !== at) { this.tabAt[this.section] = i; this.tabChanged = true; this.render(); }
+        if (focus) document.getElementById(`inspectorBody-tab-${i}`)?.focus();
+      } });
+    this.body.setAttribute('aria-labelledby', buttons[at].id);
+    return at;
+  }
+  /** A fixed section inside a tab: a small uppercase title (level 2), optional icon actions on its right, then its controls. */
+  pane(title, actions = []) {
+    const body = h('div', { class: 'pane-body' });
+    this.body.append(h('section', { class: 'pane' }, h('h2', { class: 'pane-title' }, h('span', { text: title }), ...actions), body));
+    return body;
+  }
   group(title, { open = true, advanced = false, badge, key: id } = {}) {
     const key = `${this.section}:${id ?? title}`;
     // One group open per panel: the first one that asks to be open (saved or by default) wins.
@@ -814,7 +836,8 @@ export class StudioUI {
   // ------------------------------------------------------------ sections
   /** Pessoa: who this is (sex, age, height), the skin and the ancestry blend; the name is edited in the top bar. */
   renderCharacter() {
-    const id = this.group('Quem é');
+    // Three fixed sections, all on screen (short panel: no tabs, no accordion).
+    const id = this.pane('Quem é');
     this.segmented(id, 'Sexo', ['Feminino', 'Masculino'], this.person.gender, v => this.update('gender', v));
     // Age as pictures first (The Sims' life stages), the exact age in the slider under them.
     const ages = [['Criança', 'ageChild', 8], ['Jovem', 'ageTeen', 17], ['Adulto', 'ageAdult', 35], ['Idoso', 'ageElder', 72]];
@@ -823,11 +846,11 @@ export class StudioUI {
     this.range(id, 'ageYears', 'Idade', 1, 90, 1, ' anos');
     const [min, max] = this.heightBounds();
     this.heightField = this.range(id, 'heightMeters', 'Altura', min, max, 0.01, ' m', { title: 'Altura (a idade sugere uma altura típica)' });
-    const skin = this.group('Pele');
+    const skin = this.pane('Pele');
     this.colorSwatches(skin, 'skin', 'Tom', skinPalette, 'skin', ['Muito clara', 'Clara', 'Clara média', 'Média', 'Morena', 'Morena escura', 'Escura', 'Muito escura']);
     this.range(skin, 'skinRoughness', 'Acabamento', 0, 1, 0.01, '', { ends: ['Brilhante', 'Fosca'] });
     // Ancestry: traits of face and body; what counts is the proportion among the three (macro.mjs normalises them).
-    const ancestry = this.group('Origem', { open: false });
+    const ancestry = this.pane('Origem');
     this.ranges(ancestry, [['african', 'Africana', ['Pouco', 'Muito'], 0, 1], ['asian', 'Asiática', ['Pouco', 'Muito'], 0, 1], ['caucasian', 'Europeia', ['Pouco', 'Muito'], 0, 1]]);
   }
   /** Value of a MakeHuman regional adjustment: its own field when it has one, else `morphs`. */
@@ -849,7 +872,7 @@ export class StudioUI {
     const on = Boolean(this.state.ui.molding), handles = this.renderer?.shapeHandles;
     const mirror = h('button', { type: 'button', class: `icon-button${handles?.symmetry ? ' on' : ''}`, 'aria-pressed': String(Boolean(handles?.symmetry)), title: 'Simetria: os dois lados juntos', 'aria-label': 'Simetria',
       onclick: event => { if (!handles) return; handles.symmetry = !handles.symmetry; event.currentTarget.classList.toggle('on', handles.symmetry); event.currentTarget.setAttribute('aria-pressed', String(handles.symmetry)); } }, icon('mirror', 18));
-    this.body.append(h('div', { class: 'group' }, h('div', { class: 'mode-row' },
+    this.body.append(h('div', { class: 'mode-strip' }, h('div', { class: 'mode-row' },
       h('button', { type: 'button', class: `mode-card${on ? ' on' : ''}`, 'aria-pressed': String(on), title: `Moldar ${part}: arraste a parte no 3D (Alt: só um lado)`, onclick: () => this.store.dispatch({ type: 'ui/set', changes: { molding: !on } }) },
         icon('grab', 18), h('span', { text: on ? 'Moldando no 3D' : 'Moldar no 3D' })),
       on ? mirror : null)));
@@ -928,9 +951,13 @@ export class StudioUI {
   }
   /** Corpo: pull it (Moldar), the main proportions with named ends, the bust, tattoos, then every regional adjustment. */
   renderBody() {
+    // Tabs: the shape (pictures, Moldar, proportions), the regional details, the tattoos.
+    const tab = this.useTabs(['Forma', 'Detalhes', 'Tatuagens']);
+    if (tab === 1) { this.renderDetailed(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet'], this.pane('Ajustes por região')); return; }
+    if (tab === 2) { this.renderTattoos(); return; }
     this.renderMoldCard('o corpo');
     // Body type as pictures (one click sets weight, muscle and shoulders), then the fine proportions.
-    const shape = this.group('Proporções');
+    const shape = this.pane('Proporções', [iconButton('dice', 'Sortear o corpo', () => { this.randomBody(); this.toast('Corpo sorteado', 'info', this.undoAction()); }, { size: 16 })]);
     const types = [['Magro', 'bodyThin', { build: -0.6, muscle: 0.3, shoulders: -0.2 }], ['Médio', 'bodyAverage', { build: 0, muscle: 0.5, shoulders: 0 }],
       ['Atlético', 'bodyAthletic', { build: -0.1, muscle: 0.9, shoulders: 0.35 }], ['Forte', 'bodyStrong', { build: 0.45, muscle: 0.85, shoulders: 0.45 }], ['Pesado', 'bodyHeavy', { build: 0.85, muscle: 0.4, shoulders: 0.1 }]];
     const near = types.map(([, , t]) => Math.abs(t.build - this.person.build) + Math.abs(t.muscle - this.person.muscle) + Math.abs(t.shoulders - this.person.shoulders));
@@ -940,33 +967,49 @@ export class StudioUI {
     this.ranges(shape, [['build', 'Peso', ['Magro', 'Pesado']], ['muscle', 'Músculos', ['Pouco', 'Muito'], 0, 1], ['shoulders', 'Ombros', ['Estreitos', 'Largos']],
       ['waist', 'Tronco', ['Estreito', 'Largo']], ['hips', 'Quadril', ['Estreito', 'Largo']], ['legLength', 'Coxas', ['Curtas', 'Longas']], ['headSize', 'Cabeça', ['Curta', 'Alongada']],
       ['proportions', 'Proporções', ['Comuns', 'Idealizadas'], 0, 1]]);
-    shape.append(h('div', { class: 'icon-bar' }, iconButton('dice', 'Sortear o corpo', () => { this.randomBody(); this.toast('Corpo sorteado', 'info', this.undoAction()); })));
-    const bust = this.group('Busto', { open: false });
+    const bust = this.pane('Busto');
     this.ranges(bust, [['cupsize', 'Tamanho', ['Pequeno', 'Grande'], 0, 1], ['firmness', 'Firmeza', ['Menos', 'Mais'], 0, 1]]);
-    this.renderTattoos();
-    this.renderAdvanced([['Ajustes detalhados', body => this.renderDetailed(['neck', 'torso', 'stomach', 'hip', 'buttocks', 'pelvis', 'arms', 'hands', 'legs', 'feet'], body)]]);
   }
-  /** Rosto: pull it (Moldar), shape, eyes, expression, brows, lashes, makeup, then every regional adjustment. */
+  /**
+   * Rosto in four tabs (Character Creator's Modify tabs, MetaHuman's tool
+   * categories): the shape, the eyes and brows, the look (makeup, beard,
+   * accessories), the expression. Each tab shows its sections at once.
+   */
   renderFace() {
+    const tab = this.useTabs(['Forma', 'Olhos', 'Visual', 'Expressão']);
+    if (tab === 1) return this.renderFaceEyes();
+    if (tab === 2) return this.renderFaceLook();
+    if (tab === 3) {
+      this.renderExpression();
+      const fine = this.group('Expressão fina', { open: false, advanced: true });
+      this.renderExpressionFine(fine);
+      return;
+    }
     this.renderMoldCard('o rosto');
-    const shape = this.group('Formato');
+    const shape = this.pane('Formato', [iconButton('dice', 'Sortear o rosto', () => { this.randomFace(); this.toast('Rosto sorteado', 'info', this.undoAction()); }, { size: 16 })]);
     this.ranges(shape, [['faceWidth', 'Largura', ['Estreito', 'Largo']], ['jaw', 'Queixo', ['Estreito', 'Largo']], ['cheek', 'Bochechas', ['Magras', 'Cheias']], ['nose', 'Nariz', ['Rente', 'Saliente']]]);
-    shape.append(h('div', { class: 'icon-bar' }, iconButton('dice', 'Sortear o rosto', () => { this.randomFace(); this.toast('Rosto sorteado', 'info', this.undoAction()); })));
-    const eyes = this.group('Olhos');
+    const detail = this.group('Ajustes por região', { open: false, advanced: true });
+    this.renderDetailed(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears'], detail);
+  }
+  /** Rosto › Olhos: the eyes, the brows and the lashes. */
+  renderFaceEyes() {
+    const eyes = this.pane('Olhos');
     this.ranges(eyes, [['eyeSize', 'Tamanho', ['Menores', 'Maiores']], ['eyeSpacing', 'Distância', ['Juntos', 'Afastados']]]);
     this.colorSwatches(eyes, 'eyeColor', 'Cor', eyePalette, 'eyes', ['Castanho escuro', 'Castanho claro', 'Cinza', 'Verde', 'Azul', 'Cinza claro']);
-    this.renderExpression();
-    const brows = this.group('Sobrancelhas', { open: false });
+    const brows = this.pane('Sobrancelhas');
     this.segmented(brows, 'Formato', [['Natural', 'browNatural'], ['Reta', 'browStraight'], ['Arqueada', 'browArched'], ['Angulosa', 'browAngled']], this.person.browShape, v => this.update('browShape', v));
     this.range(brows, 'browAngle', 'Inclinação', -25, 25, 1, '°');
     this.ranges(brows, [['browArch', 'Arco', ['Menos', 'Mais']], ['browThickness', 'Espessura', ['Fina', 'Grossa'], 0.35, 2.1], ['browWidth', 'Comprimento', ['Curta', 'Longa'], 0.7, 1.4],
       ['browHeight', 'Altura', ['Mais baixa', 'Mais alta']], ['browDensity', 'Densidade', ['Rala', 'Cheia'], 0, 1]]);
     this.colorSwatches(brows, null, 'Cor', hairPalette, 'brows', ['Preto', 'Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Castanho claro', 'Loiro', 'Ruivo', 'Cinza escuro', 'Platinado']);
-    const lashes = this.group('Cílios', { open: false });
+    const lashes = this.pane('Cílios');
     this.ranges(lashes, [['lashLength', 'Comprimento', ['Curtos', 'Longos'], 0.4, 1.8], ['lashCurl', 'Curvatura', ['Retos', 'Curvados'], 0, 1], ['lashDensity', 'Densidade', ['Ralos', 'Cheios'], 0, 1]]);
     this.colorSwatches(lashes, null, 'Cor', ['#201915', '#3a2a22', '#5b4636', '#11131a'], 'lashes', ['Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Preto azulado']);
+  }
+  /** Rosto › Visual: makeup, beard and accessories (the instância principal's skin layers and gear). */
+  renderFaceLook() {
     // Makeup layers painted into the skin texture (skin-layers.mjs): an amount and a colour per region.
-    const makeup = this.group('Maquiagem', { open: false });
+    const makeup = this.pane('Maquiagem');
     for (const [region, name] of Object.entries(makeupNames)) {
       const set = (changes, options) => this.patch({ makeup: { ...this.person.makeup, [region]: { ...this.person.makeup[region], ...changes } } }, { history: `makeup:${region}`, ...options });
       // Amount and colour of one region on one line.
@@ -974,7 +1017,7 @@ export class StudioUI {
       this.slide(makeup, { label: name, title: `${name}: quantidade e cor`, value: this.person.makeup[region].amount, min: 0, max: 1, trailing: well, onInput: v => set({ amount: v }, { live: true }), onEnd: () => this.commitLive() });
     }
     // Beard painted on the skin (skin-layers.mjs): a style, how strong, how dense; the hair's colour unless one is chosen.
-    const beard = this.group('Barba', { open: this.person.beard.style !== 'nenhuma' });
+    const beard = this.pane('Barba');
     const setBeard = (changes, options) => this.patch({ beard: { ...this.person.beard, ...changes } }, { history: 'beard', ...options });
     const styles = Object.keys(beardStyles);
     beard.append(chips({ label: 'Estilo', items: styles.map(id => beardStyles[id].name), selected: styles.indexOf(this.person.beard.style), onPick: i => { setBeard({ style: styles[i] }); this.scheduleRender(); } }));
@@ -984,7 +1027,7 @@ export class StudioUI {
       this.slide(beard, { label: 'Densidade', value: this.person.beard.density, min: 0, max: 1, ends: ['Rala', 'Cheia'], onInput: v => setBeard({ density: v }, { live: true }), onEnd: () => this.commitLive() });
     }
     // Glasses, earrings, hat and necklace (accessories.mjs): a style each, then its colour or metal on the same line.
-    const worn = this.person.accessories, gear = this.group('Acessórios', { open: Object.values(worn).some(item => item.style !== 'nenhum') });
+    const worn = this.person.accessories, gear = this.pane('Acessórios');
     const setGear = (kind, changes) => { this.patch({ accessories: { ...worn, [kind]: { ...worn[kind], ...changes } } }, { history: `accessory:${kind}` }); this.scheduleRender(); };
     // One line per accessory: its name, the style, then its colour or metal (and dark lenses for glasses).
     for (const [kind, name] of Object.entries(accessoryNames)) {
@@ -998,14 +1041,10 @@ export class StudioUI {
           ...('lens' in item ? [h('button', { type: 'button', class: `icon-button${item.lens === 'escura' ? ' on' : ''}`, title: 'Lentes escuras', 'aria-label': 'Lentes escuras', 'aria-pressed': String(item.lens === 'escura'), onclick: () => setGear(kind, { lens: item.lens === 'escura' ? 'clara' : 'escura' }) }, icon('sun', 16))] : [])];
       gear.append(h('div', { class: 'gear-row' }, h('span', { class: 'gear-name', text: name }), style, ...extra));
     }
-    this.renderAdvanced([
-      ['Formas do rosto', body => this.renderDetailed(['head', 'forehead', 'eyebrows', 'eyes', 'nose', 'mouth', 'chin', 'cheek', 'ears'], body)],
-      ['Expressão fina', body => this.renderExpressionFine(body)],
-    ]);
   }
   /** Expression: a preview on the face, also what a timeline key records. */
   renderExpression() {
-    const face = this.group('Expressão');
+    const face = this.pane('Expressão');
     // Faces, not words (the user: icons where the choice is visual); the names are in the tooltips.
     const glyphs = ['exNeutral', 'exRelaxed', 'exHappy', 'exSmile', 'exLaugh', 'exSad', 'exAngry', 'exAnnoyed', 'exSurprised', 'exWorried', 'exTired', 'exTalking'];
     face.append(iconChoices({ label: 'Expressão', items: expressionNames.map((name, i) => [name, glyphs[i] ?? 'face']), selected: this.person.expression, onPick: i => this.update('expression', i) }));
@@ -1033,7 +1072,7 @@ export class StudioUI {
   }
   /** Tattoos: pick a design (or load an image), then click the skin where it goes; each placed one can be resized, turned, recoloured or removed. */
   renderTattoos() {
-    const group = this.group('Tatuagens', { open: false });
+    const group = this.pane('Tatuagens');
     const keys = Object.keys(tattooDesigns);
     this.tattooDesign ??= 'estrela';
     group.append(chips({ label: 'Desenho', items: [...keys.map(key => tattooDesigns[key].name), 'Imagem'], selected: this.tattooImage ? keys.length : keys.indexOf(this.tattooDesign),
