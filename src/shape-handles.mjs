@@ -71,7 +71,9 @@ export class ShapeHandles {
       const plus = positive ? this.deltaAt(`${group}/${positive}`, v) : new Vector3();
       const minus = negative ? this.deltaAt(`${group}/${negative}`, v) : new Vector3();
       if (plus.lengthSq() + minus.lengthSq() < 1e-14) continue;
-      list.push({ name, group, sided, side: x >= 0 ? 'l' : 'r', plus, minus, onlyPositive: !category.opposites });
+      // Region size: how many vertices the adjustment moves (the smaller, the more local).
+      const size = Math.max(morpher.localByName.get(`${group}/${positive}`)?.count ?? 0, morpher.localByName.get(`${group}/${negative}`)?.count ?? 0);
+      list.push({ name, group, sided, side: x >= 0 ? 'l' : 'r', plus, minus, size, onlyPositive: !category.opposites });
     }
     return list;
   }
@@ -101,14 +103,18 @@ export class ShapeHandles {
     if (!drag.chosen) {
       // Wait for 3 mm of movement, then keep the adjustment that best follows the pointer.
       if (delta.length() < 0.003) return null;
+      // MetaHuman Creator: each marker acts on a limited area. Among the adjustments that move this
+      // point along the pull (cosine ≥ 0.6), the one with the smallest region is the part grabbed.
       let best = null;
+      const pull = delta.length();
       for (const candidate of drag.candidates) for (const [sign, d] of [[1, candidate.plus], [-1, candidate.minus]]) {
         const length = d.length();
         if (length < 1e-9 || (sign < 0 && candidate.onlyPositive)) continue;
-        const score = delta.dot(d) / length;
-        if (!best || score > best.score) best = { score, candidate };
+        const cosine = delta.dot(d) / (length * pull);
+        if (cosine < 0.6) continue;
+        if (!best || candidate.size < best.candidate.size || (candidate.size === best.candidate.size && cosine > best.cosine)) best = { cosine, candidate };
       }
-      if (!best || best.score <= 0) return null;
+      if (!best) return null;
       const key = best.candidate.sided && (single || !this.symmetry) ? `${best.candidate.side}-${best.candidate.name}` : best.candidate.name;
       drag.chosen = { ...best.candidate, key, start: drag.value(key) };
     }
