@@ -281,7 +281,7 @@ export function varyCharacter(character, locks = character.creation?.locks ?? {}
       'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs', 'tattoos'],
     face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes', 'makeup', 'beard'],
     hair: ['hairPreset', 'hairBase', 'hairColor', 'locks'],
-    clothes: ['outfit', 'garments', 'topColor', 'bottomColor'],
+    clothes: ['outfit', 'garments', 'topColor', 'bottomColor', 'accessories'],
   };
   for (const [group, keys] of Object.entries(groups)) if (locks[group]) for (const key of keys) next[key] = structuredClone(current[key]);
   next.colors = {};
@@ -291,7 +291,9 @@ export function varyCharacter(character, locks = character.creation?.locks ?? {}
   if (locks.body || locks.face) next.sculpt.body = structuredClone(current.sculpt.body);
   if (locks.hair) { next.sculpt.hair = structuredClone(current.sculpt.hair); next.sculpt.pins = structuredClone(current.sculpt.pins); }
   if (locks.clothes) next.sculpt.outfit = structuredClone(current.sculpt.outfit);
-  for (const key of ['name', 'animation', 'animationSpeed', 'lighting', 'pose', 'expression', 'expressionIntensity']) next[key] = current[key];
+  for (const key of ['animation', 'animationSpeed', 'lighting', 'pose', 'expression', 'expressionIntensity']) next[key] = current[key];
+  // Another person gets another name; the same body and face are the same person, and keep it.
+  if (locks.body && locks.face) next.name = current.name;
   next.creation = { locks: { ...locks } };
   return normalizeCharacter(next);
 }
