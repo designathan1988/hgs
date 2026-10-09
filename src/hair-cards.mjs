@@ -307,8 +307,12 @@ export function hairCapPart(state, flow) {
     const at = pos.length / 3;
     pos.push(p.x + n.x * lift, p.y + n.y * lift, p.z + n.z * lift);
     normal.push(n.x, n.y, n.z);
-    // World position projected on the local (across, along) frame: continuous where the flow turns slowly.
-    uv.push((p.x * across[0] + p.y * across[1] + p.z * across[2]) / tile, (p.x * along[0] + p.y * along[1] + p.z * along[2]) / tile);
+    // Position from the head centre projected on the local (across, along) frame: continuous where the
+    // flow turns slowly. From the centre, not the world origin: d(p·a) = dp·a + p·da, and with |p| ≈ 1.6 m
+    // the turn of the frame (p·da) jumped the UV by tiles between neighbours; the strand alpha then
+    // changed between pixels, and with alpha to coverage (smoothstep over fwidth) the cap vanished.
+    const rx = p.x - frame.C.x, ry = p.y - frame.C.y, rz = p.z - frame.C.z;
+    uv.push((rx * across[0] + ry * across[1] + rz * across[2]) / tile, (rx * along[0] + ry * along[1] + rz * along[2]) / tile);
     // A fade (degradê): the clippers leave the hair shorter, and the skin shows, lower on the
     // sides and the nape; the cap's strands thin out there (alpha against the alpha test).
     const height = (p.y - frame.C.y) / frame.R, faded = fadeProfile(state.fade ?? 0, height);

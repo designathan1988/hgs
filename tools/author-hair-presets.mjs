@@ -8,6 +8,9 @@ import { QuadraticBezierCurve3, Raycaster, Vector3 } from 'three';
 import { createHuman } from '../src/human-three.mjs';
 import { LOCK_POINTS as N, combLock, makeLock, prepareLocks, resamplePolyline, rootFromHit, serializeLocks, setLockLength } from '../src/locks.mjs';
 import { normalizeHairFusion } from '../src/hair-fusion.mjs';
+import { defaultHairline, hairlineAt } from '../src/scalp.mjs';
+
+const hairline = defaultHairline();
 
 // The studio's default character and outfit: hair that reaches the shoulders lies on the clothes.
 const human = await createHuman({ seed: 42, gender: 0, ageYears: 28, heightMeters: 1.72, hair: { style: 'none' }, clothing: { style: 'female_casualsuit01' } });
@@ -98,12 +101,16 @@ function parted(state, length, extra = {}) {
   const params = { ...base, ...extra };
   // The parting: from each point on the midline one lock is combed to each
   // side, so the two halves meet with no open valley between them.
+  // A card's root edge lies on the scalp: combed to the side from the parting, a card spans front to back,
+  // so the first root sits half a card width behind the front hairline (0.42 rad), not on it.
+  const start = 0.42 + 0.5 * params.width / state.frame.R;
   for (let k = 0; k < 10; k++) {
-    const t = k / 9, a = 0.48 + t * (Math.PI - 1.1), d = V(0, Math.sin(a), Math.cos(a));
+    const t = k / 9, a = start + t * (Math.PI - 0.62 - start), d = V(0, Math.sin(a), Math.cos(a));
     for (const side of [1, -1]) comb(state, d, flowAt(d, side), length, { ...params, ...dense }, {}, false);
   }
   for (let k = 0; k < 9; k++) {
-    const t = k / 8, a = 0.62 + t * (Math.PI - 1.37), d = V(0.33, Math.sin(a), Math.cos(a));
+    // The row beside the parting starts as far behind the parting's first root as before (0.14 rad).
+    const t = k / 8, a = start + 0.14 + t * (Math.PI - 0.75 - start - 0.14), d = V(0.33, Math.sin(a), Math.cos(a));
     comb(state, d, flowAt(d, 1), length * 0.97, params);
   }
   for (const [el, count] of [[0.5, 4], [0.15, 4]]) for (let k = 0; k < count; k++) {
@@ -111,10 +118,18 @@ function parted(state, length, extra = {}) {
     comb(state, V(Math.sin(th) * Math.cos(el), Math.sin(el), Math.cos(th) * Math.cos(el)), V(0.15, -1, -0.3), length * 0.92, params);
   }
   for (const el of [0.6, 0.33, 0.06]) comb(state, V(0, Math.sin(el), -Math.cos(el)), V(0, -1, -0.3), length * 0.92, params, {}, false);
-  // Front hairline, on the same field (back over the temples): dense and twice as many, so no skin
-  // shows between the locks lying over the temples.
-  for (const th of [0.25, 0.4, 0.55, 0.7, 0.85, 1.0]) {
-    const d = V(Math.sin(th) * Math.cos(0.42), Math.sin(0.42), Math.cos(th) * Math.cos(0.42));
+  // Front hairline: short thin cards combed back over the scalp (game hair cards: short, thin cards at the
+  // hairline bridge the scalp and the long cards; the Curto's front rows comb the same way). A wide card
+  // combed along the hairline laid half its width over the forehead, skin in stripes between them.
+  for (let k = 0; k <= 12; k++) {
+    const th = k / 12, d = V(Math.sin(th) * Math.cos(0.42), Math.sin(0.42), Math.cos(th) * Math.cos(0.42));
+    comb(state, d, V(Math.sin(th) * 0.25, 0.4, -1), 0.06, { ...params, ...dense, width: 0.02, taper: 0.8 }, {}, k > 0);
+  }
+  // Temples (54°–90° from the front): wide dense cards covering the scalp, combed back on the field, each
+  // root half a card width above the hairline there so the card lies on the scalp.
+  for (const th of [0.95, 1.1, 1.25, 1.4, 1.55]) {
+    const el = hairlineAt(hairline, th) + 0.5 * params.width / state.frame.R;
+    const d = V(Math.sin(th) * Math.cos(el), Math.sin(el), Math.cos(th) * Math.cos(el));
     comb(state, d, flowAt(d, 1), length * 0.86, { ...params, ...dense });
   }
 }
