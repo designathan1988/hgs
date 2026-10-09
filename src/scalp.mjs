@@ -16,9 +16,14 @@ const round = (v, digits = 1000) => Math.round(v * digits) / digits;
  * radians], the same on both sides: the frontal line, the temporal point,
  * the sideburn down the front of the ear to below the helix root, the ear
  * itself (excluded by its own mask, see headFrame), the postauricular line
- * dropping below the earlobe and the nape low on the neck.
+ * dropping below the earlobe and the nape across the top of the neck. The
+ * nape follows the lower edge of MakeHuman's artist-made short hair (short02,
+ * modelled on this base mesh): about −0.93 rad from 150° to 180°. Below the
+ * head the neck runs almost along a ray from the head centre, so the elevation
+ * barely changes down it: at −1.05 the cap ran 4 cm further down the neck in
+ * a narrow tongue that no short hair covered.
  */
-const HAIRLINE_LANDMARKS = [[0, 0.42], [22.5, 0.39], [45, 0.3], [56, 0.12], [64, -0.3], [96, -0.3], [106, -0.55], [118, -0.85], [150, -0.98], [165, -1.05], [180, -1.05]];
+const HAIRLINE_LANDMARKS = [[0, 0.42], [22.5, 0.39], [45, 0.3], [56, 0.12], [64, -0.3], [96, -0.3], [106, -0.55], [118, -0.85], [150, -0.92], [165, -0.93], [180, -0.93]];
 
 /** A natural hairline (radians of elevation at HAIRLINE_POINTS azimuths). */
 export function defaultHairline() {

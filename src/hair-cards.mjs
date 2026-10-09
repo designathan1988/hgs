@@ -298,6 +298,23 @@ export function hairCapPart(state, flow) {
   // hairline, and the skin showed in stripes between the cards rooted there.
   const lift = 0.0008, tile = 0.04, fade = 0.012;
   const index = new Map(), pos = [], normal = [], uv = [], color = [], faces = [];
+  // The hairline is a distance field cut at a threshold (Green 2007, Valve: a signed distance stored
+  // per sample and interpolated linearly puts the cut edge across the cells, not along them). The
+  // quads on the edge stay in (one corner inside is enough) and the alpha is linear in the field over
+  // `band`, the largest step of the field between corners of a quad there: clamped over a band
+  // narrower than a quad, the corners were all 0 or 1 and the hairline followed the quads in steps.
+  const edgeQuads = [];
+  let band = fade;
+  for (const f of frame.faces) {
+    const ids = [0, 1, 2, 3].map(c => data.faces[f * 4 + c]);
+    if (!ids.some(v => field[v] >= 0) || ids.some(v => field[v] <= -1)) continue;
+    edgeQuads.push(ids);
+    if (ids.every(v => field[v] >= 0)) continue;
+    for (let c = 0; c < 4; c++) band = Math.max(band, Math.abs(field[ids[c]] - field[ids[(c + 1) % 4]]));
+  }
+  // 0.5 on the hairline (field 0), 1 a band inside it; the strands (texture alpha 0.7–1) outlast the
+  // base (0.75) over the outer part, so the edge still thins out strand by strand.
+  const lineAlpha = f => clamp(0.55 + 0.45 * f / band, 0, 1);
   const p = { x: 0, y: 0, z: 0 }, n = { x: 0, y: 0, z: 0 };
   const vertex = v => {
     if (index.has(v)) return index.get(v);
@@ -316,15 +333,13 @@ export function hairCapPart(state, flow) {
     // A fade (degradê): the clippers leave the hair shorter, and the skin shows, lower on the
     // sides and the nape; the cap's strands thin out there (alpha against the alpha test).
     const height = (p.y - frame.C.y) / frame.R, faded = fadeProfile(state.fade ?? 0, height);
-    const alpha = smooth(-0.004, fade, field[v]) * faded;
+    const alpha = lineAlpha(field[v]) * faded;
     color.push(0.62, 0.62, 0.62, alpha);
     index.set(v, at);
     return at;
   };
   const quads = [];
-  for (const f of frame.faces) {
-    const ids = [0, 1, 2, 3].map(c => data.faces[f * 4 + c]);
-    if (!ids.every(v => field[v] >= -0.004)) continue;
+  for (const ids of edgeQuads) {
     quads.push(ids);
     const [a, b, c, d] = ids.map(vertex);
     faces.push(a, b, c, a, c, d);
