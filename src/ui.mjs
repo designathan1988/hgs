@@ -61,9 +61,9 @@ const metaFields = new Set(['name', 'creation', 'version']);
 const liveShapeFields = new Set(['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength',
   'headSize', 'faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'proportions', 'ancestry', 'cupsize', 'firmness', 'morphs']);
 // Appearance: materials and textures only (look.mjs), never a rebuild. `colors` and `garments` are checked by `lookOnly`.
-const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'topColor', 'bottomColor', 'colors', 'garments']);
-const liveColorKeys = new Set(['skin', 'hair', 'brows', 'lashes', 'top', 'bottom']);
-/** True when only colours the live look can show changed (not the eyes, not a garment's cut). */
+const liveLookFields = new Set(['skin', 'skinRoughness', 'hairColor', 'eyeColor', 'topColor', 'bottomColor', 'colors', 'garments']);
+const liveColorKeys = new Set(['skin', 'hair', 'eyes', 'brows', 'lashes', 'top', 'bottom']);
+/** True when only colours the live look can show changed (not a garment's cut). */
 function lookOnly(prev, next, keys) {
   if (!keys.every(key => liveLookFields.has(key))) return false;
   if (keys.includes('colors')) for (const key of new Set([...Object.keys(prev.colors), ...Object.keys(next.colors)])) if (prev.colors[key] !== next.colors[key] && !liveColorKeys.has(key)) return false;

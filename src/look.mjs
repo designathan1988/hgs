@@ -1,6 +1,6 @@
 import { Color, SRGBColorSpace } from 'three';
 import { skinMaterialFor, skinMaps } from './human-three.mjs';
-import { tintedSkinTexture, garmentTexture } from './appearance.mjs';
+import { tintedSkinTexture, garmentTexture, eyeTexture, irisColorOf } from './appearance.mjs';
 import { imageTexture, sharedTexture } from './texture-cache.mjs';
 import { loadProxy } from './proxy.mjs';
 
@@ -59,6 +59,26 @@ function recolorOutfit(human, spec, final) {
   })().finally(() => { garmentJob = null; });
 }
 
+let eyeJob = null, eyeNext = null;
+/** The iris texture for the spec's eye colour (appearance.eyeTexture); previews are not cached and are disposed when replaced. */
+function recolorEyes(human, spec, final) {
+  const material = human.group.getObjectByName('Eyes')?.material;
+  if (!material?.userData.hgsEyeTexture || !material.map) return;
+  eyeNext = { material, color: new Color(irisColorOf(spec.eyeColor, spec.irisColor)).getHex(), final };
+  if (eyeJob) return;
+  eyeJob = (async () => {
+    while (eyeNext) {
+      const { material: target, color, final: last } = eyeNext; eyeNext = null;
+      if (!last && target.userData.hgsEyeTexture.color === color) continue;
+      const texture = await eyeTexture(color, { cache: last });
+      if (target.map && target.map !== texture && target.userData.liveTexture) target.map.dispose();
+      target.map = texture; target.userData.liveTexture = !last;
+      target.userData.hgsEyeTexture = { color };
+      target.needsUpdate = true;
+    }
+  })().finally(() => { eyeJob = null; });
+}
+
 /** Apply `spec`'s colours (a studioSpec) to the character on screen right away. */
 export function liveLook(human, spec, { garments = null } = {}) {
   const skin = skinMaterialFor(spec), hair = new Color(spec.hairColor ?? 0x30231e), brow = new Color(spec.browColor ?? spec.hairColor ?? 0x392b23);
@@ -80,6 +100,7 @@ export function liveLook(human, spec, { garments = null } = {}) {
     else if (mesh.name === 'Lashes') material.color.copy(lashes);
   }
   recolorOutfit(human, spec, false);
+  recolorEyes(human, spec, false);
   if (garments) recolorTailored(human, garments);
 }
 
@@ -108,6 +129,7 @@ export async function bakeLook(human, spec) {
     material.needsUpdate = true;
   }
   recolorOutfit(human, spec, true);
+  recolorEyes(human, spec, true);
 }
 
 /** Structural equality of normalized character data (normalizeGarment rebuilds `paint` and `patternData` on every patch). */

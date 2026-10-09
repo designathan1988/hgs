@@ -244,6 +244,8 @@ export async function hydrateHumanAppearance(human, spec, { signal } = {}) {
     for (const material of materials) {
       const skin = material.userData.hgsSkinTexture;
       if (skin) { material.map = await tintedSkinTexture(skin.url, skin.tint); material.color.set(0xffffff); }
+      const eye = material.userData.hgsEyeTexture;
+      if (eye) material.map = await eyeTexture(eye.color);
       const source = material.userData.hgsProxyTexture;
       if (source) {
         const base = await imageTexture(source.url);
@@ -505,75 +507,109 @@ function childLayer(context, label, select, color, offset = 0.008) {
   return { mesh, covered };
 }
 
+// The MakeHuman (CC0) iris textures of the eyes proxy, in assets/proxies/eye-<name>.webp.
+const eyeTextureNames = ['brown', 'brownlight', 'grey', 'green', 'bluegreen', 'lightblue', 'blue', 'deepblue', 'ice'];
+const eyeTextureURL = name => new URL(`../assets/proxies/eye-${name}.webp`, import.meta.url).href;
+
+/**
+ * Iris statistics of an eye texture: the sclera is its brightest skin of the
+ * eyeball (95th percentile of linear luminance); a texel's iris weight is how
+ * much darker than the sclera it is, and the iris mean is taken over texels
+ * clearly iris (not sclera, not pupil).
+ */
+const irisCache = new WeakMap();
+function irisStats(image) {
+  if (irisCache.has(image)) return irisCache.get(image);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width; canvas.height = image.height;
+  const drawing = canvas.getContext('2d', { willReadFrequently: true });
+  drawing.drawImage(image, 0, 0);
+  const pixels = drawing.getImageData(0, 0, canvas.width, canvas.height), d = pixels.data, count = d.length / 4;
+  const luminance = new Float32Array(count);
+  for (let i = 0; i < count; i++) luminance[i] = 0.2126 * LINEAR[d[i * 4]] + 0.7152 * LINEAR[d[i * 4 + 1]] + 0.0722 * LINEAR[d[i * 4 + 2]];
+  const sclera = Math.max(1e-3, Float32Array.from(luminance).sort()[Math.floor(count * 0.95)]);
+  let r = 0, g = 0, b = 0, lum = 0, n = 0;
+  for (let i = 0; i < count; i++) {
+    const weight = 1 - luminance[i] / sclera;
+    if (weight < 0.5 || luminance[i] < 0.02 * sclera) continue;
+    r += LINEAR[d[i * 4]]; g += LINEAR[d[i * 4 + 1]]; b += LINEAR[d[i * 4 + 2]]; lum += luminance[i]; n++;
+  }
+  const stats = { width: canvas.width, height: canvas.height, data: d, luminance, sclera, mean: [r / n, g / n, b / n], irisLuminance: lum / n };
+  irisCache.set(image, stats);
+  return stats;
+}
+
+/**
+ * The eye texture for an iris colour: the MakeHuman texture whose iris is
+ * nearest in chromaticity, its iris recoloured to the exact colour with its
+ * own luminance pattern (fibres, rim, pupil) kept. `cache: false` for previews.
+ */
+export async function eyeTexture(color, { cache = true } = {}) {
+  const target = new Color(color);
+  const make = async () => {
+    const images = await Promise.all(eyeTextureNames.map(name => imageTexture(eyeTextureURL(name))));
+    const chroma = ([r, g, b]) => { const s = r + g + b || 1; return [r / s, g / s, b / s]; };
+    const want = chroma([target.r, target.g, target.b]);
+    let best = null;
+    for (const image of images) {
+      const stats = irisStats(image.image), have = chroma(stats.mean);
+      const distance = Math.hypot(have[0] - want[0], have[1] - want[1], have[2] - want[2]);
+      if (!best || distance < best.distance) best = { stats, distance };
+    }
+    const { width, height, data, luminance, sclera, irisLuminance } = best.stats;
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const drawing = canvas.getContext('2d'), pixels = new ImageData(Uint8ClampedArray.from(data), width, height), d = pixels.data;
+    for (let i = 0; i < luminance.length; i++) {
+      const t = Math.max(0, Math.min(1, ((1 - luminance[i] / sclera) - 0.25) / 0.35)), weight = t * t * (3 - 2 * t);
+      if (!weight) continue;
+      // The texel's brightness relative to the iris mean, carried by the new colour (the mean texel becomes the colour).
+      const shade = luminance[i] / Math.max(1e-3, irisLuminance);
+      const tone = [target.r * shade, target.g * shade, target.b * shade];
+      for (let c = 0; c < 3; c++) d[i * 4 + c] = encode(Math.min(1, LINEAR[d[i * 4 + c]] * (1 - weight) + tone[c] * weight));
+    }
+    drawing.putImageData(pixels, 0, 0);
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace; texture.flipY = false; texture.needsUpdate = true;
+    return texture;
+  };
+  return cache ? sharedTexture(`eye:${target.getHex()}`, make) : make();
+}
+
+/** Iris colour of a spec: the free colour, else the palette entry. */
+export const irisColorOf = (eyeColor = 0, irisColor) => irisColor ?? eyePalette[Math.max(0, Math.min(eyePalette.length - 1, eyeColor))];
+
 async function addSurfaceEyes(context, eyeColor = 0, irisColor) {
   const proxy = await loadProxy('eyes');
   const fitted = fitProxy(proxy, context.positions);
-  const points = Array.from(fitted), triangles = Array.from(proxy.index);
-  // Subdivide the authored eyeball mesh for a smooth iris boundary while
-  // retaining its exact fit to the eyelids.
-  for (let pass = 0; pass < 2; pass++) {
-    const edges = new Map(), next = [];
-    const midpoint = (a, b) => {
-      const key = a < b ? `${a}:${b}` : `${b}:${a}`;
-      if (edges.has(key)) return edges.get(key);
-      const at = points.length / 3;
-      for (let k = 0; k < 3; k++) points.push((points[a * 3 + k] + points[b * 3 + k]) * 0.5);
-      edges.set(key, at);
-      return at;
-    };
-    for (let i = 0; i < triangles.length; i += 3) {
-      const a = triangles[i], b = triangles[i + 1], c = triangles[i + 2];
-      const ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
-      next.push(a, ab, ca, ab, b, bc, ca, bc, c, ab, bc, ca);
-    }
-    triangles.length = 0;
-    for (const triangle of next) triangles.push(triangle);
-  }
-  const eyeBounds = [-1, 1].map(sign => {
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity, minZ = Infinity, maxZ = -Infinity;
-    let x = 0, y = 0, count = 0;
-    for (let i = 0; i < fitted.length; i += 3) {
-      if (Math.sign(fitted[i]) !== sign) continue;
-      minX = Math.min(minX, fitted[i]); maxX = Math.max(maxX, fitted[i]);
-      minY = Math.min(minY, fitted[i + 1]); maxY = Math.max(maxY, fitted[i + 1]);
-      minZ = Math.min(minZ, fitted[i + 2]); maxZ = Math.max(maxZ, fitted[i + 2]);
-      x += fitted[i]; y += fitted[i + 1]; count++;
-    }
-    return { sign, cx: x / count, cy: y / count, cz: (minZ + maxZ) / 2,
-      rx: (maxX - minX) / 2, ry: (maxY - minY) / 2, rz: (maxZ - minZ) / 2 };
-  });
-  const irisColors = eyePalette;
-  const iris = new Color(irisColor ?? irisColors[Math.max(0, Math.min(irisColors.length - 1, eyeColor))]);
-  const sclera = new Color(0xece8e2), pupil = new Color(0x080a0d), rim = new Color(0x3a2921);
-  const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-  const vertexColors = [];
-  for (let i = 0; i < points.length; i += 3) {
-    const x = points[i], y = points[i + 1], z = points[i + 2];
-    const e = eyeBounds[x < 0 ? 0 : 1];
-    const distance = Math.hypot((x - e.cx) / e.rx, (y - e.cy) / e.ry);
-    const front = (z - e.cz) / e.rz;
-    const angle = Math.atan2(y - e.cy, x - e.cx);
-    const fibers = 0.82 + 0.13 * Math.sin(angle * 17) + 0.05 * Math.sin(angle * 29 + 0.9);
-    const tone = iris.clone().multiplyScalar(fibers).lerp(rim, smooth(0.39, 0.45, distance));
-    tone.lerp(pupil, 1 - smooth(0.13, 0.19, distance));
-    const pigment = (1 - smooth(0.43, 0.48, distance)) * smooth(0.28, 0.5, front);
-    const color = sclera.clone().lerp(tone, pigment);
-    vertexColors.push(color.r, color.g, color.b);
+  // MakeHuman's eyes proxy holds the eyeballs and a corneal shell mapped to the
+  // white disc in the texture's corner (u, v > 0.75). The shell is left out of
+  // the index (the cosmetic cornea layers below stand for it); every vertex is
+  // kept, so the mesh still matches the proxy vertex for vertex.
+  const uv = proxy.uvs, shell = v => uv[v * 2] > 0.75 && uv[v * 2 + 1] > 0.75, triangles = [];
+  for (let i = 0; i < proxy.index.length; i += 3) {
+    const a = proxy.index[i], b = proxy.index[i + 1], c = proxy.index[i + 2];
+    if (!(shell(a) && shell(b) && shell(c))) triangles.push(a, b, c);
   }
   const headIndex = context.data.skeleton.bones.findIndex(bone => bone.name === 'head');
-  const joints = new Uint16Array(points.length / 3 * 4), weights = new Float32Array(joints.length);
-  for (let i = 0; i < points.length / 3; i++) { joints[i * 4] = headIndex; weights[i * 4] = 1; }
+  const joints = new Uint16Array(fitted.length / 3 * 4), weights = new Float32Array(joints.length);
+  for (let i = 0; i < fitted.length / 3; i++) { joints[i * 4] = headIndex; weights[i * 4] = 1; }
   const eyeGeometry = new BufferGeometry();
-  eyeGeometry.setAttribute('position', new Float32BufferAttribute(points, 3));
-  eyeGeometry.setAttribute('color', new Float32BufferAttribute(vertexColors, 3));
+  eyeGeometry.setAttribute('position', new Float32BufferAttribute(fitted, 3));
+  eyeGeometry.setAttribute('uv', new Float32BufferAttribute(uv, 2));
   eyeGeometry.setAttribute('skinIndex', new Uint16BufferAttribute(joints, 4));
   eyeGeometry.setAttribute('skinWeight', new Float32BufferAttribute(weights, 4));
   eyeGeometry.setIndex(triangles);
   eyeGeometry.computeVertexNormals();
-  const mesh = new SkinnedMesh(eyeGeometry, new MeshPhysicalMaterial({
-    vertexColors: true, roughness: 0.21, clearcoat: 1, clearcoatRoughness: 0.07, side: DoubleSide,
-  }));
+  eyeGeometry.userData.proxyVertexCount = fitted.length / 3;
+  const iris = new Color(irisColorOf(eyeColor, irisColor)).getHex();
+  const material = new MeshPhysicalMaterial({ roughness: 0.21, clearcoat: 1, clearcoatRoughness: 0.07, side: DoubleSide });
+  // The texture is made on the page (hydrateHumanAppearance); a worker has no canvas.
+  material.userData.hgsEyeTexture = { color: iris };
+  if (typeof document !== 'undefined') { material.map = await eyeTexture(iris); material.needsUpdate = true; }
+  const mesh = new SkinnedMesh(eyeGeometry, material);
   mesh.name = 'Eyes';
+  mesh.userData.style = 'eyes';
   context.group.add(mesh);
   mesh.bind(context.body.skeleton, context.body.bindMatrix);
   const position = eyeGeometry.getAttribute('position');
