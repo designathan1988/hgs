@@ -18,8 +18,10 @@ test('imported presets are bounded and retain a usable character', () => {
   assert.equal(imported.age, 18);
   assert.equal(imported.skin, 7);
   assert.equal(imported.hairPreset, defaultCharacter.hairPreset);
-  // Presets saved with the old CC0 hair index get the nearest mesh-lock style.
-  assert.equal(parsePreset(JSON.stringify({ hairStyle: 10 })).hairPreset, 'cacheado');
+  // Presets saved with the old CC0 hair index get the nearest artist hair mesh (curly: waves).
+  const curly = parsePreset(JSON.stringify({ hairStyle: 10 })).hairMesh;
+  assert.equal(curly.style, 'long01');
+  assert.ok(curly.wave > 0.4);
   assert.equal(imported.outfit, 3);
   assert.deepEqual(parsePreset(serializePreset(normalizeCharacter(imported))), imported);
 });

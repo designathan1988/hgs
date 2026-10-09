@@ -39,10 +39,14 @@ test('creation preferences survive normalizing and loading legacy presets', () =
   assert.equal(state.parsePreset('{"name":"Antigo"}').creation?.locks.clothes, false);
 });
 
-test('an explicitly empty authored hairstyle survives saving instead of restoring its preset', () => {
+test('a hairstyle saved as card locks becomes the nearest artist hair mesh and survives saving', () => {
   const person = state.normalizeCharacter({ hairPreset: 'chanel', locks: { format: 'hgs-locks', v: 1, R: 0.11, locks: [] } });
-  assert.ok(person.locks);
-  assert.equal(state.parsePreset(state.serializePreset(person)).locks.locks.length, 0);
+  assert.equal(person.locks, null);
+  assert.equal(person.hairMesh.style, 'toigo_blunt_bob');
+  assert.deepStrictEqual(state.parsePreset(state.serializePreset(person)).hairMesh, person.hairMesh);
+  // Bald stays bald after saving.
+  const bald = state.normalizeCharacter({ ...person, hairMesh: null });
+  assert.equal(state.parsePreset(state.serializePreset(bald)).hairMesh, null);
 });
 
 test('already cancelled character generation rejects before building geometry', async () => {

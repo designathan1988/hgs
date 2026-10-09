@@ -2,6 +2,7 @@ import { normalizeSculpt } from './sculpt.mjs';
 import { normalizeGarment, newGarment, MAX_GARMENTS } from './tailor.mjs';
 import { normalizeLocks } from './locks.mjs';
 import { hairPresetIds } from './hair-presets.mjs';
+import { meshHairOf, normalizeHairMesh } from './hair-mesh.mjs';
 import { beardStyles, defaultBeard, defaultMakeup, tattooDesigns } from './skin-layers.mjs';
 import { accessoryStyles, defaultAccessories, metals } from './accessories.mjs';
 import { clipLabels } from './motion.mjs';
@@ -212,8 +213,15 @@ export function normalizeCharacter(value = {}) {
   result.beard = normalizeBeard(value.beard);
   result.accessories = normalizeAccessories(value.accessories);
   result.tattoos = normalizeTattoos(value.tattoos);
-  result.locks = value.locks ? normalizeLocks(value.locks) : null;
-  if (result.locks && !result.locks.locks.length && !Array.isArray(value.locks?.locks)) result.locks = null;
+  // Hair is an artist's hair mesh with length, volume and wave (hair-mesh.mjs, as character creators'
+  // morphable hair); the card locks are gone. A saved ready-made base keeps its mesh; a saved locks
+  // style gets the artist mesh nearest to it.
+  const fromLocks = { longo: ['long01', 0], chanel: ['toigo_blunt_bob', 0], franja: ['toigo_blunt_bob_with_bangs', 0], curto: ['short02', 0], ondulado: ['long01', 0.3], cacheado: ['long01', 0.6] };
+  // A saved locks style first (the default base is only a fallback for presets that name no hair).
+  const legacy = fromLocks[result.hairPreset] ?? (value.locks ? fromLocks.longo : result.hairBase ? [result.hairBase, 0] : null);
+  result.hairMesh = 'hairMesh' in value ? normalizeHairMesh(value.hairMesh) : legacy ? normalizeHairMesh({ style: legacy[0], wave: legacy[1] }) : null;
+  result.hairBase = null; result.hairPreset = 'careca';
+  result.locks = null;
   result.garments = Array.isArray(value.garments) ? value.garments.slice(0, MAX_GARMENTS).map(normalizeGarment) : [newGarment('tshirt'), newGarment('pants')];
   // Free colours chosen with the colour picker; a palette swatch clears them.
   result.colors = {};
@@ -280,7 +288,7 @@ export function varyCharacter(character, locks = character.creation?.locks ?? {}
     body: ['gender', 'age', 'ageYears', 'height', 'heightMeters', 'build', 'muscle', 'shoulders', 'waist', 'hips', 'legLength', 'headSize', 'skin', 'skinDetail', 'skinRoughness',
       'proportions', 'african', 'asian', 'caucasian', 'cupsize', 'firmness', 'morphs', 'tattoos'],
     face: ['faceWidth', 'jaw', 'cheek', 'nose', 'eyeSize', 'eyeSpacing', 'eyeColor', 'browAngle', 'browShape', 'browArch', 'browThickness', 'browWidth', 'browHeight', 'browDensity', 'lashLength', 'lashCurl', 'lashDensity', 'faceShapes', 'makeup', 'beard'],
-    hair: ['hairPreset', 'hairBase', 'hairColor', 'locks'],
+    hair: ['hairPreset', 'hairBase', 'hairColor', 'locks', 'hairMesh'],
     clothes: ['outfit', 'garments', 'topColor', 'bottomColor', 'accessories'],
   };
   for (const [group, keys] of Object.entries(groups)) if (locks[group]) for (const key of keys) next[key] = structuredClone(current[key]);

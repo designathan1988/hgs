@@ -17,6 +17,7 @@ import { SculptSession } from './sculpt.mjs';
 import { HairEditor } from './hair-editor.mjs';
 import { ClothEditor } from './cloth-editor.mjs';
 import { hairPresetData } from './hair-presets.mjs';
+import { hairSpecOf } from './hair-mesh.mjs';
 import { ageHeightReference, randomCharacter, hairPalette, topPalette, bottomPalette } from './state.mjs';
 import { buildHumanInWorker } from './generation.mjs';
 import { hydrateHumanAppearance } from './appearance.mjs';
@@ -94,10 +95,12 @@ export function studioSpec(person, { undressed = false } = {}) {
       arch: person.browArch ?? 0, thickness: person.browThickness ?? 1, width: person.browWidth ?? 1,
       height: person.browHeight ?? 0, density: person.browDensity ?? 1 },
     // Hair is mesh locks: the edited locks, else the chosen ready-made style.
-    hair: { style: hairLocksOf(person)?.locks.length ? 'locks' : 'none' },
-    hairLocks: hairLocksOf(person),
+    // Hair: an artist's hair mesh (MakeHuman proxy, fitted by its reference vertices) with its
+    // length, volume and wave (hair-mesh.mjs), or none.
+    hair: hairSpecOf(person.hairMesh),
+    hairLocks: null,
     // The ready-made hair mesh under the locks (appearance.mjs), fitted as a MakeHuman proxy.
-    hairBase: person.hairBase ?? null,
+    hairBase: null,
     // Makeup and tattoos painted into the skin texture (skin-layers.mjs).
     // Glasses, earrings, hat, necklace (accessories.mjs).
     accessories: person.accessories,

@@ -5,6 +5,7 @@ import { Vector3 } from 'three';
 import { lockLength, hairTypes, lockKinds, dyeModes } from './locks.mjs';
 import { tieLocks, bunLocks, clipLocks, barretteLocks, bandAcross, accessoryColors } from './hair-accessories.mjs';
 import { hairPresets, hairPresetData } from './hair-presets.mjs';
+import { meshHairStyles, meshHairOf } from './hair-mesh.mjs';
 import { garmentTypes, garmentLabels, garmentPatterns, newGarment, normalizeGarment, costumeTypes, footwearTypes, MAX_GARMENTS } from './tailor.mjs';
 import { fabricIds, fabricNames, fabrics } from './fabrics.mjs';
 import { costumePresets, garmentPalette } from './costume.mjs';
@@ -349,7 +350,8 @@ export class StudioUI {
   }
   modeOf(state = this.state) {
     const section = state.ui.section;
-    if (section === 'cabelo') return 'hair';
+    // Hair is a mesh shaped from the panel (hair-mesh.mjs): the viewport is for looking, no lock editor.
+    if (section === 'cabelo') return 'view';
     if (section === 'esculpir') return 'sculpt';
     const cloth = section === 'roupas' ? this.clothTool(state) : null;
     return cloth ? `cloth:${cloth}` : 'view';
@@ -1230,15 +1232,46 @@ export class StudioUI {
    * Avançado (rare lock shape values, the brush guide, files).
    */
   renderHair() {
-    const editor = this.renderer?.lockEditor;
-    if (!editor?.active) { this.pane('Cabelo').append(h('p', { class: 'empty-note', text: 'Preparando o editor de cabelo…' })); return; }
-    this.lockPanelKey = this.lockPanelState();
-    const tab = this.useTabs(['Estilo', 'Cor', 'Mechas', 'Avançado']);
-    this.toolOptionsHere = tab === 2;
-    if (tab === 0) this.renderHairStyle();
-    else if (tab === 1) this.renderHairColor(editor);
-    else if (tab === 2) this.renderHairLocks(editor);
-    else this.renderHairAdvanced(editor);
+    const tab = this.useTabs(['Estilo', 'Cor', 'Forma']);
+    if (tab === 0) this.renderMeshHairStyle();
+    else if (tab === 1) {
+      const color = this.pane('Cor');
+      color.append(swatches({ label: 'Tom', palette: hairPalette, selected: this.person.hairColor, custom: this.person.colors.hair ?? null, names: ['Preto', 'Castanho muito escuro', 'Castanho escuro', 'Castanho', 'Castanho claro', 'Loiro', 'Ruivo', 'Cinza escuro', 'Platinado'],
+        onPick: i => this.setHairColor(i, null), onCustom: hex => this.setHairColor(null, hex) }));
+    } else this.renderMeshHairShape();
+  }
+  /** Cabelo › Estilo: the mesh hairstyles (shaped in Forma) and the ready-made artist meshes; one is lit. */
+  /** Cabelo › Estilo: the artists' hair meshes (shaped in Forma, sculpted in Esculpir) and bald; one is lit. */
+  renderMeshHairStyle() {
+    const mesh = this.person.hairMesh;
+    const pane = this.pane('Penteado');
+    const items = [...meshHairStyles, { id: null, name: 'Careca' }];
+    pane.append(h('div', { class: 'choice-list', role: 'group', 'aria-label': 'Penteados' }, items.map(s => {
+      const on = (mesh?.style ?? null) === s.id;
+      return h('button', {
+        type: 'button', class: `choice${on ? ' on' : ''}`, 'aria-pressed': String(on), title: s.id ? `${s.name}: ajuste comprimento, volume e ondas em Forma` : 'Careca: sem cabelo',
+        onclick: () => { if (!on) this.patch({ hairMesh: s.id ? meshHairOf(s.id) : null, hairBase: null, hairPreset: 'careca', locks: null }, { history: 'hair' }); this.scheduleRender(); },
+      }, icon('check', 16), h('span', { text: s.name }));
+    })));
+  }
+  /**
+   * Cabelo › Forma: the hairstyle's morph sliders (as character creators give their hair meshes):
+   * length, volume, waves; the hair is rebuilt when a slider is let go. Finer shaping: Esculpir › Cabelo.
+   */
+  renderMeshHairShape() {
+    const mesh = this.person.hairMesh;
+    const pane = this.pane('Forma');
+    if (!mesh) { pane.append(h('p', { class: 'empty-note', text: 'Escolha um penteado em Estilo.' })); return; }
+    const set = changes => this.patch({ hairMesh: { ...this.person.hairMesh, ...changes } }, { history: 'hair' });
+    const field = (key, label, min, max, ends, title) => {
+      let value = mesh[key];
+      this.slide(pane, { label, value, min, max, step: 0.01, scale: 100, unit: '%', ends, title, onInput: v => { value = v; }, onEnd: () => set({ [key]: value }) });
+    };
+    field('length', 'Comprimento', 0.4, 2.5, ['Curto', 'Longo'], 'Encurta ou alonga o cabelo abaixo da altura das orelhas');
+    field('volume', 'Volume', 0, 1, ['Rente', 'Cheio'], 'Afasta o cabelo da cabeça');
+    field('wave', 'Ondas', 0, 1, ['Liso', 'Crespo'], 'Liso, ondulado, cacheado ou crespo');
+    pane.append(h('button', { type: 'button', class: 'button wide', title: 'Pincéis de escultura (Arrastar, Inflar, Suavizar…) direto no cabelo',
+      onclick: () => { this.store.dispatch({ type: 'ui/set', changes: { section: 'esculpir', sculptTarget: 'hair' } }); } }, icon('sculpt', 16), 'Esculpir o cabelo'));
   }
   /** Cabelo › Estilo: the editable styles as pictures, the ready-made ones as a list; one is lit. */
   renderHairStyle() {
@@ -1724,7 +1757,9 @@ export class StudioUI {
     const ui = this.state.ui;
     const { body, outfit } = this.person.sculpt;
     const count = Object.keys(body).length + Object.values(outfit).reduce((m, edits) => m + Object.keys(edits).length, 0) + this.person.garments.reduce((total, garment) => total + (garment.patternData?.edits.length ?? 0), 0);
-    this.useTabs(['Corpo e rosto', 'Roupa'], { selected: ui.sculptTarget === 'outfit' ? 1 : 0, onPick: i => this.store.dispatch({ type: 'ui/set', changes: { sculptTarget: ['body', 'outfit'][i] } }) });
+    // The hair mesh is sculpted like the clothes (Arrastar shapes it, as Blender's Grab drags geometry with the cursor).
+    const targets = ['body', 'outfit', 'hair'];
+    this.useTabs(['Corpo e rosto', 'Roupa', 'Cabelo'], { selected: Math.max(0, targets.indexOf(ui.sculptTarget)), onPick: i => this.store.dispatch({ type: 'ui/set', changes: { sculptTarget: targets[i] } }) });
     const target = this.pane('Escultura', count ? [h('span', { class: 'badge', text: `${count.toLocaleString('pt-BR')} edições`, title: 'Edições de escultura no corpo e nas roupas' })] : []);
     if (ui.sculptTarget !== 'outfit') this.toggle(target, 'Sem roupa', ui.undress, on => this.store.dispatch({ type: 'ui/set', changes: { undress: on } }), 'Esculpe o corpo sem as roupas por cima');
     const clearPatterns = () => this.person.garments.map(garment => garment.patternData ? { ...garment, patternData: { ...garment.patternData, edits: [] } } : garment);
