@@ -155,12 +155,42 @@ class EditTarget {
   write(units) {
     for (const u of units) for (const i of this.corners[u]) this.position.setXYZ(i, this.points[u * 3], this.points[u * 3 + 1], this.points[u * 3 + 2]);
     this.position.needsUpdate = true;
+    this.smoothNormals(units);
+  }
+  /**
+   * Smooth normals per editable vertex: the area-weighted normals of the faces around it, written to
+   * every corner. computeVertexNormals averages only corners shared in the index, and the body repeats
+   * a base vertex at each face corner, so it would shade every face flat. `units` limits the update to
+   * those vertices and their neighbours (a stroke); without it the whole mesh is redone.
+   */
+  smoothNormals(units = null) {
+    const normal = this.mesh.geometry.getAttribute('normal');
+    if (!normal) return;
+    const index = this.mesh.geometry.index.array, unitOf = this.unitOf, p = this.points;
+    this.faceUnits ??= Array.from({ length: this.unitCount }, () => []);
+    if (!this.facesBuilt) { for (let f = 0; f < index.length; f += 3) for (let k = 0; k < 3; k++) this.faceUnits[unitOf[index[f + k]]].push(f); this.facesBuilt = true; }
+    let set;
+    if (units) { set = new Set(); for (const u of units) { set.add(u); for (const v of this.neighbours[u]) set.add(v); } }
+    const list = set ?? Array.from({ length: this.unitCount }, (_, u) => u);
+    for (const u of list) {
+      let nx = 0, ny = 0, nz = 0;
+      for (const f of this.faceUnits[u]) {
+        const a = unitOf[index[f]] * 3, b = unitOf[index[f + 1]] * 3, c = unitOf[index[f + 2]] * 3;
+        const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2], vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
+        nx += uy * vz - uz * vy; ny += uz * vx - ux * vz; nz += ux * vy - uy * vx;
+      }
+      const l = Math.hypot(nx, ny, nz);
+      if (l < 1e-12) continue;
+      nx /= l; ny /= l; nz /= l;
+      this.normals[u * 3] = nx; this.normals[u * 3 + 1] = ny; this.normals[u * 3 + 2] = nz;
+      for (const i of this.corners[u]) normal.setXYZ(i, nx, ny, nz);
+    }
+    normal.needsUpdate = true;
   }
   finish() {
-    this.mesh.geometry.computeVertexNormals();
+    this.smoothNormals();
     this.mesh.geometry.computeBoundingSphere();
     this.mesh.geometry.computeBoundingBox();
-    this.updateNormals();
   }
   /** Offsets moved since the mesh was built, in height units, keyed by stored vertex. */
   changes() {
@@ -199,7 +229,8 @@ export class SculptSession {
   constructor(renderer) {
     this.renderer = renderer;
     this.raycaster = new Raycaster();
-    this.settings = { target: 'body', brush: 'draw', radius: 0.03, strength: 0.5, symmetry: true, invert: false };
+    // 6 cm: the game body has a vertex every 1.5–2 cm, so a smaller brush moves only a handful of them.
+    this.settings = { target: 'body', brush: 'draw', radius: 0.06, strength: 0.5, symmetry: true, invert: false };
     this.target = null; this.stroke = null;
     this.cursor = new Mesh(new RingGeometry(0.92, 1, 48), new MeshBasicMaterial({ color: 0xf27a2e, side: DoubleSide, depthTest: false, transparent: true, opacity: 0.9 }));
     this.cursor.renderOrder = 999; this.cursor.visible = false;
