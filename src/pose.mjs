@@ -1,4 +1,4 @@
-import { Mesh, MeshBasicMaterial, Quaternion, Raycaster, SphereGeometry, Vector3 } from 'three';
+import { Mesh, MeshBasicMaterial, Plane, Quaternion, Raycaster, SphereGeometry, Vector3 } from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { fromLocal, toLocal, mirrorPose } from './motion.mjs';
 
@@ -73,6 +73,8 @@ export class PoseEditor {
     this.active = false; this.symmetry = true; this.selected = null; this.onCommit = null;
     this.ray = new Raycaster();
     this.handles = new Map();
+    // Direct drag of an IK handle (three.js DragControls): the plane facing the camera through the handle.
+    this.dragPlane = new Plane(); this.dragOffset = new Vector3(); this.dragging = null;
   }
   get controls() {
     if (this._controls) return this._controls;
@@ -110,7 +112,7 @@ export class PoseEditor {
   }
   end() {
     if (!this.active) return;
-    this.active = false; this.selected = null;
+    this.active = false; this.selected = null; this.dragging = null;
     this._controls?.detach();
     this._controls?.getHelper().removeFromParent();
     for (const handle of this.handles.values()) handle.removeFromParent();
@@ -143,7 +145,7 @@ export class PoseEditor {
   }
   syncHandles() {
     for (const [name, handle] of this.handles) {
-      if (this._controls?.object === handle && this._controls.dragging) continue;
+      if (handle === this.dragging || (this._controls?.object === handle && this._controls.dragging)) continue;
       this.bone(name)?.getWorldPosition(handle.position);
     }
   }
@@ -159,6 +161,39 @@ export class PoseEditor {
     if (!bone || /^hair_/.test(bone.name)) { this.controls.detach(); this.selected = null; return false; }
     this.selected = bone; this.controls.setMode('rotate'); this.controls.setSpace('local'); this.controls.attach(bone);
     return true;
+  }
+  /**
+   * Press on an IK handle: it is picked and follows the cursor on the plane facing the camera
+   * through it, keeping the offset of the grabbed point (DragControls, onPointerDown). True when grabbed.
+   */
+  grabHandle(ndc) {
+    if (!this.active) return false;
+    const camera = this.renderer.viewCamera;
+    this.ray.setFromCamera(ndc, camera);
+    const handle = this.ray.intersectObjects([...this.handles.values()], false)[0]?.object;
+    if (!handle) return false;
+    this.selected = handle; this.controls.setMode('translate'); this.controls.setSpace('world'); this.controls.attach(handle);
+    this.dragPlane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(this.dragPlane.normal), handle.position);
+    if (!this.ray.ray.intersectPlane(this.dragPlane, this.dragOffset)) return false;
+    this.dragOffset.sub(handle.position);
+    this.dragging = handle;
+    return true;
+  }
+  /** Cursor moved while a handle is held: the handle goes there and the limb follows by IK. */
+  dragHandle(ndc) {
+    const handle = this.dragging;
+    if (!handle) return;
+    this.ray.setFromCamera(ndc, this.renderer.viewCamera);
+    if (!this.ray.ray.intersectPlane(this.dragPlane, t)) return;
+    handle.position.copy(t).sub(this.dragOffset);
+    this.changed();
+  }
+  /** Release: the held handle returns to the hand or foot and the pose is recorded. */
+  releaseHandle() {
+    if (!this.dragging) return;
+    this.dragging = null;
+    this.syncHandles();
+    this.commit();
   }
   /** The gizmo moved its object: IK for a handle, mirrored copy with symmetry on. */
   changed() {

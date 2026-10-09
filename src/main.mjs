@@ -30,6 +30,8 @@ canvas.addEventListener('pointerdown', event => {
   if (event.button !== 0) { drag = null; return; }
   // Posing: the gizmo (TransformControls, its own listener) owns the pointer when it is under the cursor.
   if (ui.posing && renderer.poseEditor.grabs(event)) { drag = null; return; }
+  // Posing: a press on an orange IK handle drags the hand or foot directly.
+  if (ui.posing && renderer.poseEditor.grabHandle(sculptNdc(event, canvas))) { drag = { pose: true }; return; }
   // Moldar: a press on the body pulls it into shape; elsewhere the left button still orbits.
   if (ui.molding && renderer.shapeHandles.begin(sculptNdc(event, canvas), key => ui.morphValue(key))) { drag = { mold: true }; return; }
   if (ui.pinning) {
@@ -84,6 +86,7 @@ canvas.addEventListener('pointermove', event => {
   if (ui.sculpting && !drag?.x) renderer.sculpt.showCursor(sculptHit(event), renderer.viewCamera);
   if (ui.locking && !drag) renderer.lockEditor.hover(sculptNdc(event, canvas), renderer.viewCamera);
   if (drag?.locks) { renderer.lockEditor.pointerMove(sculptNdc(event, canvas), renderer.viewCamera, { alt: event.altKey }); return; }
+  if (drag?.pose) { renderer.poseEditor.dragHandle(sculptNdc(event, canvas)); return; }
   if (drag?.mold) { ui.moldTo(renderer.shapeHandles.move(sculptNdc(event, canvas), { single: event.altKey })); return; }
   if (drag?.cloth) { ui.clothEdgeMove(renderer.clothEditor.move(event.clientY, canvas.clientHeight)); return; }
   if (drag?.sculpt) { renderer.sculpt.move(sculptNdc(event, canvas), renderer.viewCamera); return; }
@@ -100,6 +103,7 @@ const release = event => {
   if (drag?.ndc && ui.dressing && event && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) ui.pickGarment(renderer.clothEditor.garmentAt(drag.ndc, renderer.viewCamera));
   // A click (no drag) while posing picks the bone or IK handle under the cursor.
   if (drag?.ndc && ui.posing && event && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) renderer.poseEditor.pick(drag.ndc);
+  if (drag?.pose) renderer.poseEditor.releaseHandle();
   if (drag?.locks) renderer.lockEditor.pointerUp();
   if (drag?.mold) { renderer.shapeHandles.end(); ui.commitLive(); }
   if (drag?.cloth) ui.clothEdgeEnd(renderer.clothEditor.up());
