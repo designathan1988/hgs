@@ -4,8 +4,8 @@ import {
 } from 'three';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { LoopOnce, LoopRepeat } from 'three';
-import { createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
-import { buildClips, oneShotClips } from './motion.mjs';
+import { characterClips, createHuman, exportHumanGLB, faceWeights, applyFaceWeights } from './human-three.mjs';
+import { buildClips, loadMotionLibrary, oneShotClips } from './motion.mjs';
 import { LiveShape } from './live.mjs';
 import { liveLook, bakeLook } from './look.mjs';
 import { PoseEditor } from './pose.mjs';
@@ -218,10 +218,16 @@ export class Renderer {
   }
   cancelBuild() { this.buildController?.abort(); this.token++; }
   async buildCharacter(spec, options = {}) {
-    if (typeof Worker === 'undefined') return createHuman(spec, options);
+    // Captured clips (motion.mjs library) are added here, not in the worker: they would make every
+    // packet (and the build cache) megabytes larger.
+    const motion = this.motion = await loadMotionLibrary();
+    if (typeof Worker === 'undefined') return createHuman(spec, { ...options, motion });
     const human = await buildHumanInWorker(spec, options);
-    try { await hydrateHumanAppearance(human, spec, options); return human; }
-    catch (error) { human.dispose(); throw error; }
+    try {
+      await hydrateHumanAppearance(human, spec, options);
+      human.animations = human.group.animations = characterClips(human.context.skeleton, spec, human.faceMeshes, motion);
+      return human;
+    } catch (error) { human.dispose(); throw error; }
   }
   async setCharacter(person, { onProgress, getLatest } = {}) {
     this.buildController?.abort();
@@ -298,15 +304,22 @@ export class Renderer {
     if (this.moldMode) { this.mixer.stopAllAction(); this.action = null; this.current.body.skeleton.pose(); return; }
     const clip = this.current.animations[person.animation ?? 0] ?? this.current.animations[0];
     const action = this.mixer.clipAction(clip);
+    const once = oneShotClips.has(clip.name) || (clip.name === USER_CLIP && person.clip?.loop === false);
     if (action !== this.action) {
-      this.mixer.stopAllAction();
+      const previous = this.action?.isRunning() ? this.action : null;
+      if (!previous) this.mixer.stopAllAction();
       action.reset();
-      if (oneShotClips.has(clip.name)) { action.setLoop(LoopOnce, 1); action.clampWhenFinished = true; }
+      if (once) { action.setLoop(LoopOnce, 1); action.clampWhenFinished = true; }
       else action.setLoop(LoopRepeat, Infinity);
       action.play();
       this.action = action;
-      // A new clip starts without a blend: restart the springs from it (as SpringBoneSimulator3D.reset()).
-      this.mixer.update(0); this.springs?.reset();
+      // From a playing clip the new one cross-fades in (AnimationAction.crossFadeTo), and the hair
+      // springs follow the blend; from a still pose it starts at once and the springs restart from it
+      // (as SpringBoneSimulator3D.reset()).
+      if (previous) previous.crossFadeTo(action, 0.3, false);
+      else { this.mixer.update(0); this.springs?.reset(); }
+    } else if (clip.name === USER_CLIP) {
+      action.setLoop(once ? LoopOnce : LoopRepeat, once ? 1 : Infinity); action.clampWhenFinished = once;
     }
     action.setEffectiveTimeScale(person.animationSpeed ?? 1);
     // A clip left paused by the timeline cursor plays again when chosen.
@@ -409,7 +422,11 @@ export class Renderer {
     const height = this.live.update(studioSpec(person), this.springs);
     // Clips key rotations against the rest pose and the pelvis by position: rebuilt for the new rest.
     const group = human.group;
-    human.animations = group.animations = buildClips(human.context.skeleton, person.pose ?? 0, human.faceMeshes.map(mesh => mesh.name));
+    // Only the clip on screen is rebuilt while dragging (captured clips hold thousands of keys); the
+    // refined build that follows (commitLive) rebuilds them all.
+    const fresh = buildClips(human.context.skeleton, person.pose ?? 0, human.faceMeshes.map(mesh => mesh.name),
+      { library: this.motion, gender: person.gender, only: clipNames[person.animation] ?? clipNames[0] });
+    human.animations = group.animations = human.animations.map((clip, i) => fresh[i] ?? clip);
     this.mixer.uncacheRoot(group); this.action = null; this.clipSource = undefined;
     this.springs = new SpringBones(group, group.userData.hairSprings);
     this.setPresentation(person);
