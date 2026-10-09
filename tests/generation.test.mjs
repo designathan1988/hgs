@@ -17,7 +17,8 @@ test('worker transport preserves the actual body, face shapes, rig and animation
     assert.deepEqual(Object.keys(restored.body.morphTargetDictionary), blendshapeNames);
     assert.deepEqual(restored.body.geometry.morphAttributes.position[11].array, original.body.geometry.morphAttributes.position[11].array);
     assert.equal(restored.faceMeshes.length, original.faceMeshes.length);
-    assert.equal(restored.animations.length, 16);
+    // Every clip crosses the worker (the motion library has grown past the 16 procedural clips).
+    assert.equal(restored.animations.length, original.animations.length);
     assert.equal(restored.context.positions.unitScale, original.context.positions.unitScale);
     assert.deepEqual(restored.context.skeleton.heads.map(p => p.toArray()), original.context.skeleton.heads.map(p => p.toArray()));
     assert.equal(restored.context.skeleton.byName.get('head'), original.context.skeleton.byName.get('head'));

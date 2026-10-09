@@ -26,7 +26,9 @@ test('unlocked variation changes appearance deterministically while keeping pres
   assert.notDeepEqual(first, state.varyCharacter(source, {}, 8765));
   assert.equal(first.animation, source.animation);
   assert.equal(first.lighting, source.lighting);
-  assert.equal(first.name, source.name);
+  // Another person gets another name; with the body and the face kept it is the same person, and keeps it.
+  assert.notEqual(first.name, source.name);
+  assert.equal(state.varyCharacter(source, { body: true, face: true }, 5678).name, source.name);
 });
 
 test('creation preferences survive normalizing and loading legacy presets', () => {
